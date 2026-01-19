@@ -726,7 +726,16 @@ class ZWOCamera:
                         self.log(f"✗ CRITICAL: Maximum reconnection attempts ({max_reconnect_attempts}) reached")
                         self.log("Camera appears to be disconnected or unresponsive")
                         self.log("Stopping capture loop. Manual intervention required.")
-                        self.log("Troubleshooting: 1) Check USB cable, 2) Check camera power, 3) Check USB drivers, 4) Restart application")
+                        self.log("")
+                        self.log("Troubleshooting steps:")
+                        self.log("  1. Check USB cable connection")
+                        self.log("  2. Check camera power supply")
+                        self.log("  3. Try: Physically disconnect USB, wait 5 seconds, reconnect")
+                        self.log("  4. Check Windows Device Manager for USB errors")
+                        self.log("  5. Restart application (automatic USB reset will be attempted)")
+                        self.log("  6. If persistent: Update ZWO drivers from astronomy-imaging-camera.com")
+                        self.log("")
+                        self.log("Note: Camera may be stuck in bad USB state requiring physical disconnect.")
                         self.is_capturing = False
                         # Notify via callback that capture failed
                         if hasattr(self, 'on_error_callback') and self.on_error_callback:
