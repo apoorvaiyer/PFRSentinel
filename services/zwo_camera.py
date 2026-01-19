@@ -31,6 +31,10 @@ class ZWOCamera:
                  scheduled_capture_enabled=False, scheduled_start_time="17:00",
                  scheduled_end_time="09:00", status_callback=None, camera_name=None,
                  config_callback=None):
+        # Initialize log callback FIRST (before CameraConnection uses self.log)
+        self.on_log_callback = None
+        self.on_frame_callback = None
+        
         # Initialize connection manager (delegates SDK/connection logic)
         self._connection = CameraConnection(sdk_path=sdk_path, logger=self.log)
         self._connection.config_callback = config_callback
@@ -46,8 +50,6 @@ class ZWOCamera:
         # Capture state
         self.is_capturing = False
         self.capture_thread = None
-        self.on_frame_callback = None
-        self.on_log_callback = None
         self.status_callback = status_callback  # Callback for schedule status updates
         
         # Capture settings
