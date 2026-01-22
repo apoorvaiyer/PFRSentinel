@@ -301,7 +301,11 @@ class CameraControllerQt(QObject):
         self.calibration_status.emit(is_calibrating)
     
     def update_settings(self):
-        """Update camera settings from config (live update)"""
+        """Update camera settings from config (live update)
+        
+        Updates both ZWOCamera and its calibration_manager so settings
+        take effect on the next exposure without requiring stop/start.
+        """
         if not self.zwo_camera:
             return
         
@@ -319,12 +323,29 @@ class CameraControllerQt(QObject):
             self.zwo_camera.set_exposure(exposure_ms / 1000.0)
             
             # Update gain
-            self.zwo_camera.set_gain(profile.get('gain', self.config.get('zwo_gain', 100)))
+            gain = profile.get('gain', self.config.get('zwo_gain', 100))
+            self.zwo_camera.set_gain(gain)
             
-            # Update auto-exposure settings
-            self.zwo_camera.auto_exposure = profile.get('auto_exposure', self.config.get('zwo_auto_exposure', False))
-            self.zwo_camera.target_brightness = profile.get('target_brightness', self.config.get('zwo_target_brightness', 100))
-            self.zwo_camera.max_exposure_sec = profile.get('max_exposure_ms', self.config.get('zwo_max_exposure_ms', 30000.0)) / 1000.0
+            # Update auto-exposure settings on ZWOCamera
+            auto_exposure = profile.get('auto_exposure', self.config.get('zwo_auto_exposure', False))
+            target_brightness = profile.get('target_brightness', self.config.get('zwo_target_brightness', 100))
+            max_exposure_ms = profile.get('max_exposure_ms', self.config.get('zwo_max_exposure_ms', 30000.0))
+            
+            self.zwo_camera.auto_exposure = auto_exposure
+            self.zwo_camera.target_brightness = target_brightness
+            self.zwo_camera.max_exposure = max_exposure_ms / 1000.0
+            
+            # CRITICAL: Also update calibration_manager so changes take effect on next exposure
+            if self.zwo_camera.calibration_manager:
+                self.zwo_camera.calibration_manager.update_settings(
+                    exposure_seconds=exposure_ms / 1000.0,
+                    gain=gain,
+                    target_brightness=target_brightness,
+                    max_exposure_sec=max_exposure_ms / 1000.0
+                )
+                app_logger.debug(f"Updated calibration_manager: target_brightness={target_brightness}")
+            
+            app_logger.debug(f"Camera settings updated: auto_exposure={auto_exposure}, target_brightness={target_brightness}")
             
         except Exception as e:
             app_logger.error(f"Failed to update camera settings: {e}")
