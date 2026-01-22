@@ -393,7 +393,7 @@ def get_status_chip_style(status: str) -> str:
         color: {text};
         border: none;
         border-radius: {Layout.status_chip_height // 2}px;
-        padding: 4px 12px;
+        padding: 0px;
         font-size: {Typography.size_small}px;
         font-weight: {Typography.weight_semibold};
     """

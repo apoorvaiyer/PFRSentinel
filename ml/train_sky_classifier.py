@@ -405,8 +405,9 @@ def train_model(
     Train the sky/celestial classifier with GPU optimization.
     
     Training strategy:
-    - Train on: Pier camera (roof open) + All-sky camera (all labeled)
+    - Train on: Pier camera (roof open) ONLY
     - Validate on: Pier camera only (matches production)
+    - All-sky camera data is NOT used for training
     """
     
     print("=" * 60)
@@ -421,23 +422,25 @@ def train_model(
         return None
     
     # Split PIER samples into train/val (validation is pier-only)
+    # NOTE: Training ONLY on pier camera data (no allsky assistance)
     random.shuffle(pier_samples)
     val_size = max(int(len(pier_samples) * val_split), 10)  # At least 10 for validation
     val_samples = pier_samples[:val_size]
     pier_train_samples = pier_samples[val_size:]
     
-    # Training = pier (roof open) + all-sky
-    train_samples = pier_train_samples + allsky_samples
+    # Training = pier camera ONLY (roof open samples)
+    train_samples = pier_train_samples
     random.shuffle(train_samples)
     
     # Calculate totals
     all_train = train_samples
     
-    print(f"\n=== Dataset Split ===")
+    print(f"\n=== Dataset Split (PIER CAMERA ONLY) ===")
     print(f"Training:   {len(train_samples)} total")
     print(f"  - Pier camera (roof open): {len(pier_train_samples)}")
-    print(f"  - All-sky camera:          {len(allsky_samples)}")
+    print(f"  - All-sky camera:          0 (DISABLED - pier only mode)")
     print(f"Validation: {len(val_samples)} (pier camera only)")
+    print(f"\nNote: All-sky samples ({len(allsky_samples)}) are SKIPPED in this training run")
     
     # Print class distribution (training set)
     print("\n=== Training Label Distribution ===")
