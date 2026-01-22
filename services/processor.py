@@ -452,6 +452,7 @@ def add_text_overlay(img, draw, overlay, metadata):
         y_offset = overlay.get('offset_y', 10)  # Match config key
         background_enabled = overlay.get('background_enabled', False)
         background_color = overlay.get('background_color', 'black')
+        alignment = overlay.get('alignment', 'left')  # NEW: 'left', 'center', 'right'
         
         # Load font (use default if custom font loading fails)
         try:
@@ -469,13 +470,33 @@ def add_text_overlay(img, draw, overlay, metadata):
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
         
-        # Calculate position
+        # Calculate base position using anchor
         x, y = calculate_position(img.size, (text_width, text_height), anchor, x_offset, y_offset)
+        
+        # Apply text alignment adjustment for multi-line text
+        # This adjusts each line's x position based on alignment
+        # For single-line text, this has no effect when alignment='left'
+        lines = text.split('\n')
+        line_positions = []
+        
+        for line in lines:
+            line_bbox = draw.textbbox((0, 0), line, font=font)
+            line_width = line_bbox[2] - line_bbox[0]
+            
+            if alignment == 'center':
+                line_x = x + (text_width - line_width) // 2
+            elif alignment == 'right':
+                line_x = x + (text_width - line_width)
+            else:  # left (default)
+                line_x = x
+            
+            line_positions.append(line_x)
         
         # Draw background box if enabled and not transparent
         if background_enabled and background_color.lower() != 'transparent':
             padding = 5
-            # Get bbox at actual drawing position for accurate background box
+            # Calculate background box based on full text block dimensions
+            # (not per-line, to create a unified background)
             text_bbox = draw.textbbox((x, y), text, font=font)
             box_coords = [
                 text_bbox[0] - padding,  # left
@@ -487,8 +508,17 @@ def add_text_overlay(img, draw, overlay, metadata):
             bg_color = parse_color(background_color)
             draw.rectangle(box_coords, fill=bg_color)
         
-        # Draw text
-        draw.text((x, y), text, fill=color, font=font)
+        # Draw text with per-line positioning based on alignment
+        if len(lines) == 1:
+            # Single line - use calculated position with alignment
+            draw.text((line_positions[0], y), text, fill=color, font=font)
+        else:
+            # Multi-line - draw each line at its aligned position
+            line_height = draw.textbbox((0, 0), 'Ay', font=font)[3]  # Height with ascender/descender
+            current_y = y
+            for i, line in enumerate(lines):
+                draw.text((line_positions[i], current_y), line, fill=color, font=font)
+                current_y += line_height
         
         return img
         

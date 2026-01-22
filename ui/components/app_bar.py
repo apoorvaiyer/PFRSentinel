@@ -32,11 +32,12 @@ class StatusChip(QFrame):
     
     def _setup_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(12, 0, 12, 0)  # Horizontal padding only
         layout.setSpacing(0)
         
         self.label = QLabel(self._label)
         self.label.setAlignment(Qt.AlignCenter)
+        self.label.setStyleSheet("padding: 0px; margin: 0px;")  # Ensure no extra padding
         layout.addWidget(self.label)
         
         self.setFixedHeight(Layout.status_chip_height)

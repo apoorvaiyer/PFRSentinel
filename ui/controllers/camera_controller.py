@@ -306,17 +306,25 @@ class CameraControllerQt(QObject):
             return
         
         try:
+            # Get current camera name for profile lookup
+            camera_name = self.config.get('zwo_selected_camera_name', '')
+            if '(Index:' in camera_name:
+                camera_name = camera_name.split('(Index:')[0].strip()
+            
+            # Get settings from camera profile (with fallback to global config)
+            profile = self.config.get_camera_profile(camera_name) if camera_name else {}
+            
             # Update exposure
-            exposure_ms = self.config.get('zwo_exposure_ms', 100.0)
+            exposure_ms = profile.get('exposure_ms', self.config.get('zwo_exposure_ms', 100.0))
             self.zwo_camera.set_exposure(exposure_ms / 1000.0)
             
             # Update gain
-            self.zwo_camera.set_gain(self.config.get('zwo_gain', 100))
+            self.zwo_camera.set_gain(profile.get('gain', self.config.get('zwo_gain', 100)))
             
             # Update auto-exposure settings
-            self.zwo_camera.auto_exposure = self.config.get('zwo_auto_exposure', False)
-            self.zwo_camera.target_brightness = self.config.get('zwo_target_brightness', 100)
-            self.zwo_camera.max_exposure_sec = self.config.get('zwo_max_exposure_ms', 30000.0) / 1000.0
+            self.zwo_camera.auto_exposure = profile.get('auto_exposure', self.config.get('zwo_auto_exposure', False))
+            self.zwo_camera.target_brightness = profile.get('target_brightness', self.config.get('zwo_target_brightness', 100))
+            self.zwo_camera.max_exposure_sec = profile.get('max_exposure_ms', self.config.get('zwo_max_exposure_ms', 30000.0)) / 1000.0
             
         except Exception as e:
             app_logger.error(f"Failed to update camera settings: {e}")

@@ -669,6 +669,13 @@ class OverlaySettingsPanel(QWidget):
         self.font_style_combo.currentTextChanged.connect(self._on_appearance_changed)
         layout.addWidget(FormRow("Style", self.font_style_combo))
         
+        # Text alignment
+        self.text_align_combo = ComboBox()
+        self.text_align_combo.addItems(["left", "center", "right"])
+        self.text_align_combo.setToolTip("Horizontal text alignment for multi-line text")
+        self.text_align_combo.currentTextChanged.connect(self._on_appearance_changed)
+        layout.addWidget(FormRow("Alignment", self.text_align_combo))
+        
         # Background toggle
         self.bg_switch = SwitchRow("Background", "Draw rectangle behind text")
         self.bg_switch.toggled.connect(self._on_bg_toggle)
@@ -813,6 +820,7 @@ class OverlaySettingsPanel(QWidget):
             'font_size': 24,
             'font_style': 'normal',
             'color': 'white',
+            'alignment': 'left',
             'bg_enabled': False,
             'bg_color': 'transparent'
         }
@@ -904,6 +912,12 @@ class OverlaySettingsPanel(QWidget):
             if idx >= 0:
                 self.font_style_combo.setCurrentIndex(idx)
             
+            # Text alignment
+            alignment = overlay.get('alignment', 'left')
+            idx = self.text_align_combo.findText(alignment)
+            if idx >= 0:
+                self.text_align_combo.setCurrentIndex(idx)
+            
             bg_enabled = overlay.get('bg_enabled', False)
             self.bg_switch.set_checked(bg_enabled)
             self.bg_color_widget.setVisible(bg_enabled)
@@ -935,7 +949,7 @@ class OverlaySettingsPanel(QWidget):
         widgets = [
             self.name_edit, self.type_combo, self.text_edit,
             self.font_size_spin, self.color_combo, self.font_style_combo,
-            self.bg_color_combo,
+            self.text_align_combo, self.bg_color_combo,
             self.image_path_edit, self.image_width_spin, self.image_height_spin,
             self.opacity_spin,
             self.anchor_combo, self.offset_x_spin, self.offset_y_spin
@@ -980,6 +994,7 @@ class OverlaySettingsPanel(QWidget):
                 overlay['font_size'] = self.font_size_spin.value()
                 overlay['color'] = self.color_combo.currentText()
                 overlay['font_style'] = self.font_style_combo.currentText()
+                overlay['alignment'] = self.text_align_combo.currentText()
                 overlay['bg_enabled'] = self.bg_switch.is_checked()
                 overlay['bg_color'] = self.bg_color_combo.currentText()
             else:
