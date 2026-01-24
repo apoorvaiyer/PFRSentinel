@@ -14,7 +14,7 @@ echo Building: PySide6 Fluent UI
 echo.
 
 REM Step 0: Sync version.iss from version.py
-echo [0/3] Syncing version from version.py...
+echo [0/4] Syncing version from version.py...
 python scripts\update_version.py
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Version sync failed!
@@ -24,7 +24,7 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 
 REM Step 1: Build executable
-echo [1/3] Building executable...
+echo [1/4] Building executable...
 call build_sentinel.bat
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Executable build failed!
@@ -34,7 +34,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 REM Step 2: Build installer
 echo.
-echo [2/3] Building installer (UPX disabled to avoid false positives)...
+echo [2/4] Building installer (UPX disabled to avoid false positives)...
 
 REM Check for Inno Setup
 set ISCC_PATH="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
@@ -60,13 +60,48 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
+REM Step 3: Sign installer
+echo.
+echo [3/4] Signing installer...
+
+REM Auto-connect SimplySign if OTP URI is configured
+if defined CERTUM_OTP_URI (
+    echo Connecting to SimplySign...
+    powershell -ExecutionPolicy Bypass -File "%~dp0scripts\Connect-SimplySign.ps1" -SkipIfConnected
+)
+
+REM Set signtool path
+set SIGNTOOL="C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
+
+REM Check for certificate thumbprint in environment or use default
+if not defined CODE_SIGNING_THUMBPRINT (
+    set CODE_SIGNING_THUMBPRINT=B5E267FE814CD41B883876712CA326C288FB3492
+)
+
+REM Find the installer file (has version in name)
+for %%f in (installer\dist\*.exe) do set INSTALLER_FILE=%%f
+
+if exist %SIGNTOOL% (
+    echo Using certificate: %CODE_SIGNING_THUMBPRINT%
+    echo NOTE: Approve signing request in SimplySign mobile app...
+    %SIGNTOOL% sign /sha1 %CODE_SIGNING_THUMBPRINT% /tr http://time.certum.pl /td SHA256 /fd SHA256 /d "PFR Sentinel Setup" "%INSTALLER_FILE%"
+    if %ERRORLEVEL% EQU 0 (
+        echo Installer signed successfully!
+    ) else (
+        echo WARNING: Signing failed, continuing with unsigned installer
+    )
+) else (
+    echo WARNING: signtool.exe not found, skipping code signing
+    echo Install Windows SDK to enable signing
+)
+
 echo.
 echo ========================================
 echo   Full Build Completed!
 echo ========================================
 echo.
 echo Installer location:
-echo   releases\PFRSentinel_Setup.exe
+echo   %INSTALLER_FILE%
 echo.
 echo ========================================
 echo   Next: Upload to VirusTotal

@@ -1,27 +1,58 @@
-# Code Signing for Windows Applications
+# Code Signing for PFR Sentinel
 
-## The "Unknown Publisher" Warning
+## Current Status: ✅ SIGNED
 
-When users download and run `ASIOverlayWatchDog.exe`, Windows will show a SmartScreen warning:
+PFR Sentinel is **code signed** with a Certum Open Source Developer certificate.
 
+**Certificate Details:**
+- **Publisher:** Open Source Developer, Paul Fox-Reeks
+- **Issuer:** Certum Code Signing 2021 CA
+- **Valid Until:** January 23, 2027
+- **Thumbprint:** `B5E267FE814CD41B883876712CA326C288FB3492`
+
+Users will see "Open Source Developer, Paul Fox-Reeks" as the publisher instead of "Unknown publisher".
+
+## Signing Setup (Certum SimplySign)
+
+This project uses **Certum SimplySign** - a cloud-based HSM solution where the private key is stored securely on Certum's servers.
+
+### Prerequisites
+1. **SimplySign Desktop** - Windows app that integrates with cloud HSM
+2. **SimplySign Mobile App** - For approving signing requests
+3. **Windows SDK** - Provides `signtool.exe`
+
+### Automated Build Signing
+
+The build scripts automatically sign executables:
+- `build_sentinel.bat` - Signs `PFRSentinel.exe` after PyInstaller build
+- `build_sentinel_installer.bat` - Signs both EXE and installer
+
+**During signing, approve the request in your SimplySign mobile app.**
+
+### Manual Signing
+
+```powershell
+# Sign executable
+signtool sign /sha1 B5E267FE814CD41B883876712CA326C288FB3492 /tr http://time.certum.pl /td SHA256 /fd SHA256 /d "PFR Sentinel" "dist\PFRSentinel\PFRSentinel.exe"
+
+# Sign installer
+signtool sign /sha1 B5E267FE814CD41B883876712CA326C288FB3492 /tr http://time.certum.pl /td SHA256 /fd SHA256 /d "PFR Sentinel Setup" "installer\dist\PFR Sentinel-X.X.X-setup.exe"
 ```
-Windows protected your PC
-Microsoft Defender SmartScreen prevented an unrecognized app from starting.
-Running this app might put your PC at risk.
 
-Publisher: Unknown publisher
+### Verify Signature
+
+```powershell
+Get-AuthenticodeSignature "dist\PFRSentinel\PFRSentinel.exe" | Format-List Status, SignerCertificate
 ```
 
-This is **normal for unsigned executables** and does NOT mean the app is malicious. It's Windows' way of protecting users from potentially harmful software.
+---
 
-## Why This Happens
+## Background: Why Code Signing Matters
 
 Windows SmartScreen checks for:
 1. **Digital signature** - Proves the publisher's identity
 2. **Reputation** - Tracks how many users have downloaded the file
 3. **Certificate validity** - Ensures the signature is from a trusted authority
-
-ASIOverlayWatchDog is **unsigned**, so Windows shows the warning.
 
 ## What Users Should Do
 
@@ -95,53 +126,17 @@ Self-signing doesn't help because Windows only trusts certificates from recogniz
 
 ---
 
-## Recommendation for ASIOverlayWatchDog
+## Certificate Renewal
 
-**Stay unsigned (Option 1)** because:
-
-1. **Cost:** $200-500/year is significant for a free open-source project
-2. **User base:** Astrophotography enthusiasts are tech-savvy and understand SmartScreen warnings
-3. **Distribution:** GitHub releases build reputation over time
-4. **Alternatives:** Clear documentation helps users understand the warning
-
-### How to Minimize User Friction
-
-1. **README Warning:**
-   ```markdown
-   **Windows Security Warning:** When you first run ASIOverlayWatchDog.exe,
-   Windows may show a SmartScreen warning. This is normal for unsigned software.
-   Click "More info" → "Run anyway" to proceed.
-   ```
-
-2. **GitHub Releases:** Use official GitHub releases - users trust downloads from github.com
-
-3. **Source Code:** Provide source code so advanced users can build it themselves
-
-4. **Virus Scan Results:** Upload to VirusTotal and link the clean scan results
-
-5. **Video Tutorial:** Show the SmartScreen bypass process in a setup video
-
----
-
-## Future Consideration
-
-If the project grows to:
-- 1000+ downloads/month
-- Commercial support
-- Paid version
-- Business partnerships
-
-Then code signing becomes worth the investment. Until then, the free option is perfectly acceptable for an open-source astrophotography tool.
+The certificate expires **January 23, 2027**. To renew:
+1. Log into your Certum account
+2. Renew the certificate before expiration
+3. Update the thumbprint in build scripts if it changes
 
 ---
 
 ## Resources
 
-- [Microsoft Code Signing Overview](https://docs.microsoft.com/en-us/windows/win32/seccrypto/cryptography-tools)
-- [DigiCert Code Signing](https://www.digicert.com/signing/code-signing-certificates)
-- [Sectigo Code Signing](https://sectigo.com/ssl-certificates-tls/code-signing)
+- [Certum SimplySign](https://www.certum.eu/en/cert_offer_SimplySign/)
+- [Microsoft SignTool Documentation](https://docs.microsoft.com/en-us/windows/win32/seccrypto/signtool)
 - [VirusTotal](https://www.virustotal.com/) - Free malware scanning service
-
----
-
-**Current Status:** ASIOverlayWatchDog is **unsigned** and will show SmartScreen warning. This is normal and safe for open-source software.
