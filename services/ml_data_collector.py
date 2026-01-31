@@ -24,11 +24,12 @@ from utils_paths import get_ml_contribution_dir
 try:
     from astropy.io import fits
     ASTROPY_AVAILABLE = True
-except ImportError as e:
+except Exception as e:
     ASTROPY_AVAILABLE = False
-    # Log at module level - will show at startup
-    import logging
-    logging.getLogger(__name__).debug(f"astropy not available: {e}")
+    # Can't use app_logger here (circular import) - will be logged at runtime
+    _ASTROPY_IMPORT_ERROR = str(e)
+else:
+    _ASTROPY_IMPORT_ERROR = None
 
 
 # Google Form URL for data submission
@@ -204,7 +205,8 @@ class MLDataCollector:
             return False
         
         if not ASTROPY_AVAILABLE:
-            app_logger.warning("ML Contribution: astropy not available, skipping")
+            err = _ASTROPY_IMPORT_ERROR or "unknown error"
+            app_logger.warning(f"ML Contribution: astropy not available ({err}), skipping")
             return False
         
         try:
