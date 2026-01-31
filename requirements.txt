@@ -8,6 +8,7 @@ requests>=2.31.0
 appdirs>=1.4.4
 pystray>=0.19.4
 astral>=3.2  # Accurate sunrise/sunset/twilight calculations
+astropy>=5.0.0  # FITS file support for ML data contribution
 
 # PySide6 Fluent UI (new modern interface)
 PySide6>=6.6.0
