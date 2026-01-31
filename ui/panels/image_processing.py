@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame,
     QSizePolicy, QFileDialog, QMessageBox
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, ComboBox, SpinBox, DoubleSpinBox, 
@@ -36,6 +36,11 @@ class ImageProcessingPanel(QScrollArea):
         self._loading_config = True  # Block signals during init
         self._setup_ui()
         self._loading_config = False
+        
+        # Timer to refresh ML contribution status periodically
+        self._ml_status_timer = QTimer(self)
+        self._ml_status_timer.timeout.connect(self._update_ml_contrib_status)
+        self._ml_status_timer.start(5000)  # Update every 5 seconds
     
     def _setup_ui(self):
         self.setWidgetResizable(True)
