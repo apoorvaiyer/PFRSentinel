@@ -20,16 +20,17 @@ import numpy as np
 from services.logger import app_logger
 from utils_paths import get_ml_contribution_dir
 
-# Optional: astropy for FITS
+# Optional: astropy for FITS - test full import including PrimaryHDU
 try:
-    from astropy.io import fits
+    from astropy.io import fits as _test_fits
+    # Verify PrimaryHDU is accessible (catches partial import issues)
+    _test_hdu_class = _test_fits.PrimaryHDU
     ASTROPY_AVAILABLE = True
+    _ASTROPY_IMPORT_ERROR = None
+    del _test_fits, _test_hdu_class
 except Exception as e:
     ASTROPY_AVAILABLE = False
-    # Can't use app_logger here (circular import) - will be logged at runtime
     _ASTROPY_IMPORT_ERROR = str(e)
-else:
-    _ASTROPY_IMPORT_ERROR = None
 
 
 # Google Form URL for data submission
@@ -305,7 +306,10 @@ class MLDataCollector:
     
     def _save_fits(self, path: Path, data: np.ndarray, metadata: Dict[str, Any]):
         """Save image data as FITS file with metadata header."""
-        hdu = fits.PrimaryHDU(data.astype(np.float32))
+        # Import inside function to ensure proper resolution in bundled app
+        from astropy.io import fits as astropy_fits
+        
+        hdu = astropy_fits.PrimaryHDU(data.astype(np.float32))
         
         # Add metadata to header
         hdu.header['CAMERA'] = metadata.get('CAMERA', 'Unknown')
