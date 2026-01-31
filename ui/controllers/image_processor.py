@@ -403,6 +403,7 @@ class ImageProcessor(QObject):
             'overlays': mw.config.get('overlays', []),
             'dev_mode': mw.config.get('dev_mode', {'enabled': False, 'raw_folder': 'raw_debug', 'save_histogram_stats': True}),
             'ml_models': mw.config.get('ml_models', {'enabled': False}),
+            'ml_contribution': mw.config.get('ml_contribution', {'enabled': False}),
         }
         
         return config
