@@ -15,6 +15,7 @@ from qfluentwidgets import (
     SpinBox, DoubleSpinBox, SwitchButton, FluentIcon, HyperlinkLabel
 )
 
+from version import __version__
 from ..theme.tokens import Colors, Typography, Spacing, Layout
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard
 
@@ -264,6 +265,43 @@ class SettingsPanel(QScrollArea):
         
         layout.addWidget(cleanup_card)
         
+        # === ABOUT & UPDATES ===
+        about_card = SettingsCard(
+            "About & Updates",
+            f"PFR Sentinel v{__version__}"
+        )
+        
+        # Version info
+        version_info = CaptionLabel(
+            f"Version: {__version__}\n"
+            "Check for updates manually or wait for automatic check (24h after startup)"
+        )
+        version_info.setStyleSheet(f"color: {Colors.text_secondary}; padding: 8px;")
+        version_info.setWordWrap(True)
+        about_card.add_widget(version_info)
+        
+        # Update buttons row
+        update_btn_row = QHBoxLayout()
+        update_btn_row.setSpacing(Spacing.sm)
+        
+        self.check_updates_btn = PrimaryPushButton("Check for Updates")
+        self.check_updates_btn.setIcon(FluentIcon.SYNC)
+        self.check_updates_btn.clicked.connect(self._check_for_updates)
+        update_btn_row.addWidget(self.check_updates_btn)
+        
+        self.github_btn = PushButton("GitHub Releases")
+        self.github_btn.setIcon(FluentIcon.LINK)
+        self.github_btn.clicked.connect(self._open_github_releases)
+        update_btn_row.addWidget(self.github_btn)
+        
+        update_btn_row.addStretch()
+        
+        update_btn_widget = QWidget()
+        update_btn_widget.setLayout(update_btn_row)
+        about_card.add_widget(update_btn_widget)
+        
+        layout.addWidget(about_card)
+        
         layout.addStretch()
     
     def _toggle_api_key_visibility(self):
@@ -374,6 +412,25 @@ class SettingsPanel(QScrollArea):
             self.main_window.config.set('cleanup_enabled', self.cleanup_enabled_switch.isChecked())
             self.main_window.config.set('cleanup_max_size_gb', self.cleanup_size_spin.value())
             self.settings_changed.emit()
+    
+    def _check_for_updates(self):
+        """Manually check for updates"""
+        if self.main_window and hasattr(self.main_window, 'check_for_updates_now'):
+            self.check_updates_btn.setEnabled(False)
+            self.check_updates_btn.setText("Checking...")
+            self.main_window.check_for_updates_now()
+            # Re-enable after short delay
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(2000, lambda: self._reset_update_button())
+    
+    def _reset_update_button(self):
+        """Reset update button state"""
+        self.check_updates_btn.setEnabled(True)
+        self.check_updates_btn.setText("Check for Updates")
+    
+    def _open_github_releases(self):
+        """Open GitHub releases page"""
+        webbrowser.open("https://github.com/englishfox90/PFRSentinel/releases")
     
     def load_from_config(self, config):
         """Load settings from config object"""

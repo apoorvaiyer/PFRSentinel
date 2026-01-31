@@ -68,6 +68,18 @@ def get_log_dir():
     return log_dir
 
 
+def get_ml_contribution_dir():
+    r"""
+    Get ML data contribution directory path.
+    
+    Returns:
+        Path to %LOCALAPPDATA%\{APP_DATA_FOLDER}\ml_contribution
+    """
+    ml_dir = os.path.join(get_app_data_dir(), 'ml_contribution')
+    os.makedirs(ml_dir, exist_ok=True)
+    return ml_dir
+
+
 def get_exe_dir():
     """
     Get the directory where the EXE is installed/running from.

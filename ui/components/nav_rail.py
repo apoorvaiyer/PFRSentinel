@@ -7,21 +7,23 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSpacerItem
 )
 from PySide6.QtCore import Qt, Signal, QSize, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QFont, QIcon
-from qfluentwidgets import FluentIcon, ToolButton
+from PySide6.QtGui import QFont, QIcon, QPainter, QColor, QBrush
+from qfluentwidgets import FluentIcon
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
 from ..theme.styles import get_nav_item_style
 
 
 class NavButton(QPushButton):
-    """Navigation rail button with icon and label"""
+    """Navigation rail button with icon, label, and optional badge"""
     
     def __init__(self, icon, text: str, key: str, parent=None):
         super().__init__(parent)
         self._key = key
         self._selected = False
         self._original_text = text  # Store for collapse/expand
+        self._badge_visible = False
+        self._badge_text = ""
         
         self.setText(text)
         self.setCheckable(True)
@@ -46,6 +48,45 @@ class NavButton(QPushButton):
         self._selected = selected
         self.setChecked(selected)
         self._update_style()
+    
+    def set_badge(self, visible: bool, text: str = ""):
+        """Show or hide a badge on this button."""
+        self._badge_visible = visible
+        self._badge_text = text
+        self.update()  # Trigger repaint
+    
+    def paintEvent(self, event):
+        """Override to draw badge."""
+        super().paintEvent(event)
+        
+        if self._badge_visible:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            
+            # Badge position - vertically centered, right side
+            badge_size = 10 if not self._badge_text else 16
+            x = self.width() - badge_size - 12
+            y = (self.height() - badge_size) // 2  # Vertically center
+            
+            # Draw badge circle
+            painter.setBrush(QBrush(QColor(Colors.iris_9)))
+            painter.setPen(Qt.NoPen)
+            
+            if self._badge_text:
+                # Pill shape for text
+                painter.drawRoundedRect(x - 4, y, badge_size + 4, badge_size, badge_size // 2, badge_size // 2)
+                # Draw text
+                painter.setPen(QColor("#FFFFFF"))
+                font = painter.font()
+                font.setPixelSize(9)
+                font.setBold(True)
+                painter.setFont(font)
+                painter.drawText(x - 4, y, badge_size + 4, badge_size, Qt.AlignCenter, self._badge_text)
+            else:
+                # Simple dot
+                painter.drawEllipse(x, y, badge_size, badge_size)
+            
+            painter.end()
     
     def _update_style(self):
         if self._selected:
@@ -233,6 +274,17 @@ class NavRail(QFrame):
         self.toggle_btn.setText("☰" if self._collapsed else "☰")
         
         self.collapsed_changed.emit(self._collapsed)
+    
+    def set_badge(self, key: str, visible: bool, text: str = ""):
+        """Set badge visibility on a navigation button.
+        
+        Args:
+            key: Button key ('settings', 'capture', etc.)
+            visible: Whether to show the badge
+            text: Optional text to show in badge (e.g., "1", "!")
+        """
+        if key in self._buttons:
+            self._buttons[key].set_badge(visible, text)
     
     @property
     def is_collapsed(self) -> bool:

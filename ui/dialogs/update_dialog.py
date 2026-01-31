@@ -1,0 +1,217 @@
+"""
+Update Dialog
+Shows update available notification with download/skip options.
+"""
+
+from PySide6.QtWidgets import (
+    QVBoxLayout, QHBoxLayout, QLabel, QProgressBar
+)
+from PySide6.QtCore import Qt, Signal, QThread
+from qfluentwidgets import (
+    MessageBoxBase, SubtitleLabel, BodyLabel, CaptionLabel,
+    PrimaryPushButton, PushButton, FluentIcon, InfoBar, InfoBarPosition
+)
+
+from ..theme.tokens import Colors, Spacing
+
+
+class DownloadThread(QThread):
+    """Background thread for downloading installer."""
+    
+    progress = Signal(int, int)  # downloaded, total
+    finished = Signal(object)  # Path or None
+    
+    def __init__(self, update_checker, update_info):
+        super().__init__()
+        self.update_checker = update_checker
+        self.update_info = update_info
+        self._last_percent = -1
+    
+    def run(self):
+        def throttled_progress(downloaded, total):
+            """Only emit progress every 1% to reduce UI overhead."""
+            if total > 0:
+                percent = int(downloaded * 100 / total)
+                if percent != self._last_percent:
+                    self._last_percent = percent
+                    self.progress.emit(downloaded, total)
+            else:
+                self.progress.emit(downloaded, total)
+        
+        result = self.update_checker.download_installer(
+            self.update_info,
+            progress_callback=throttled_progress
+        )
+        self.finished.emit(result)
+
+
+class UpdateDialog(MessageBoxBase):
+    """Dialog showing update available with download option."""
+    
+    def __init__(self, parent, update_info):
+        super().__init__(parent)
+        self.update_info = update_info
+        self._download_thread = None
+        
+        # Hide default OK/Cancel buttons - we have our own
+        self.yesButton.hide()
+        self.cancelButton.hide()
+        
+        self._setup_ui()
+        
+    def _setup_ui(self):
+        # Title
+        title = SubtitleLabel(f"🎉 Update Available: v{self.update_info.latest_version}")
+        title.setStyleSheet(f"color: {Colors.text_primary};")
+        self.viewLayout.addWidget(title)
+        
+        # Current vs new version
+        version_text = BodyLabel(
+            f"You're running v{self.update_info.current_version} → "
+            f"v{self.update_info.latest_version} is available"
+        )
+        version_text.setStyleSheet(f"color: {Colors.text_secondary};")
+        self.viewLayout.addWidget(version_text)
+        
+        # Release notes (truncated)
+        notes = self.update_info.release_notes
+        if len(notes) > 500:
+            notes = notes[:500] + "..."
+        
+        notes_label = CaptionLabel(notes)
+        notes_label.setWordWrap(True)
+        notes_label.setStyleSheet(f"""
+            color: {Colors.text_muted}; 
+            padding: 12px;
+            background: {Colors.bg_card};
+            border-radius: 6px;
+            max-height: 150px;
+        """)
+        self.viewLayout.addWidget(notes_label)
+        
+        # File info
+        if self.update_info.installer_name:
+            size_info = CaptionLabel(
+                f"📦 {self.update_info.installer_name} "
+                f"({self.update_info.installer_size_mb:.1f} MB)"
+            )
+            size_info.setStyleSheet(f"color: {Colors.text_muted};")
+            self.viewLayout.addWidget(size_info)
+        
+        # Progress bar (hidden initially)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setStyleSheet(f"""
+            QProgressBar {{
+                border: none;
+                border-radius: 4px;
+                background: {Colors.bg_card};
+                height: 20px;
+            }}
+            QProgressBar::chunk {{
+                background: {Colors.iris_9};
+                border-radius: 4px;
+            }}
+        """)
+        self.viewLayout.addWidget(self.progress_bar)
+        
+        # Status label
+        self.status_label = CaptionLabel("")
+        self.status_label.setStyleSheet(f"color: {Colors.iris_9};")
+        self.status_label.setVisible(False)
+        self.viewLayout.addWidget(self.status_label)
+        
+        # Buttons
+        self.download_btn = PrimaryPushButton("Download Update")
+        self.download_btn.setIcon(FluentIcon.DOWNLOAD)
+        self.download_btn.setCursor(Qt.PointingHandCursor)
+        self.download_btn.clicked.connect(self._on_download)
+        
+        self.view_btn = PushButton("View on GitHub")
+        self.view_btn.setIcon(FluentIcon.LINK)
+        self.view_btn.setCursor(Qt.PointingHandCursor)
+        self.view_btn.clicked.connect(self._on_view_github)
+        
+        self.skip_btn = PushButton("Skip This Version")
+        self.skip_btn.setCursor(Qt.PointingHandCursor)
+        self.skip_btn.clicked.connect(self.reject)
+        
+        self.buttonLayout.addWidget(self.download_btn)
+        self.buttonLayout.addWidget(self.view_btn)
+        self.buttonLayout.addWidget(self.skip_btn)
+        
+        # Set minimum width
+        self.widget.setMinimumWidth(450)
+        
+    def _on_download(self):
+        """Start download in background thread."""
+        from services.update_checker import get_update_checker
+        
+        self.download_btn.setEnabled(False)
+        self.download_btn.setText("Downloading...")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setVisible(True)
+        self.status_label.setText("Starting download...")
+        
+        checker = get_update_checker()
+        self._download_thread = DownloadThread(checker, self.update_info)
+        self._download_thread.progress.connect(self._on_progress)
+        self._download_thread.finished.connect(self._on_download_finished)
+        self._download_thread.start()
+    
+    def _on_progress(self, downloaded: int, total: int):
+        """Update progress bar."""
+        if total > 0:
+            percent = int(downloaded / total * 100)
+            self.progress_bar.setValue(percent)
+            mb_done = downloaded / (1024 * 1024)
+            mb_total = total / (1024 * 1024)
+            self.status_label.setText(f"Downloading: {mb_done:.1f} / {mb_total:.1f} MB")
+    
+    def _on_download_finished(self, result):
+        """Handle download completion."""
+        self._download_thread = None
+        
+        if result:
+            self.progress_bar.setValue(100)
+            self.status_label.setText(f"✅ Downloaded to: {result}")
+            self.status_label.setStyleSheet(f"color: {Colors.status_ok};")
+            self.download_btn.setText("Download Complete")
+            
+            # Show info about running installer
+            InfoBar.success(
+                title="Download Complete",
+                content=f"Installer saved to Downloads folder. Run it to update.",
+                parent=self.parent(),
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=5000
+            )
+        else:
+            self.progress_bar.setVisible(False)
+            self.status_label.setText("❌ Download failed - try View on GitHub")
+            self.status_label.setStyleSheet(f"color: {Colors.status_error};")
+            self.download_btn.setEnabled(True)
+            self.download_btn.setText("Retry Download")
+    
+    def _on_view_github(self):
+        """Open releases page in browser."""
+        from services.update_checker import get_update_checker
+        checker = get_update_checker()
+        checker.open_releases_page(self.update_info)
+
+
+def show_update_dialog(parent, update_info) -> bool:
+    """
+    Show update dialog and return True if user wants to download.
+    
+    Args:
+        parent: Parent widget
+        update_info: UpdateInfo dataclass
+        
+    Returns:
+        True if dialog was accepted (download started)
+    """
+    dialog = UpdateDialog(parent, update_info)
+    return dialog.exec()

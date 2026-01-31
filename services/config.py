@@ -195,6 +195,14 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "url": "https://zyssufjepmbhqznfuwcw.supabase.co/storage/v1/object/public/status-assets-public/building-0009/allsky/images/image.jpg",
         "timeout_seconds": 10
+    },
+    
+    # ML Data Contribution - helps improve models for all users
+    # Opt-in anonymous data sharing with downscaled images (256x256)
+    "ml_contribution": {
+        "enabled": False,  # Opt-in data sharing
+        "min_interval_minutes": 30,  # Don't collect more often than this
+        "max_samples": 500,  # Auto-pause when reached (~50MB)
     }
 }
 

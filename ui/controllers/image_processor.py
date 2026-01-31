@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from services.logger import app_logger
 from services.processor import add_overlays, auto_stretch_image
 from services.ml_service import get_ml_service, analyze_image_for_tokens
-from .dev_mode_utils import dev_mode_saver
+from .dev_mode_utils import dev_mode_saver, collect_ml_contribution_sample
 
 
 class ImageProcessingTask:
@@ -132,6 +132,11 @@ class ImageProcessorWorker(QThread):
             # === DEV MODE: Save raw image and log detailed stats ===
             if dev_mode_config.get('enabled', False):
                 dev_mode_saver.save_dev_mode_data(img, raw_array, output_dir, metadata, dev_mode_config)
+            
+            # === ML CONTRIBUTION: Collect sample if enabled (works in production) ===
+            ml_contrib_config = config.get('ml_contribution', {})
+            if ml_contrib_config.get('enabled', False):
+                collect_ml_contribution_sample(raw_array, metadata, lambda: config)
             
             # Get auto-exposure settings for histogram display
             # Check if camera controller exists and has auto_exposure enabled

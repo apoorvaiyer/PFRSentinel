@@ -2,15 +2,16 @@
 Image Processing Settings Panel
 Settings for resize, brightness, saturation, timestamp, and auto-stretch
 """
+import webbrowser
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame,
-    QSizePolicy, QFileDialog
+    QSizePolicy, QFileDialog, QMessageBox
 )
 from PySide6.QtCore import Qt, Signal
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, ComboBox, SpinBox, DoubleSpinBox, 
-    SwitchButton, FluentIcon, LineEdit
+    SwitchButton, FluentIcon, LineEdit, PrimaryPushButton
 )
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
@@ -346,6 +347,91 @@ class ImageProcessingPanel(QScrollArea):
         
         layout.addWidget(ml_card)
         
+        # === ML DATA CONTRIBUTION ===
+        contrib_card = CollapsibleCard("Community Data Contribution", FluentIcon.PEOPLE)
+        
+        # Hero info section
+        contrib_info = CaptionLabel(
+            "🧠 Help improve scene detection for everyone!\n\n"
+            "When enabled, PFR Sentinel collects anonymous training samples that help "
+            "improve the ML models for all users. Data is stored locally until you "
+            "choose to upload it."
+        )
+        contrib_info.setStyleSheet(f"color: {Colors.text_secondary}; padding: 8px;")
+        contrib_info.setWordWrap(True)
+        contrib_card.add_widget(contrib_info)
+        
+        # Enable contribution
+        self.ml_contrib_switch = SwitchRow(
+            "Enable Data Contribution",
+            "Collect anonymous training samples every 30 minutes"
+        )
+        self.ml_contrib_switch.toggled.connect(self._on_ml_contrib_changed)
+        contrib_card.add_widget(self.ml_contrib_switch)
+        
+        # What's collected info
+        collected_info = CaptionLabel(
+            "📦 What's collected:\n"
+            "• Downscaled image (256×256) - ~80 KB\n"
+            "• Camera settings & image statistics\n"
+            "• Time/moon context (no GPS data)\n"
+            "• Roof/weather status if available"
+        )
+        collected_info.setStyleSheet(f"color: {Colors.text_muted}; padding: 8px;")
+        collected_info.setWordWrap(True)
+        contrib_card.add_widget(collected_info)
+        
+        # Status display with better styling
+        self.ml_contrib_status_label = CaptionLabel("Samples: 0 / 500 (0 MB)")
+        self.ml_contrib_status_label.setStyleSheet(f"""
+            color: {Colors.text_muted}; 
+            padding: 12px; 
+            background: {Colors.bg_card}; 
+            border-radius: 6px;
+            font-weight: 500;
+        """)
+        contrib_card.add_widget(self.ml_contrib_status_label)
+        
+        # Action buttons row
+        contrib_btn_row = QHBoxLayout()
+        contrib_btn_row.setSpacing(Spacing.sm)
+        
+        self.ml_export_btn = PrimaryPushButton("Export for Upload")
+        self.ml_export_btn.setIcon(FluentIcon.ZIP_FOLDER)
+        self.ml_export_btn.clicked.connect(self._export_ml_data)
+        contrib_btn_row.addWidget(self.ml_export_btn)
+        
+        self.ml_upload_btn = PushButton("Open Upload Form")
+        self.ml_upload_btn.setIcon(FluentIcon.LINK)
+        self.ml_upload_btn.clicked.connect(self._open_ml_upload_form)
+        contrib_btn_row.addWidget(self.ml_upload_btn)
+        
+        self.ml_clear_btn = PushButton("Clear")
+        self.ml_clear_btn.setIcon(FluentIcon.DELETE)
+        self.ml_clear_btn.clicked.connect(self._clear_ml_samples)
+        contrib_btn_row.addWidget(self.ml_clear_btn)
+        
+        contrib_btn_row.addStretch()
+        
+        contrib_btn_widget = QWidget()
+        contrib_btn_widget.setLayout(contrib_btn_row)
+        contrib_card.add_widget(contrib_btn_widget)
+        
+        # How to contribute steps
+        steps_info = CaptionLabel(
+            "📤 How to contribute:\n"
+            "1. Enable data contribution above\n"
+            "2. Let it collect while you capture normally\n"
+            "3. Click 'Export for Upload' when ready\n"
+            "4. Upload the ZIP via the Google Form\n"
+            "5. Click 'Clear' after successful upload"
+        )
+        steps_info.setStyleSheet(f"color: {Colors.text_muted}; padding: 8px;")
+        steps_info.setWordWrap(True)
+        contrib_card.add_widget(steps_info)
+        
+        layout.addWidget(contrib_card)
+        
         # === DEV MODE === (Only show in development builds)
         if is_dev_mode_available():
             dev_card = CollapsibleCard("Developer Mode", FluentIcon.DEVELOPER_TOOLS)
@@ -564,6 +650,112 @@ class ImageProcessingPanel(QScrollArea):
             self.ascom_file_path.setText(path)
             self._on_ascom_path_changed()
 
+    # === ML DATA CONTRIBUTION HANDLERS ===
+    
+    def _on_ml_contrib_changed(self, checked):
+        """Handle ML contribution enable/disable toggle"""
+        if self._loading_config:
+            return
+        if self.main_window and hasattr(self.main_window, 'config'):
+            ml_contrib = self.main_window.config.get('ml_contribution', {})
+            ml_contrib['enabled'] = checked
+            self.main_window.config.set('ml_contribution', ml_contrib)
+            self.main_window.config.save()
+            self.settings_changed.emit()
+            self._update_ml_contrib_status()
+            
+            from services.logger import app_logger
+            if checked:
+                app_logger.info("ML Data Contribution enabled - collecting samples every 30 min")
+            else:
+                app_logger.info("ML Data Contribution disabled")
+    
+    def _update_ml_contrib_status(self):
+        """Update ML contribution status display"""
+        try:
+            from services.ml_data_collector import get_ml_collector
+            collector = get_ml_collector()
+            if collector:
+                stats = collector.get_stats()
+                samples = stats.get('total_samples', 0)
+                max_samples = stats.get('max_samples', 500)
+                mb = stats.get('disk_usage_mb', 0)
+                
+                if stats.get('enabled'):
+                    status = f"✓ Collecting: {samples} / {max_samples} samples ({mb:.1f} MB)"
+                    self.ml_contrib_status_label.setStyleSheet(f"color: #4ade80; padding: 8px;")
+                else:
+                    status = f"Samples: {samples} / {max_samples} ({mb:.1f} MB)"
+                    self.ml_contrib_status_label.setStyleSheet(f"color: {Colors.text_muted}; padding: 8px;")
+                
+                self.ml_contrib_status_label.setText(status)
+                
+                # Enable/disable buttons based on sample count
+                has_samples = samples > 0
+                self.ml_export_btn.setEnabled(has_samples)
+                self.ml_clear_btn.setEnabled(has_samples)
+        except Exception as e:
+            self.ml_contrib_status_label.setText("Status unavailable")
+            self.ml_contrib_status_label.setStyleSheet(f"color: {Colors.text_muted}; padding: 8px;")
+    
+    def _export_ml_data(self):
+        """Export ML data for upload"""
+        try:
+            from services.ml_data_collector import get_ml_collector
+            collector = get_ml_collector()
+            if collector:
+                zip_path = collector.export_for_upload()
+                if zip_path and zip_path.exists():
+                    # Show success dialog with instructions
+                    msg = QMessageBox(self)
+                    msg.setWindowTitle("Export Complete")
+                    msg.setIcon(QMessageBox.Information)
+                    msg.setText("Data exported successfully!")
+                    msg.setInformativeText(
+                        f"ZIP file created:\n{zip_path}\n\n"
+                        "Next steps:\n"
+                        "1. Click 'Open Upload Form' to open the Google Form\n"
+                        "2. Upload the ZIP file\n"
+                        "3. Click 'Clear' after successful upload"
+                    )
+                    msg.setStandardButtons(QMessageBox.Ok)
+                    
+                    # Open folder containing ZIP
+                    import os
+                    os.startfile(zip_path.parent)
+                    
+                    msg.exec()
+                else:
+                    QMessageBox.warning(self, "Export Failed", "No samples to export or export failed.")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export: {e}")
+    
+    def _open_ml_upload_form(self):
+        """Open the Google Form for ML data upload"""
+        from services.ml_data_collector import UPLOAD_FORM_URL
+        webbrowser.open(UPLOAD_FORM_URL)
+    
+    def _clear_ml_samples(self):
+        """Clear all ML contribution samples"""
+        result = QMessageBox.question(
+            self,
+            "Clear Samples",
+            "Are you sure you want to clear all collected samples?\n\n"
+            "Only do this after you've successfully uploaded the data.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if result == QMessageBox.Yes:
+            try:
+                from services.ml_data_collector import get_ml_collector
+                collector = get_ml_collector()
+                if collector and collector.clear_samples():
+                    self._update_ml_contrib_status()
+                    QMessageBox.information(self, "Cleared", "All samples have been cleared.")
+            except Exception as e:
+                QMessageBox.critical(self, "Clear Error", f"Failed to clear samples: {e}")
+
     # === CONFIG LOADING ===
     
     def load_from_config(self, config):
@@ -636,5 +828,12 @@ class ImageProcessingPanel(QScrollArea):
             else:
                 self.ml_status_label.setText("Status: Disabled")
                 self.ml_status_label.setStyleSheet(f"color: {Colors.text_muted}; padding: 8px;")
+            
+            # ML Data Contribution
+            ml_contrib = config.get('ml_contribution', {})
+            self.ml_contrib_switch.set_checked(ml_contrib.get('enabled', False))
         finally:
             self._loading_config = False
+        
+        # Update ML contribution status (after _loading_config is False)
+        self._update_ml_contrib_status()

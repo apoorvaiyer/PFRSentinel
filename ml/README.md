@@ -165,6 +165,72 @@ if roof_result['roof_open']:
 
 **Output**: Stretch mode/recipe selection based on classified scene.
 
+## Community Data Contribution
+
+### Overview
+
+To improve model accuracy across different camera setups and observatory configurations, users can opt-in to share anonymous training data. This feature collects lightweight samples that are compatible with our ML training pipeline.
+
+### How It Works
+
+1. **Enable in Settings** → ML Data Contribution → Enable Data Contribution
+2. App automatically collects samples every 30 minutes while capturing
+3. Samples stored locally in `%LOCALAPPDATA%\PFRSentinel\ml_contribution\`
+4. User exports data when ready and uploads via Google Form
+5. Collected data is anonymized (no GPS, file paths, or personal info)
+
+### What Gets Collected
+
+| Data | Size | Purpose |
+|------|------|---------|
+| **256×256 FITS image** | ~80 KB | Downscaled luminance for model training |
+| **Calibration JSON** | ~5 KB | Metadata matching existing schema |
+
+**Per-sample total**: ~85 KB (vs ~10 MB for full dev mode)
+
+**Local limit**: 500 samples (~42 MB) before auto-pause
+
+### Collected Fields (calibration JSON)
+
+Same schema as dev mode but with privacy-sensitive fields removed:
+- ✅ `camera` - Camera model name
+- ✅ `exposure`, `gain`, `bit_depth` - Camera settings
+- ✅ `stretch` - Luminance statistics (median, percentiles)
+- ✅ `corner_analysis` - Spatial brightness analysis
+- ✅ `time_context` - Time period (without GPS coordinates)
+- ✅ `moon_context` - Moon phase/visibility
+- ✅ `roof_state` - Ground truth from NINA (if available)
+- ✅ `weather_context` - Weather conditions (if available)
+- ❌ GPS coordinates - Removed for privacy
+- ❌ File paths - Removed for privacy
+- ❌ All-sky URLs - Removed for privacy
+
+### How to Contribute
+
+1. Go to **Settings** → scroll to **ML Data Contribution (Beta)**
+2. Enable "Enable Data Contribution"
+3. Let it collect while you use the app normally
+4. When you have samples, click **"Export for Upload"**
+5. Click **"Open Upload Form"** to open the Google Form
+6. Upload the ZIP file
+7. Click **"Clear Samples"** after successful upload
+
+### Upload Form
+
+**URL**: https://forms.gle/ZW5rEZC2eyQognDMA
+
+### Config Settings
+
+```json
+{
+  "ml_contribution": {
+    "enabled": false,
+    "min_interval_minutes": 30,
+    "max_samples": 500
+  }
+}
+```
+
 ## Directory Structure
 
 ```

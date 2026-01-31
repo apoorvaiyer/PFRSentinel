@@ -314,5 +314,83 @@ class DevModeDataSaver:
         }
 
 
+def collect_ml_contribution_sample(raw_array, metadata, config_getter):
+    """
+    Collect a sample for ML data contribution if enabled and due.
+    
+    This runs in production builds (unlike dev_mode which is dev-only).
+    Computes minimal required data and passes to ML data collector.
+    
+    Args:
+        raw_array: Raw image array (uint8 or uint16)
+        metadata: Image metadata dict
+        config_getter: Callable returning config dict
+    """
+    try:
+        # Import here to avoid circular import
+        from services.ml_data_collector import get_ml_collector
+        
+        collector = get_ml_collector()
+        if collector is None:
+            return
+        
+        # Quick check before doing expensive computation
+        should_collect, reason = collector.should_collect()
+        if not should_collect:
+            return
+        
+        # Compute luminance for the image
+        # Use same normalization logic as dev_mode
+        camera_bit_depth = metadata.get('CAMERA_BIT_DEPTH', 8)
+        image_bit_depth = metadata.get('IMAGE_BIT_DEPTH', 8)
+        
+        denom, _, _ = infer_normalization_denom(raw_array, image_bit_depth, camera_bit_depth)
+        norm_array = raw_array.astype(np.float32) / denom
+        lum = compute_luminance(norm_array)
+        
+        # Compute minimal calibration data (subset of full dev_mode)
+        corner_analysis = compute_corner_analysis(lum, norm_array)
+        time_ctx = compute_time_context()
+        moon_ctx = compute_moon_context()
+        
+        # Build calibration dict (matches schema for labeling tool compatibility)
+        calibration = {
+            'timestamp': datetime.now().isoformat(),
+            'camera': metadata.get('CAMERA', 'Unknown'),
+            'exposure': metadata.get('EXPOSURE', 'N/A'),
+            'gain': metadata.get('GAIN', 'N/A'),
+            'image_bit_depth': image_bit_depth,
+            'camera_bit_depth': camera_bit_depth,
+            'bayer_pattern': metadata.get('BAYER_PATTERN', 'BGGR'),
+            'stretch': {
+                'median_lum': round(float(np.median(lum)), 6),
+                'mean_lum': round(float(np.mean(lum)), 6),
+                'black_point': round(float(np.percentile(lum, 2)), 6),
+                'white_point': round(float(np.percentile(lum, 99.7)), 6),
+                'dynamic_range': round(float(np.percentile(lum, 99.7) - np.percentile(lum, 2)), 6),
+                'is_dark_scene': float(np.median(lum)) < 0.05,
+            },
+            'percentiles': {
+                'p1': round(float(np.percentile(lum, 1)), 6),
+                'p10': round(float(np.percentile(lum, 10)), 6),
+                'p50': round(float(np.percentile(lum, 50)), 6),
+                'p90': round(float(np.percentile(lum, 90)), 6),
+                'p99': round(float(np.percentile(lum, 99)), 6),
+            },
+            'corner_analysis': corner_analysis,
+            'time_context': time_ctx,
+            'moon_context': moon_ctx,
+            # Ground truth sources (may not be available)
+            'roof_state': fetch_roof_state(),
+            'weather_context': fetch_weather_context(),
+        }
+        
+        # Collect the sample
+        collector.collect_sample(lum, calibration, metadata)
+        
+    except Exception as e:
+        app_logger.debug(f"ML contribution collection skipped: {e}")
+
+
 # Singleton instance for use by ImageProcessorWorker
 dev_mode_saver = DevModeDataSaver()

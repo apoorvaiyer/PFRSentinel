@@ -24,6 +24,8 @@ from app_config import APP_DISPLAY_NAME, APP_SUBTITLE, APP_AUTHOR
 from services.config import Config
 from services.logger import app_logger
 from services.web_output import WebOutputServer
+from services.ml_data_collector import init_ml_collector
+from services.update_checker import get_update_checker, UpdateInfo
 from version import __version__
 
 from .theme import apply_theme, get_stylesheet
@@ -82,6 +84,9 @@ class MainWindow(QMainWindow):
         # Initialize weather service from config
         self._init_weather_service()
         
+        # Initialize ML data collector for contribution feature
+        init_ml_collector(lambda: self.config.data)
+        
         # Image processor (background thread for processing)
         self.image_processor = ImageProcessor(self)
         self.image_processor.set_main_window(self)
@@ -99,6 +104,9 @@ class MainWindow(QMainWindow):
         
         # Start periodic updates
         self._start_timers()
+        
+        # Initialize update checker (checks 24h after startup to be rate-limit friendly)
+        self._init_update_checker()
         
         # Load config into UI panels
         self.load_config()
@@ -450,6 +458,83 @@ class MainWindow(QMainWindow):
         self.log_timer.timeout.connect(self._poll_logs)
         self.log_timer.start(250)  # 250ms for responsive logs
     
+    def _init_update_checker(self):
+        """Initialize the update checker with automatic checks."""
+        self.update_checker = get_update_checker(on_update_available=self._on_update_available)
+        
+        # Check on startup after a short delay (respects 24h cache to avoid API spam)
+        # This will only hit the API if it's been >24h since last check
+        QTimer.singleShot(3000, self._do_startup_update_check)
+        
+        # Also start the background delayed check for users who leave app running
+        self.update_checker.start_delayed_check(delay_hours=24.0)
+        app_logger.debug("Update checker initialized")
+    
+    def _do_startup_update_check(self):
+        """Perform startup update check and handle result."""
+        result = self.update_checker.check_for_update(force=False)
+        # If update found, the callback _on_update_available will be triggered
+        # by check_for_update internally, so we don't need to do anything here
+    
+    def _on_update_available(self, update_info: UpdateInfo):
+        """Callback when update is available - show dialog on main thread."""
+        # Use QTimer to show dialog and set badge on main thread
+        QTimer.singleShot(0, lambda: self._handle_update_available(update_info))
+    
+    def _handle_update_available(self, update_info: UpdateInfo):
+        """Handle update available (must be called on main thread)."""
+        # Show badge on Settings nav button
+        if hasattr(self, 'nav_rail'):
+            self.nav_rail.set_badge('settings', True, "!")
+        
+        # Show the dialog
+        self._show_update_dialog(update_info)
+    
+    def _show_update_dialog(self, update_info: UpdateInfo):
+        """Show update dialog (must be called on main thread)."""
+        from .dialogs.update_dialog import show_update_dialog
+        
+        # If window is hidden (tray mode), show tray notification first
+        if not self.isVisible() and self.system_tray:
+            try:
+                from PySide6.QtWidgets import QSystemTrayIcon
+                if hasattr(self.system_tray, 'tray_icon') and self.system_tray.tray_icon:
+                    self.system_tray.tray_icon.showMessage(
+                        "Update Available",
+                        f"PFR Sentinel v{update_info.latest_version} is available",
+                        QSystemTrayIcon.Information,
+                        5000
+                    )
+            except:
+                pass
+        
+        # Show the dialog (will also make window visible if needed)
+        if not self.isVisible():
+            self.show()
+            self.activateWindow()
+        
+        show_update_dialog(self, update_info)
+    
+    def check_for_updates_now(self):
+        """Manually trigger an update check (for settings panel button)."""
+        if hasattr(self, 'update_checker'):
+            result = self.update_checker.check_for_update(force=True)
+            if result is None:
+                # No update available - show info bar
+                from qfluentwidgets import InfoBar, InfoBarPosition
+                InfoBar.success(
+                    title="Up to Date",
+                    content=f"You're running the latest version (v{__version__})",
+                    parent=self,
+                    position=InfoBarPosition.TOP_RIGHT,
+                    duration=3000
+                )
+            else:
+                # Update found - badge is set in _handle_update_available via callback
+                # but also set it here in case callback didn't fire
+                if hasattr(self, 'nav_rail'):
+                    self.nav_rail.set_badge('settings', True, "!")
+    
     # =========================================================================
     # UI STATE MANAGEMENT
     # =========================================================================
@@ -537,6 +622,10 @@ class MainWindow(QMainWindow):
         }
         
         index = section_map.get(section, 0)
+        
+        # Clear badge when navigating to settings (user has seen the update)
+        if section == 'settings':
+            self.nav_rail.set_badge('settings', False)
         
         if index == -1:
             # Live Monitoring: hide the inspector panel, show live panel (preview only)
@@ -1230,6 +1319,10 @@ class MainWindow(QMainWindow):
             self.status_timer.stop()
         if hasattr(self, 'log_timer') and self.log_timer:
             self.log_timer.stop()
+        
+        # Stop update checker
+        if hasattr(self, 'update_checker') and self.update_checker:
+            self.update_checker.stop()
         
         # Save geometry
         geo = f"{self.width()}x{self.height()}"
