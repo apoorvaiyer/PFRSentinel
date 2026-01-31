@@ -337,7 +337,10 @@ def collect_ml_contribution_sample(raw_array, metadata, config_getter):
         # Quick check before doing expensive computation
         should_collect, reason = collector.should_collect()
         if not should_collect:
+            app_logger.debug(f"ML Contribution: Skip - {reason}")
             return
+        
+        app_logger.debug("ML Contribution: Preparing sample...")
         
         # Compute luminance for the image
         # Use same normalization logic as dev_mode

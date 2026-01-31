@@ -135,7 +135,9 @@ class ImageProcessorWorker(QThread):
             
             # === ML CONTRIBUTION: Collect sample if enabled (works in production) ===
             ml_contrib_config = config.get('ml_contribution', {})
-            if ml_contrib_config.get('enabled', False):
+            ml_enabled = ml_contrib_config.get('enabled', False)
+            app_logger.debug(f"ML Contribution check: enabled={ml_enabled}")
+            if ml_enabled:
                 collect_ml_contribution_sample(raw_array, metadata, lambda: config)
             
             # Get auto-exposure settings for histogram display

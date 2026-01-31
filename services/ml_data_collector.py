@@ -24,15 +24,18 @@ from utils_paths import get_ml_contribution_dir
 try:
     from astropy.io import fits
     ASTROPY_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     ASTROPY_AVAILABLE = False
+    # Log at module level - will show at startup
+    import logging
+    logging.getLogger(__name__).debug(f"astropy not available: {e}")
 
 
 # Google Form URL for data submission
 UPLOAD_FORM_URL = "https://forms.gle/ZW5rEZC2eyQognDMA"
 
 # Collection settings
-DEFAULT_MIN_INTERVAL_MINUTES = 30
+DEFAULT_MIN_INTERVAL_MINUTES = 5  # TODO: Change back to 30 after testing
 DEFAULT_MAX_SAMPLES = 500
 TARGET_IMAGE_SIZE = 256  # Downscale to 256x256 for both roof (128) and sky (256) models
 
