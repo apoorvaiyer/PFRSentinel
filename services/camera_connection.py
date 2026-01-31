@@ -5,6 +5,7 @@ Handles SDK initialization, camera detection, connection/reconnection, and confi
 This module is used internally by ZWOCamera - do not import directly.
 """
 import os
+import sys
 import time
 import threading
 from typing import Optional, List, Dict, Callable, Any
@@ -56,6 +57,11 @@ class CameraConnection:
         
         # Callback for persisting camera name to config
         self.config_callback: Optional[Callable[[str, Any], None]] = None
+        
+        # USB reset capability (Windows only)
+        self._usb_reset_available = False
+        self._usb_reset_func = None
+        self._init_usb_reset()
     
     def log(self, message: str) -> None:
         """Log message via callback or print"""
@@ -63,6 +69,24 @@ class CameraConnection:
             self._logger(message)
         else:
             print(message)
+    
+    def _init_usb_reset(self) -> None:
+        """Initialize USB reset capability (Windows only)"""
+        if sys.platform != 'win32':
+            return  # USB reset only supported on Windows
+        
+        try:
+            from .usb_reset_win import reset_zwo_camera_usb, is_usb_reset_available
+            if is_usb_reset_available():
+                self._usb_reset_available = True
+                self._usb_reset_func = reset_zwo_camera_usb
+                self.log("✓ USB reset capability available")
+            else:
+                self.log("⚠ USB reset not available (Windows API load failed)")
+        except ImportError as e:
+            self.log(f"⚠ USB reset module not available: {e}")
+        except Exception as e:
+            self.log(f"⚠ Error initializing USB reset: {e}")
     
     # =========================================================================
     # SDK Initialization
@@ -401,17 +425,38 @@ class CameraConnection:
         else:
             self.log("No target camera name specified - will use first available")
         
-        # Detect cameras (with SDK reset fallback)
+        # Detect cameras (with USB reset + SDK reset fallback)
         detected = self.detect_cameras()
         if not detected:
-            self.log("✗ No cameras detected, attempting SDK reset...")
+            self.log("✗ No cameras detected, attempting recovery...")
+            
+            # Step 1: Try USB device reset (Windows only)
+            if self._usb_reset_available and camera_to_find:
+                self.log("Attempting USB device reset...")
+                try:
+                    if self._usb_reset_func(camera_name=camera_to_find, logger=self.log):
+                        self.log("✓ USB reset completed, re-detecting cameras...")
+                        # Give device time to re-enumerate
+                        time.sleep(2)
+                    else:
+                        self.log("⚠ USB reset failed or not applicable")
+                except Exception as e:
+                    self.log(f"⚠ USB reset error: {e}")
+            
+            # Step 2: Try SDK reset
+            self.log("Attempting SDK reset...")
             self.asi = None
             if not self.initialize_sdk():
                 return False
+            
+            # Re-detect after reset attempts
             detected = self.detect_cameras()
             if not detected:
-                self.log("✗ No cameras detected even after SDK reset")
+                self.log("✗ No cameras detected even after USB + SDK reset")
+                self.log("⚠ Camera may require physical disconnect/reconnect")
                 return False
+            else:
+                self.log(f"✓ Cameras detected after reset: {len(detected)} found")
         
         # Find target camera - strict matching for reconnection
         if camera_to_find:
@@ -633,8 +678,21 @@ class CameraConnection:
                     self.log("Closing camera connection...")
                     self.camera.close()
                     self.log("✓ Camera disconnected successfully")
+                    
+                    # IMPORTANT: Add delay after close to ensure SDK fully releases USB device
+                    # Without this, rapid reconnection attempts can find device in bad state
+                    time.sleep(0.5)
+                    
                 except Exception as e:
                     self.log(f"⚠ Warning during camera close: {e}")
+                    # If close fails, the device may be in a bad state
+                    # Consider USB reset as recovery option (Windows only)
+                    if self._usb_reset_available and self.camera_name:
+                        self.log("  Attempting USB reset due to close failure...")
+                        try:
+                            self._usb_reset_func(camera_name=self.camera_name, logger=self.log)
+                        except Exception as usb_err:
+                            self.log(f"  USB reset error: {usb_err}")
                     
             except Exception as e:
                 self.log(f"✗ ERROR during camera disconnect: {e}")

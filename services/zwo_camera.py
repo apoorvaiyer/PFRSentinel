@@ -31,6 +31,10 @@ class ZWOCamera:
                  scheduled_capture_enabled=False, scheduled_start_time="17:00",
                  scheduled_end_time="09:00", status_callback=None, camera_name=None,
                  config_callback=None):
+        # Initialize log callback FIRST (before CameraConnection uses self.log)
+        self.on_log_callback = None
+        self.on_frame_callback = None
+        
         # Initialize connection manager (delegates SDK/connection logic)
         self._connection = CameraConnection(sdk_path=sdk_path, logger=self.log)
         self._connection.config_callback = config_callback
@@ -46,8 +50,6 @@ class ZWOCamera:
         # Capture state
         self.is_capturing = False
         self.capture_thread = None
-        self.on_frame_callback = None
-        self.on_log_callback = None
         self.status_callback = status_callback  # Callback for schedule status updates
         
         # Capture settings
@@ -726,7 +728,16 @@ class ZWOCamera:
                         self.log(f"✗ CRITICAL: Maximum reconnection attempts ({max_reconnect_attempts}) reached")
                         self.log("Camera appears to be disconnected or unresponsive")
                         self.log("Stopping capture loop. Manual intervention required.")
-                        self.log("Troubleshooting: 1) Check USB cable, 2) Check camera power, 3) Check USB drivers, 4) Restart application")
+                        self.log("")
+                        self.log("Troubleshooting steps:")
+                        self.log("  1. Check USB cable connection")
+                        self.log("  2. Check camera power supply")
+                        self.log("  3. Try: Physically disconnect USB, wait 5 seconds, reconnect")
+                        self.log("  4. Check Windows Device Manager for USB errors")
+                        self.log("  5. Restart application (automatic USB reset will be attempted)")
+                        self.log("  6. If persistent: Update ZWO drivers from astronomy-imaging-camera.com")
+                        self.log("")
+                        self.log("Note: Camera may be stuck in bad USB state requiring physical disconnect.")
                         self.is_capturing = False
                         # Notify via callback that capture failed
                         if hasattr(self, 'on_error_callback') and self.on_error_callback:

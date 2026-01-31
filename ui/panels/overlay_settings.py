@@ -330,6 +330,7 @@ class OverlaySettingsPanel(QWidget):
         color = overlay.get('color', 'white')
         bg_enabled = overlay.get('bg_enabled', False)
         bg_color = overlay.get('bg_color', 'transparent')
+        alignment = overlay.get('alignment', 'left')  # 'left', 'center', 'right'
         
         # Replace tokens with sample values
         sample_text = self._substitute_tokens(text)
@@ -353,7 +354,8 @@ class OverlaySettingsPanel(QWidget):
         # Calculate text bounds
         metrics = painter.fontMetrics()
         lines = sample_text.split('\n')
-        text_width = max(metrics.horizontalAdvance(line) for line in lines) if lines else 0
+        line_widths = [metrics.horizontalAdvance(line) for line in lines]
+        text_width = max(line_widths) if line_widths else 0
         line_height = metrics.height()
         text_height = line_height * len(lines)
         
@@ -362,13 +364,13 @@ class OverlaySettingsPanel(QWidget):
         scaled_offset_y = int(offset_y * scale)
         margin = int(10 * scale)
         
-        # Calculate position based on anchor
+        # Calculate base position based on anchor (for the text block)
         if 'Left' in anchor:
-            x = margin + scaled_offset_x
+            base_x = margin + scaled_offset_x
         elif 'Right' in anchor:
-            x = width - text_width - margin - scaled_offset_x
+            base_x = width - text_width - margin - scaled_offset_x
         else:  # Center
-            x = (width - text_width) // 2 + scaled_offset_x
+            base_x = (width - text_width) // 2 + scaled_offset_x
         
         if 'Top' in anchor:
             y = margin + line_height + scaled_offset_y
@@ -383,15 +385,23 @@ class OverlaySettingsPanel(QWidget):
             bg_qcolor.setAlpha(180)
             padding = int(5 * scale)
             painter.fillRect(
-                int(x - padding), int(y - line_height - padding//2),
+                int(base_x - padding), int(y - line_height - padding//2),
                 int(text_width + padding*2), int(text_height + padding),
                 bg_qcolor
             )
         
-        # Draw text
+        # Draw text with per-line alignment
         painter.setPen(QColor(color))
         for i, line in enumerate(lines):
-            painter.drawText(int(x), int(y + i * line_height), line)
+            line_width = line_widths[i]
+            # Calculate x position based on alignment within the text block
+            if alignment == 'center':
+                line_x = base_x + (text_width - line_width) // 2
+            elif alignment == 'right':
+                line_x = base_x + (text_width - line_width)
+            else:  # left (default)
+                line_x = base_x
+            painter.drawText(int(line_x), int(y + i * line_height), line)
     
     def _render_image_overlay(self, painter: QPainter, overlay: dict, width: int, height: int):
         """Render image overlay"""

@@ -918,6 +918,11 @@ class MainWindow(QMainWindow):
         # Update status chips based on new settings
         self._update_service_status()
         
+        # Live update camera settings if capturing (e.g., target brightness, auto-exposure)
+        # This allows changes to take effect on the next exposure without stop/start
+        if self.is_capturing and self.camera_controller:
+            self.camera_controller.update_settings()
+        
         self.config_changed.emit()
     
     def _on_raw16_mode_changed(self, enabled: bool):
