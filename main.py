@@ -29,6 +29,24 @@ from version import __version__
 from app_config import APP_DISPLAY_NAME, APP_SUBTITLE
 
 
+def _check_admin_privileges():
+    """Check if running with Administrator privileges and log appropriately."""
+    try:
+        import ctypes
+        is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        is_admin = False
+    
+    if is_admin:
+        app_logger.info("Running with Administrator privileges")
+    else:
+        app_logger.warning(
+            "Not running as Administrator - USB device disable/enable recovery "
+            "will not be available. To enable full camera recovery, run as Administrator."
+        )
+    return is_admin
+
+
 def main():
     """Launch PFR Sentinel with PySide6 Fluent UI"""
     
@@ -89,9 +107,11 @@ def main():
     QApplication.processEvents()  # Force splash to render immediately
     
     app_logger.info(f"Starting {APP_DISPLAY_NAME} v{__version__} (PySide6 UI)")
+    is_admin = _check_admin_privileges()
     
     # Create main window (this takes time - splash stays visible)
     window = MainWindow()
+    window._is_admin = is_admin  # Pass admin status to window for UI notifications
     QApplication.processEvents()
     
     # Check if tray mode should be enabled (from config or --tray argument)
@@ -134,6 +154,31 @@ def main():
         # Auto-stop after timeout if specified
         if args.auto_stop and args.auto_stop > 0:
             QTimer.singleShot(args.auto_stop * 1000, lambda: window.stop_capture())
+    
+    # Show admin privilege warning after UI is fully visible (one-time)
+    if not is_admin:
+        def _show_admin_warning():
+            if not window.config.get('admin_warning_dismissed', False):
+                try:
+                    from qfluentwidgets import InfoBar, InfoBarPosition
+                    InfoBar.warning(
+                        title="Not running as Administrator",
+                        content=(
+                            "USB camera recovery (disable/enable) requires admin privileges. "
+                            "Right-click the app shortcut > Properties > Compatibility > "
+                            "'Run as administrator' to enable."
+                        ),
+                        orient=Qt.Horizontal,
+                        isClosable=True,
+                        position=InfoBarPosition.TOP,
+                        duration=15000,
+                        parent=window
+                    )
+                    window.config.set('admin_warning_dismissed', True)
+                    window.config.save()
+                except Exception:
+                    pass
+        QTimer.singleShot(3000, _show_admin_warning)
     
     # Run event loop
     sys.exit(app.exec())

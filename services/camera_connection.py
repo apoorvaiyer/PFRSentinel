@@ -61,6 +61,7 @@ class CameraConnection:
         # USB reset capability (Windows only)
         self._usb_reset_available = False
         self._usb_reset_func = None
+        self._usb_disable_enable_func = None
         self._init_usb_reset()
     
     def log(self, message: str) -> None:
@@ -76,17 +77,30 @@ class CameraConnection:
             return  # USB reset only supported on Windows
         
         try:
-            from .usb_reset_win import reset_zwo_camera_usb, is_usb_reset_available
+            from .usb_reset_win import (
+                reset_zwo_camera_usb, disable_enable_zwo_camera_usb,
+                is_usb_reset_available
+            )
             if is_usb_reset_available():
                 self._usb_reset_available = True
                 self._usb_reset_func = reset_zwo_camera_usb
-                self.log("✓ USB reset capability available")
+                self._usb_disable_enable_func = disable_enable_zwo_camera_usb
+                self.log("\u2713 USB reset capability available (includes disable/enable)")
             else:
                 self.log("⚠ USB reset not available (Windows API load failed)")
         except ImportError as e:
             self.log(f"⚠ USB reset module not available: {e}")
         except Exception as e:
             self.log(f"⚠ Error initializing USB reset: {e}")
+    
+    @staticmethod
+    def _is_running_as_admin() -> bool:
+        """Check if the current process has Administrator privileges."""
+        try:
+            import ctypes
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return False
     
     # =========================================================================
     # SDK Initialization
@@ -452,9 +466,36 @@ class CameraConnection:
             # Re-detect after reset attempts
             detected = self.detect_cameras()
             if not detected:
-                self.log("✗ No cameras detected even after USB + SDK reset")
-                self.log("⚠ Camera may require physical disconnect/reconnect")
-                return False
+                # Step 3: Try aggressive USB disable/enable (Device Manager style)
+                # This mimics manually disabling the device in Device Manager,
+                # waiting ~15 seconds, then re-enabling it. Requires admin privileges.
+                if self._usb_disable_enable_func and camera_to_find:
+                    self.log("Attempting USB device disable/enable (Device Manager reset)...")
+                    self.log("This replicates: Device Manager > Disable > Wait 15s > Enable")
+                    try:
+                        if self._usb_disable_enable_func(
+                            camera_name=camera_to_find,
+                            disable_seconds=15,
+                            logger=self.log
+                        ):
+                            self.log("\u2713 USB disable/enable completed, reinitializing SDK...")
+                            self.asi = None
+                            if self.initialize_sdk():
+                                detected = self.detect_cameras()
+                                if detected:
+                                    self.log(f"\u2713 Camera recovered via disable/enable: {len(detected)} found")
+                        else:
+                            self.log("\u26a0 USB disable/enable failed or not applicable")
+                    except Exception as e:
+                        self.log(f"\u26a0 USB disable/enable error: {e}")
+                
+                if not detected:
+                    self.log("\u2717 No cameras detected even after all recovery attempts")
+                    if self._usb_disable_enable_func and not self._is_running_as_admin():
+                        self.log("\u26a0 USB disable/enable was skipped because app is not running as Administrator")
+                        self.log("  To enable full recovery: right-click app shortcut > Properties > Compatibility > 'Run as administrator'")
+                    self.log("\u26a0 Camera may require physical disconnect/reconnect")
+                    return False
             else:
                 self.log(f"✓ Cameras detected after reset: {len(detected)} found")
         

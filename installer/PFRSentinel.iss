@@ -44,6 +44,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "runadmin"; Description: "Run as Administrator (recommended for USB camera recovery)"; GroupDescription: "Privileges:"; Flags: unchecked
 
 [Files]
 ; Source files from PyInstaller build
@@ -56,6 +57,11 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 ; Desktop shortcut (optional, user-selectable)
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Registry]
+; If user selected "Run as Administrator", set Windows compatibility flag
+; This makes the EXE always prompt for UAC elevation (same as right-click > Properties > Compatibility > Run as administrator)
+Root: HKCU; Subkey: "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"; ValueType: string; ValueName: "{app}\{#MyAppExeName}"; ValueData: "RUNASADMIN"; Flags: uninsdeletevalue; Tasks: runadmin
 
 [Run]
 ; Option to launch application after install
