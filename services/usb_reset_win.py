@@ -29,6 +29,7 @@ ERROR_NO_MORE_ITEMS = 259
 # Device restart/eject constants  
 CR_SUCCESS = 0x00000000
 CM_LOCATE_DEVNODE_NORMAL = 0x00000000
+CM_LOCATE_DEVNODE_PHANTOM = 0x00000001  # Find disabled/phantom device nodes
 CM_REENUMERATE_NORMAL = 0x00000000
 
 # ZWO Camera USB identifiers
@@ -73,14 +74,14 @@ except Exception:
 
 def reset_zwo_camera_usb(camera_name: Optional[str] = None, logger=None) -> bool:
     """
-    Reset USB connection for ZWO camera by requesting device re-enumeration.
+    Reset USB connection for a specific ZWO camera by requesting device re-enumeration.
     
     This forces Windows to reload the USB driver, which can recover cameras
     stuck in bad states after exposure failures.
     
     Args:
-        camera_name: Optional camera name (e.g., "ZWO ASI676MC") for targeted reset.
-                    If None, resets ALL ZWO cameras.
+        camera_name: Camera name (e.g., "ZWO ASI676MC") to target.
+                    REQUIRED to prevent accidentally resetting other cameras.
         logger: Optional logger callback function
         
     Returns:
@@ -101,7 +102,12 @@ def reset_zwo_camera_usb(camera_name: Optional[str] = None, logger=None) -> bool
         log("⚠ Windows API not available - USB reset not supported on this system")
         return False
     
-    log("=== Attempting USB Device Reset ===")
+    if not camera_name:
+        log("⚠ No camera name specified - refusing to reset ALL ZWO devices")
+        log("  A specific camera name is required to avoid disrupting other cameras")
+        return False
+    
+    log(f"=== Attempting USB Device Reset for: {camera_name} ===")
     
     try:
         # Try to use SDK to get actual camera list first
@@ -137,22 +143,21 @@ def reset_zwo_camera_usb(camera_name: Optional[str] = None, logger=None) -> bool
             log("✗ No ZWO USB devices found in Device Manager")
             return False
         
-        # Filter by camera name if provided
-        if camera_name:
-            model = camera_name.replace("ZWO ", "").strip()
-            log(f"Looking for specific camera: {model}")
-            matched = [d for d in zwo_devices if model.upper() in d['description'].upper()]
-            
-            if not matched:
-                log(f"✗ Camera '{model}' not found in USB device list")
-                log(f"Available cameras: {', '.join(d['description'] for d in zwo_devices)}")
-                return False
-            
-            devices_to_reset = matched
-            log(f"Found {len(matched)} matching device(s)")
-        else:
-            devices_to_reset = zwo_devices
-            log(f"⚠ No camera name specified - resetting ALL {len(zwo_devices)} ZWO devices")
+        # Filter to only the target camera
+        model = camera_name.replace("ZWO ", "").strip()
+        log(f"Looking for specific camera: {model}")
+        matched = [d for d in zwo_devices if model.upper() in d['description'].upper()]
+        
+        if not matched:
+            log(f"✗ Camera '{model}' not found in USB device list")
+            log(f"Available cameras: {', '.join(d['description'] for d in zwo_devices)}")
+            return False
+        
+        devices_to_reset = matched
+        skipped = [d for d in zwo_devices if d not in matched]
+        log(f"Target: {', '.join(d['description'] for d in matched)}")
+        if skipped:
+            log(f"Leaving alone: {', '.join(d['description'] for d in skipped)}")
         
         # Reset each device
         success_count = 0
@@ -181,31 +186,11 @@ def reset_zwo_camera_usb(camera_name: Optional[str] = None, logger=None) -> bool
         return False
 
 
-def _reset_device_by_description(description: str, logger=None) -> bool:
-    """
-    Find and reset a device by its description string.
-    
-    Uses CM_Locate_DevNode to find device by name, which is more reliable
-    than enumerating all devices.
-    """
-    def log(msg):
-        if logger:
-            logger(msg)
-    
+def _is_admin() -> bool:
+    """Check if current process has Administrator privileges."""
     try:
-        # Create a device instance string from description
-        # Format: "USB\VID_03C3&PID_XXXX\SerialNumber" or search by friendly name
-        
-        # Method: Use CM_Enumerate_Classes and CM_Get_Device_ID_List
-        # to search for devices with matching description
-        
-        # This is complex - for now, return False and use the full enumeration
-        # TODO: Implement more efficient CM API-based search
-        return False
-        
-    except Exception as e:
-        if log:
-            log(f"Error in device search: {e}")
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
         return False
 
 
@@ -399,6 +384,138 @@ def _reset_device(devinst: int, logger=None) -> bool:
         return False
 
 
+def disable_enable_zwo_camera_usb(camera_name: str,
+                                   disable_seconds: int = 15,
+                                   logger=None) -> bool:
+    """
+    Disable and re-enable a SPECIFIC ZWO camera USB device via Windows Device Manager API.
+
+    Mimics the manual process of:
+      1. Device Manager -> Right-click device -> Disable device
+      2. Wait N seconds (allows USB hardware state to fully reset)
+      3. Device Manager -> Right-click device -> Enable device
+
+    This is more aggressive than CM_Reenumerate_DevNode and can recover cameras
+    stuck in a bad USB state that persists across soft resets and SDK reinit.
+
+    IMPORTANT: Only affects the specific camera identified by camera_name.
+    Other ZWO devices (guide cameras, etc.) are left untouched.
+
+    Args:
+        camera_name: Camera name to target (e.g. "ZWO ASI676MC"). REQUIRED.
+        disable_seconds: Seconds to keep device disabled (default 15, matches manual fix).
+        logger: Logging callback.
+
+    Returns:
+        True if disable/enable cycle completed, False otherwise.
+
+    Note:
+        Requires Administrator privileges.
+    """
+    def log(msg):
+        if logger:
+            logger(msg)
+        else:
+            print(msg)
+
+    if not WINDOWS_API_AVAILABLE:
+        log("\u26a0 Windows API not available - USB disable/enable not supported")
+        return False
+
+    if not camera_name:
+        log("\u26a0 No camera name specified - refusing to disable/enable ALL ZWO devices")
+        log("  A specific camera name is required to avoid disrupting other cameras")
+        return False
+
+    if not _is_admin():
+        log("\u26a0 Administrator privileges required for device disable/enable")
+        log("  Run the application as Administrator to enable this recovery method")
+        return False
+
+    log("=== USB Device Disable/Enable (Device Manager Reset) ===")
+    log(f"Target camera: {camera_name}")
+    log(f"Disable duration: {disable_seconds} seconds")
+
+    all_devices = _find_zwo_usb_devices(logger=logger)
+    if not all_devices:
+        log("\u2717 No ZWO USB devices found in Device Manager")
+        return False
+
+    # Filter to ONLY the target camera - never touch other devices
+    model = camera_name.replace("ZWO ", "").strip()
+    log(f"Looking for camera matching: {model}")
+    devices = [d for d in all_devices if model.upper() in d['description'].upper()]
+    skipped = [d for d in all_devices if d not in devices]
+    if not devices:
+        log(f"\u2717 No device matching '{model}' found")
+        log(f"  Available: {', '.join(d['description'] for d in all_devices)}")
+        return False
+    if skipped:
+        log(f"Leaving untouched: {', '.join(d['description'] for d in skipped)}")
+
+    success = False
+    for device in devices:
+        devinst = device['devinst']
+        device_id = device['hardware_id']
+        desc = device['description']
+
+        log(f"Disabling: {desc}")
+        log(f"  Device ID: {device_id}")
+
+        # Step 1: Disable the device
+        result = cfgmgr32.CM_Disable_DevNode(devinst, 0)
+        if result != CR_SUCCESS:
+            log(f"  \u2717 CM_Disable_DevNode failed: 0x{result:08X}")
+            log("  This requires Administrator privileges")
+            continue
+
+        log("  \u2713 Device disabled")
+        log(f"  Waiting {disable_seconds} seconds for USB state to fully clear...")
+        time.sleep(disable_seconds)
+
+        # Step 2: Re-locate device node (device is phantom/disabled now)
+        new_devinst = wintypes.DWORD(0)
+        result = cfgmgr32.CM_Locate_DevNodeW(
+            ctypes.byref(new_devinst),
+            ctypes.c_wchar_p(device_id),
+            CM_LOCATE_DEVNODE_PHANTOM
+        )
+        if result != CR_SUCCESS:
+            log(f"  \u2717 Could not re-locate disabled device: 0x{result:08X}")
+            log("  \u26a0 DEVICE MAY STAY DISABLED - check Device Manager!")
+            continue
+
+        # Step 3: Re-enable with retry
+        max_enable_retries = 3
+        enabled = False
+        for retry in range(max_enable_retries):
+            log(f"  Re-enabling device (attempt {retry + 1}/{max_enable_retries})...")
+            result = cfgmgr32.CM_Enable_DevNode(new_devinst.value, 0)
+            if result == CR_SUCCESS:
+                log(f"  \u2713 Device re-enabled successfully")
+                enabled = True
+                break
+            else:
+                log(f"  \u2717 CM_Enable_DevNode failed: 0x{result:08X}")
+                if retry < max_enable_retries - 1:
+                    time.sleep(2)
+
+        if not enabled:
+            log(f"  \u26a0 FAILED to re-enable {desc} - manually enable in Device Manager!")
+            continue
+
+        success = True
+
+    if success:
+        log("Waiting 3 seconds for driver initialization...")
+        time.sleep(3)
+        log("\u2713 USB disable/enable cycle complete")
+    else:
+        log("\u2717 USB disable/enable failed for all devices")
+
+    return success
+
+
 def is_usb_reset_available() -> bool:
     """
     Check if USB reset functionality is available on this system.
@@ -432,15 +549,50 @@ if __name__ == "__main__":
         print(f"  [{i}] {dev['description']}")
         print(f"      HW ID: {dev['hardware_id']}")
     
-    # Ask user if they want to test reset
-    print("\n⚠ WARNING: Testing reset will temporarily disconnect cameras!")
-    response = input("Proceed with test reset? [y/N]: ").strip().lower()
+    # Let user pick which camera to target
+    if len(devices) == 1:
+        target_idx = 0
+        print(f"\nOnly one camera found, targeting: {devices[0]['description']}")
+    else:
+        print(f"\nWhich camera to reset? (0-{len(devices)-1})")
+        try:
+            target_idx = int(input("Camera number: ").strip())
+            if target_idx < 0 or target_idx >= len(devices):
+                print("Invalid selection")
+                exit(1)
+        except (ValueError, EOFError):
+            print("Invalid selection")
+            exit(1)
     
-    if response == 'y':
-        print("\nAttempting reset...")
-        if reset_zwo_camera_usb(logger=print):
-            print("\n✓ Reset test completed")
+    target_name = devices[target_idx]['description']
+    other_names = [d['description'] for i, d in enumerate(devices) if i != target_idx]
+    print(f"\nTarget:     {target_name}")
+    if other_names:
+        print(f"Untouched:  {', '.join(other_names)}")
+    
+    # Choose reset method
+    print("\n⚠ WARNING: This will temporarily disconnect the selected camera!")
+    print("Options:")
+    print("  1. Soft reset (CM_Reenumerate_DevNode - quick, ~3 seconds)")
+    print("  2. Device Manager reset (Disable/Enable - ~20 seconds)")
+    print("  N. Cancel")
+    response = input("Choose [1/2/N]: ").strip().lower()
+    
+    if response == '1':
+        print(f"\nSoft-resetting only: {target_name}")
+        if reset_zwo_camera_usb(camera_name=target_name, logger=print):
+            print("\n✓ Soft reset completed")
         else:
-            print("\n✗ Reset test failed")
+            print("\n✗ Soft reset failed")
+    elif response == '2':
+        if not _is_admin():
+            print("\n✗ Administrator privileges required for disable/enable")
+            print("  Re-run this script as Administrator")
+        else:
+            print(f"\nDisable/enable only: {target_name} (15 second wait)")
+            if disable_enable_zwo_camera_usb(camera_name=target_name, logger=print):
+                print("\n✓ Device Manager reset completed")
+            else:
+                print("\n✗ Device Manager reset failed")
     else:
         print("\nTest cancelled")
