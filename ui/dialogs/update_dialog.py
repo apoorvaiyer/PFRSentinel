@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QThread
 from qfluentwidgets import (
     MessageBoxBase, SubtitleLabel, BodyLabel, CaptionLabel,
-    PrimaryPushButton, PushButton, FluentIcon, InfoBar, InfoBarPosition
+    PrimaryPushButton, PushButton, FluentIcon
 )
 
 from ..theme.tokens import Colors, Spacing
@@ -52,6 +52,7 @@ class UpdateDialog(MessageBoxBase):
         super().__init__(parent)
         self.update_info = update_info
         self._download_thread = None
+        self._downloaded_path = None  # Path to downloaded installer
         
         # Hide default OK/Cancel buttons - we have our own
         self.yesButton.hide()
@@ -175,25 +176,63 @@ class UpdateDialog(MessageBoxBase):
         self._download_thread = None
         
         if result:
+            self._downloaded_path = result
             self.progress_bar.setValue(100)
             self.status_label.setText(f"✅ Downloaded to: {result}")
             self.status_label.setStyleSheet(f"color: {Colors.status_ok};")
-            self.download_btn.setText("Download Complete")
             
-            # Show info about running installer
-            InfoBar.success(
-                title="Download Complete",
-                content=f"Installer saved to Downloads folder. Run it to update.",
-                parent=self.parent(),
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=5000
-            )
+            # Re-enable button as "Run Installer" so user can proceed
+            self.download_btn.setEnabled(True)
+            self.download_btn.setText("Run Installer")
+            self.download_btn.setIcon(FluentIcon.PLAY)
+            # Disconnect old handler and connect new one
+            try:
+                self.download_btn.clicked.disconnect()
+            except RuntimeError:
+                pass
+            self.download_btn.clicked.connect(self._on_run_installer)
         else:
             self.progress_bar.setVisible(False)
             self.status_label.setText("❌ Download failed - try View on GitHub")
             self.status_label.setStyleSheet(f"color: {Colors.status_error};")
             self.download_btn.setEnabled(True)
             self.download_btn.setText("Retry Download")
+    
+    def _on_run_installer(self):
+        """Launch the downloaded installer and close the app."""
+        import os
+        import subprocess
+        from services.logger import app_logger
+        
+        if not self._downloaded_path or not os.path.exists(self._downloaded_path):
+            self.status_label.setText("❌ Installer file not found")
+            self.status_label.setStyleSheet(f"color: {Colors.status_error};")
+            return
+        
+        app_logger.info(f"Launching installer: {self._downloaded_path}")
+        
+        try:
+            # Launch installer detached from this process
+            subprocess.Popen(
+                [str(self._downloaded_path)],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+            
+            # Close the dialog and quit the application so installer can proceed
+            self.accept()
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app:
+                app.quit()
+        except Exception as e:
+            app_logger.error(f"Failed to launch installer: {e}")
+            self.status_label.setText(f"❌ Failed to launch: {e}")
+            self.status_label.setStyleSheet(f"color: {Colors.status_error};")
+            # Fallback: open the containing folder
+            try:
+                os.startfile(os.path.dirname(str(self._downloaded_path)))
+            except Exception:
+                pass
     
     def _on_view_github(self):
         """Open releases page in browser."""
