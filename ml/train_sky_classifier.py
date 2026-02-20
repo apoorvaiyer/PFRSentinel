@@ -20,10 +20,14 @@ GPU Optimizations:
 - torch.compile() for optimized kernels
 """
 import sys
+import warnings
 import json
 import random
 from pathlib import Path
 from datetime import datetime
+
+# Suppress TorchScript ONNX legacy exporter deprecation notice
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='torch.onnx')
 from collections import Counter
 
 import numpy as np
@@ -672,7 +676,37 @@ def train_model(
     print(f"\nMoon Visible Accuracy:")
     moon_correct = sum(1 for t, p in zip(all_moon_true, all_moon_pred) if t == p)
     print(f"  {moon_correct}/{len(all_moon_true)} ({moon_correct/len(all_moon_true)*100:.1f}%)")
-    
+
+    # Export to ONNX for production inference
+    onnx_path = Path(model_path).with_suffix('.onnx')
+    print(f"\nExporting to ONNX: {onnx_path}")
+    try:
+        model.eval()
+        dummy_image = torch.randn(1, 1, image_size, image_size).to(device)
+        dummy_meta = torch.randn(1, 6).to(device)
+        dynamic_axes = {
+            'image': {0: 'batch'},
+            'metadata': {0: 'batch'},
+            'sky_condition': {0: 'batch'},
+            'stars_visible': {0: 'batch'},
+            'star_density': {0: 'batch'},
+            'moon_visible': {0: 'batch'},
+        }
+        torch.onnx.export(
+            model,
+            (dummy_image, dummy_meta),
+            str(onnx_path),
+            input_names=['image', 'metadata'],
+            output_names=['sky_condition', 'stars_visible', 'star_density', 'moon_visible'],
+            dynamic_axes=dynamic_axes,
+            opset_version=18,
+            dynamo=False,
+        )
+        print(f"ONNX model saved to: {onnx_path}")
+    except Exception as e:
+        print(f"ONNX export failed: {e}")
+        print("You can still use the .pth model with PyTorch")
+
     return model
 
 

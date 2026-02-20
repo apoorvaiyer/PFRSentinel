@@ -6,14 +6,18 @@ Trains a CNN model to detect if the observatory roof is open or closed
 from pier camera images.
 
 Usage:
-    python ml/train_roof_classifier.py "E:\Pier Camera ML Data"
+    python ml/train_roof_classifier.py "E:\\Pier Camera ML Data"
     python ml/train_roof_classifier.py --epochs 50 --batch-size 16
 """
 import sys
+import warnings
 import json
 import argparse
 import random
 from pathlib import Path
+
+# Suppress TorchScript ONNX legacy exporter deprecation notice
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='torch.onnx')
 from datetime import datetime
 
 import numpy as np
@@ -502,19 +506,20 @@ def main():
         model.eval()
         dummy_image = torch.randn(1, 1, args.image_size, args.image_size).to(device)
         dummy_meta = torch.randn(1, 4).to(device)
-        
+        dynamic_axes = {
+            'image': {0: 'batch'},
+            'metadata': {0: 'batch'},
+            'roof_open_logit': {0: 'batch'},
+        }
         torch.onnx.export(
             model,
             (dummy_image, dummy_meta),
-            onnx_path,
+            str(onnx_path),
             input_names=['image', 'metadata'],
             output_names=['roof_open_logit'],
-            dynamic_axes={
-                'image': {0: 'batch'},
-                'metadata': {0: 'batch'},
-                'roof_open_logit': {0: 'batch'}
-            },
-            opset_version=11
+            dynamic_axes=dynamic_axes,
+            opset_version=18,
+            dynamo=False,
         )
         print(f"ONNX model saved to: {onnx_path}")
     except Exception as e:

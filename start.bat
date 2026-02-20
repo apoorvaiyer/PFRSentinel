@@ -4,13 +4,18 @@ REM PFR Sentinel Startup Script
 echo Starting PFR Sentinel...
 echo.
 
+REM Allow local scripts to run (needed for venv activation on fresh Windows)
+powershell -Command "Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force" >nul 2>&1
+
 REM Check if virtual environment exists
 if not exist "venv\Scripts\activate.bat" (
     echo Virtual environment not found. Creating...
     python -m venv venv
     call venv\Scripts\activate.bat
     echo Installing dependencies...
-    pip install -r requirements.txt
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
+    python -m pip install -r ml\requirements.txt
 ) else (
     call venv\Scripts\activate.bat
 )

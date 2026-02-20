@@ -1,7 +1,13 @@
 # ML Module Requirements
 # Install with: pip install -r ml/requirements.txt
+#
+# IMPORTANT: Install CUDA-enabled PyTorch for GPU acceleration (recommended).
+# The default pip index installs CPU-only torch. Use:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# This requires NVIDIA driver >= 520 (CUDA 12.x). Check driver with: nvidia-smi
+# Training will fall back to CPU automatically if no GPU is detected.
 
-# Core ML
+# Core ML (install via CUDA index above, not from here, for GPU support)
 torch>=2.0.0
 torchvision>=0.15.0
 
@@ -13,5 +19,5 @@ numpy>=1.24.0
 astropy>=5.0.0
 scikit-learn>=1.3.0
 
-# Optional: GPU acceleration
-# onnxruntime-gpu>=1.15.0  # Use instead of onnxruntime for CUDA
+# Optional: GPU-accelerated ONNX inference (use instead of onnxruntime above)
+# onnxruntime-gpu>=1.15.0

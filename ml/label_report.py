@@ -6,7 +6,7 @@ Analyzes labeled calibration data and reports on sample distribution,
 missing categories, and suggested targets for balanced training.
 
 Usage:
-    python ml/label_report.py "E:\Pier Camera ML Data"
+    python ml/label_report.py "E:\\Pier Camera ML Data"
     python ml/label_report.py  # Uses default path
 """
 import sys
