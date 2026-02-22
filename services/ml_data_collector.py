@@ -25,6 +25,10 @@ from utils_paths import get_ml_contribution_dir
 # We use a lightweight FITS writer as fallback (sufficient for our simple needs).
 try:
     from astropy.io import fits as astropy_fits
+    # Verify PrimaryHDU is actually accessible (partial imports can succeed
+    # but leave submodule attributes missing in PyInstaller bundles)
+    _test = astropy_fits.PrimaryHDU
+    del _test
     _astropy_fits = astropy_fits
     ASTROPY_AVAILABLE = True
 except Exception:
