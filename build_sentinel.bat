@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 REM Build script for PFR Sentinel executable
 REM Creates a Windows executable using PyInstaller
 REM
@@ -65,7 +66,7 @@ if exist %SIGNTOOL% (
     echo Using certificate: %CODE_SIGNING_THUMBPRINT%
     echo NOTE: Approve signing request in SimplySign mobile app...
     %SIGNTOOL% sign /sha1 %CODE_SIGNING_THUMBPRINT% /tr http://time.certum.pl /td SHA256 /fd SHA256 /d "PFR Sentinel" "dist\PFRSentinel\PFRSentinel.exe"
-    if %ERRORLEVEL% EQU 0 (
+    if !ERRORLEVEL! EQU 0 (
         echo Executable signed successfully!
     ) else (
         echo WARNING: Signing failed, continuing with unsigned executable
@@ -99,4 +100,6 @@ echo Or build the installer with:
 echo   build_sentinel_installer.bat
 echo.
 
-pause
+REM Only pause if run directly (not from installer script)
+if not defined BUILD_FROM_INSTALLER pause
+exit /b 0

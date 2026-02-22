@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 REM Complete build script for PFR Sentinel
 REM Builds executable and creates Windows installer
 REM
@@ -25,8 +26,9 @@ echo.
 
 REM Step 1: Build executable
 echo [1/4] Building executable...
+set BUILD_FROM_INSTALLER=1
 call build_sentinel.bat
-if %ERRORLEVEL% NEQ 0 (
+if not exist "dist\PFRSentinel\PFRSentinel.exe" (
     echo ERROR: Executable build failed!
     pause
     exit /b 1
@@ -85,7 +87,7 @@ if exist %SIGNTOOL% (
     echo Using certificate: %CODE_SIGNING_THUMBPRINT%
     echo NOTE: Approve signing request in SimplySign mobile app...
     %SIGNTOOL% sign /sha1 %CODE_SIGNING_THUMBPRINT% /tr http://time.certum.pl /td SHA256 /fd SHA256 /d "PFR Sentinel Setup" "%INSTALLER_FILE%"
-    if %ERRORLEVEL% EQU 0 (
+    if !ERRORLEVEL! EQU 0 (
         echo Installer signed successfully!
     ) else (
         echo WARNING: Signing failed, continuing with unsigned installer
