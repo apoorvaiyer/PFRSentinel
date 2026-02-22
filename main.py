@@ -18,7 +18,7 @@ project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QFont, QPixmap, QIcon
 from qfluentwidgets import SplashScreen, FluentIcon
 
@@ -148,7 +148,6 @@ def main():
     # Auto-start capture if requested
     if args.auto_start and not args.tray:
         # Delay start to allow UI to initialize
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(2000, lambda: window.start_capture())
         
         # Auto-stop after timeout if specified
