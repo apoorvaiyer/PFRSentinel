@@ -439,84 +439,105 @@ class CameraConnection:
         else:
             self.log("No target camera name specified - will use first available")
         
-        # Detect cameras (with USB reset + SDK reset fallback)
+        # --- Detection Phase ---
+        # Detect cameras, then check if our TARGET camera is present.
+        # Other cameras being visible (e.g. guide camera) doesn't help us.
         detected = self.detect_cameras()
-        if not detected:
-            self.log("✗ No cameras detected, attempting recovery...")
+        target_found = False
+        
+        if detected and camera_to_find:
+            target_index = self._find_camera_index_by_name(detected, camera_to_find)
+            target_found = target_index is not None
+        elif detected:
+            target_found = True  # No specific target, any camera will do
+        
+        # --- Recovery Phase ---
+        # Trigger recovery if target camera is NOT in the detected list,
+        # even if other cameras (guide cam, etc.) are visible.
+        if not target_found and camera_to_find:
+            other_cams = [c['name'] for c in detected] if detected else []
+            if other_cams:
+                self.log(f"⚠ Target camera '{camera_to_find}' not found (other cameras visible: {', '.join(other_cams)})")
+            else:
+                self.log("✗ No cameras detected at all")
+            self.log("Attempting recovery steps for missing camera...")
             
-            # Step 1: Try USB device reset (Windows only)
-            if self._usb_reset_available and camera_to_find:
-                self.log("Attempting USB device reset...")
+            # Step 1: Try soft USB re-enumeration (Windows only)
+            if self._usb_reset_available:
+                self.log("Step 1: Attempting USB device soft reset...")
                 try:
                     if self._usb_reset_func(camera_name=camera_to_find, logger=self.log):
-                        self.log("✓ USB reset completed, re-detecting cameras...")
-                        # Give device time to re-enumerate
+                        self.log("✓ USB soft reset completed, waiting for re-enumeration...")
                         time.sleep(2)
                     else:
-                        self.log("⚠ USB reset failed or not applicable")
+                        self.log("⚠ USB soft reset failed or not applicable")
                 except Exception as e:
-                    self.log(f"⚠ USB reset error: {e}")
+                    self.log(f"⚠ USB soft reset error: {e}")
             
-            # Step 2: Try SDK reset
-            self.log("Attempting SDK reset...")
+            # Step 2: SDK reset + re-detect
+            self.log("Step 2: Attempting SDK reset...")
             self.asi = None
-            if not self.initialize_sdk():
-                return False
+            if self.initialize_sdk():
+                detected = self.detect_cameras()
+                if detected:
+                    target_index = self._find_camera_index_by_name(detected, camera_to_find)
+                    target_found = target_index is not None
+                    if target_found:
+                        self.log(f"✓ Target camera recovered after SDK reset")
             
-            # Re-detect after reset attempts
-            detected = self.detect_cameras()
-            if not detected:
-                # Step 3: Try aggressive USB disable/enable (Device Manager style)
-                # This mimics manually disabling the device in Device Manager,
-                # waiting ~15 seconds, then re-enabling it. Requires admin privileges.
-                if self._usb_disable_enable_func and camera_to_find:
-                    self.log("Attempting USB device disable/enable (Device Manager reset)...")
-                    self.log("This replicates: Device Manager > Disable > Wait 15s > Enable")
-                    try:
-                        if self._usb_disable_enable_func(
-                            camera_name=camera_to_find,
-                            disable_seconds=15,
-                            logger=self.log
-                        ):
-                            self.log("\u2713 USB disable/enable completed, reinitializing SDK...")
-                            self.asi = None
-                            if self.initialize_sdk():
-                                detected = self.detect_cameras()
-                                if detected:
-                                    self.log(f"\u2713 Camera recovered via disable/enable: {len(detected)} found")
-                        else:
-                            self.log("\u26a0 USB disable/enable failed or not applicable")
-                    except Exception as e:
-                        self.log(f"\u26a0 USB disable/enable error: {e}")
-                
-                if not detected:
-                    self.log("\u2717 No cameras detected even after all recovery attempts")
-                    if self._usb_disable_enable_func and not self._is_running_as_admin():
-                        self.log("\u26a0 USB disable/enable was skipped because app is not running as Administrator")
-                        self.log("  To enable full recovery: right-click app shortcut > Properties > Compatibility > 'Run as administrator'")
-                    self.log("\u26a0 Camera may require physical disconnect/reconnect")
-                    return False
-            else:
-                self.log(f"✓ Cameras detected after reset: {len(detected)} found")
-        
-        # Find target camera - strict matching for reconnection
-        if camera_to_find:
-            target_index = self._find_camera_index_by_name(detected, camera_to_find)
-            if target_index is None:
-                if allow_fallback:
-                    self.log(f"⚠ Target camera not found, falling back to first available")
-                    target_index = detected[0]['index']
-                else:
+            # Step 3: Aggressive USB disable/enable (Device Manager style)
+            if not target_found and self._usb_disable_enable_func:
+                self.log("Step 3: Attempting USB device disable/enable (Device Manager reset)...")
+                self.log("This replicates: Device Manager > Disable > Wait 15s > Enable")
+                try:
+                    if self._usb_disable_enable_func(
+                        camera_name=camera_to_find,
+                        disable_seconds=15,
+                        logger=self.log
+                    ):
+                        self.log("✓ USB disable/enable completed, reinitializing SDK...")
+                        self.asi = None
+                        if self.initialize_sdk():
+                            detected = self.detect_cameras()
+                            if detected:
+                                target_index = self._find_camera_index_by_name(detected, camera_to_find)
+                                target_found = target_index is not None
+                                if target_found:
+                                    self.log(f"✓ Camera recovered via disable/enable!")
+                    else:
+                        self.log("⚠ USB disable/enable failed or not applicable")
+                except Exception as e:
+                    self.log(f"⚠ USB disable/enable error: {e}")
+            
+            # All recovery failed
+            if not target_found:
+                self.log("✗ All recovery attempts failed")
+                if self._usb_disable_enable_func and not self._is_running_as_admin():
+                    self.log("⚠ USB disable/enable was skipped because app is not running as Administrator")
+                    self.log("  To enable full recovery: right-click app shortcut > Properties > Compatibility > 'Run as administrator'")
+                if not allow_fallback:
                     self.log(f"✗ RECONNECTION FAILED: Target camera '{camera_to_find}' not found")
                     self.log("The originally-selected camera is not available.")
-                    self.log("This could mean:")
-                    self.log("  1. Camera lost power or was disconnected")
-                    self.log("  2. USB cable was unplugged")
-                    self.log("  3. Camera was connected to a different system")
-                    self.log("To connect to a different camera, use the Capture tab to select one.")
+                    self.log("⚠ Camera may require physical disconnect/reconnect or")
+                    self.log("  Device Manager > Disable device > wait 15s > Enable device")
                     return False
-        else:
-            # No target name - use first available (initial connection case)
+                else:
+                    if detected:
+                        self.log(f"⚠ Falling back to first available camera")
+                        target_index = detected[0]['index']
+                    else:
+                        self.log("✗ No cameras available at all")
+                        return False
+        
+        elif not detected:
+            # No cameras at all and no specific target to recover
+            self.log("✗ No cameras detected")
+            return False
+        
+        # If we have no target_index yet (no recovery was needed), find it
+        if camera_to_find and target_found:
+            target_index = self._find_camera_index_by_name(detected, camera_to_find)
+        elif not camera_to_find:
             target_index = detected[0]['index']
             self.log(f"Using first available camera at index {target_index}")
         
