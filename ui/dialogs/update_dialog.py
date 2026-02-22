@@ -6,7 +6,7 @@ Shows update available notification with download/skip options.
 from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QProgressBar
 )
-from PySide6.QtCore import Qt, Signal, QThread
+from PySide6.QtCore import Qt, Signal, QThread, QTimer
 from qfluentwidgets import (
     MessageBoxBase, SubtitleLabel, BodyLabel, CaptionLabel,
     PrimaryPushButton, PushButton, FluentIcon
@@ -181,22 +181,35 @@ class UpdateDialog(MessageBoxBase):
             self.status_label.setText(f"✅ Downloaded to: {result}")
             self.status_label.setStyleSheet(f"color: {Colors.status_ok};")
             
-            # Re-enable button as "Run Installer" so user can proceed
-            self.download_btn.setEnabled(True)
-            self.download_btn.setText("Run Installer")
-            self.download_btn.setIcon(FluentIcon.PLAY)
-            # Disconnect old handler and connect new one
+            # Disconnect old handler first
             try:
                 self.download_btn.clicked.disconnect()
-            except RuntimeError:
+            except (RuntimeError, TypeError):
                 pass
-            self.download_btn.clicked.connect(self._on_run_installer)
+            
+            # Defer button update to next event loop tick to ensure
+            # qfluentwidgets PrimaryPushButton repaints correctly
+            QTimer.singleShot(0, self._set_run_installer_button)
         else:
             self.progress_bar.setVisible(False)
             self.status_label.setText("❌ Download failed - try View on GitHub")
             self.status_label.setStyleSheet(f"color: {Colors.status_error};")
-            self.download_btn.setEnabled(True)
-            self.download_btn.setText("Retry Download")
+            # Defer button re-enable
+            QTimer.singleShot(0, lambda: self._reset_download_button("Retry Download"))
+    
+    def _set_run_installer_button(self):
+        """Update download button to 'Run Installer' state."""
+        self.download_btn.setText("Run Installer")
+        self.download_btn.setIcon(FluentIcon.PLAY)
+        self.download_btn.setEnabled(True)
+        self.download_btn.clicked.connect(self._on_run_installer)
+        self.download_btn.update()
+    
+    def _reset_download_button(self, text: str):
+        """Reset download button with given text."""
+        self.download_btn.setText(text)
+        self.download_btn.setEnabled(True)
+        self.download_btn.update()
     
     def _on_run_installer(self):
         """Launch the downloaded installer and close the app."""
