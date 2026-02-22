@@ -19,7 +19,7 @@ class DownloadThread(QThread):
     """Background thread for downloading installer."""
     
     progress = Signal(int, int)  # downloaded, total
-    finished = Signal(object)  # Path or None
+    download_finished = Signal(object)  # Path or None  (don't shadow QThread.finished)
     
     def __init__(self, update_checker, update_info):
         super().__init__()
@@ -42,7 +42,7 @@ class DownloadThread(QThread):
             self.update_info,
             progress_callback=throttled_progress
         )
-        self.finished.emit(result)
+        self.download_finished.emit(result)
 
 
 class UpdateDialog(MessageBoxBase):
@@ -158,7 +158,7 @@ class UpdateDialog(MessageBoxBase):
         checker = get_update_checker()
         self._download_thread = DownloadThread(checker, self.update_info)
         self._download_thread.progress.connect(self._on_progress)
-        self._download_thread.finished.connect(self._on_download_finished)
+        self._download_thread.download_finished.connect(self._on_download_finished)
         self._download_thread.start()
     
     def _on_progress(self, downloaded: int, total: int):
