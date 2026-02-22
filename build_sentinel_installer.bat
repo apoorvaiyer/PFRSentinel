@@ -55,6 +55,12 @@ if not exist %ISCC_PATH% (
     exit /b 0
 )
 
+REM Clean old installer files to avoid stale glob matches
+if exist "installer\dist\*.exe" (
+    echo Cleaning old installer files...
+    del /q "installer\dist\*.exe"
+)
+
 %ISCC_PATH% installer\PFRSentinel.iss
 if %ERRORLEVEL% NEQ 0 (
     echo ERROR: Installer build failed!
