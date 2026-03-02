@@ -106,31 +106,38 @@ class ImageFileHandler(FileSystemEventHandler):
             with self.lock:
                 self.processing.discard(filepath)
     
+    SUPPORTED_EXTENSIONS = ('.png', '.jpg', '.jpeg')
+
+    def _is_supported(self, filepath):
+        return filepath.lower().endswith(self.SUPPORTED_EXTENSIONS)
+
     def on_created(self, event):
         """Called when a file is created"""
         if event.is_directory:
             return
-        
         filepath = event.src_path
-        
-        # Check if it's an image file (PNG for now)
-        if filepath.lower().endswith('.png'):
-            # Submit to thread pool instead of spawning new thread (limits concurrent processing)
+        if self._is_supported(filepath):
             self.executor.submit(self.process_file, filepath)
-    
+
     def on_modified(self, event):
         """Called when a file is modified - we'll also catch files here"""
         # Some systems trigger modified instead of created
         if event.is_directory:
             return
-        
         filepath = event.src_path
-        
-        # Only process if it's a new file we haven't seen
-        if filepath.lower().endswith('.png'):
+        if self._is_supported(filepath):
             with self.lock:
                 if filepath not in self.processing:
-                    # Submit to thread pool instead of spawning new thread
+                    self.executor.submit(self.process_file, filepath)
+
+    def on_moved(self, event):
+        """Called when a file is renamed/moved - catches atomic writes (temp -> final)"""
+        if event.is_directory:
+            return
+        filepath = event.dest_path
+        if self._is_supported(filepath):
+            with self.lock:
+                if filepath not in self.processing:
                     self.executor.submit(self.process_file, filepath)
 
 

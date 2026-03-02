@@ -856,13 +856,17 @@ class MainWindow(QMainWindow):
         
         if not self.watch_controller:
             self.watch_controller = WatchControllerQt(self)
-        
+            self.watch_controller.image_processed.connect(
+                lambda img, path: self._on_image_processed(img, {}, path)
+            )
+
         watch_dir = self.config.get('watch_directory', '')
         if not watch_dir or not os.path.isdir(watch_dir):
             raise ValueError("Invalid watch directory")
-        
+
         self.watch_controller.start_watching(watch_dir)
-        app_logger.info(f"Watch mode started: {watch_dir}")
+        if self.watch_controller.is_watching:
+            app_logger.info(f"Watch mode started: {watch_dir}")
     
     # =========================================================================
     # STATUS UPDATES

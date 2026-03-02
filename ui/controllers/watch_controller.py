@@ -21,6 +21,7 @@ class WatchControllerQt(QObject):
     started = Signal()
     stopped = Signal()
     file_detected = Signal(str)  # File path
+    image_processed = Signal(object, str)  # (PIL Image, output_path)
     error = Signal(str)
     
     def __init__(self, main_window, parent=None):
@@ -41,20 +42,12 @@ class WatchControllerQt(QObject):
             return
         
         try:
-            recursive = self.config.get('watch_recursive', True)
-            
-            self.watcher = FileWatcher(
-                watch_directory=directory,
-                recursive=recursive,
-                on_new_file_callback=self._on_new_file
-            )
-            
+            self.watcher = FileWatcher(self.config, on_image_processed=self._on_file_processed)
             self.watcher.start()
             self.is_watching = True
             self.started.emit()
-            
             app_logger.info(f"Started watching: {directory}")
-            
+
         except Exception as e:
             self.error.emit(str(e))
             app_logger.error(f"Failed to start watching: {e}")
@@ -77,11 +70,7 @@ class WatchControllerQt(QObject):
         except Exception as e:
             app_logger.error(f"Error stopping watcher: {e}")
     
-    def _on_new_file(self, file_path: str):
-        """Handle new file detected by watcher"""
-        self.file_detected.emit(file_path)
-        
-        # Process file
-        if self.main_window:
-            # File processing will be handled by main window
-            pass
+    def _on_file_processed(self, output_path: str, processed_img):
+        """Called by FileWatcher after a file has been processed and saved"""
+        self.file_detected.emit(output_path)
+        self.image_processed.emit(processed_img, output_path)
