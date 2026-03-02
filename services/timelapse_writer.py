@@ -37,6 +37,9 @@ class TimelapseWriter:
         self._frame_count: int = 0
         self._session_path: Optional[str] = None
         self._config: dict = {}
+        # Optional callback(path, frame_count, elapsed_seconds) called after
+        # each session finalizes. Set by TimelapseController for Discord posts.
+        self.on_session_finished = None
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -161,24 +164,41 @@ class TimelapseWriter:
         if proc is None:
             return
 
+        # Capture session info before clearing state
+        finished_path = self._session_path
+        finished_frames = self._frame_count
+        finished_elapsed = (
+            int((datetime.now() - self._session_start).total_seconds())
+            if self._session_start else 0
+        )
+
         try:
             proc.stdin.close()
         except Exception:
             pass
 
+        clean_exit = True
         try:
             proc.wait(timeout=10)
             app_logger.info(
-                f"Timelapse: session finalized — {self._frame_count} frames → "
-                f"{os.path.basename(self._session_path or '')}"
+                f"Timelapse: session finalized — {finished_frames} frames → "
+                f"{os.path.basename(finished_path or '')}"
             )
         except subprocess.TimeoutExpired:
+            clean_exit = False
             proc.kill()
             proc.wait()
             app_logger.warning("Timelapse: ffmpeg did not exit cleanly, killed")
 
         self._session_date = None
         self._session_start = None
+
+        # Notify listener (e.g. Discord) only when ffmpeg exited cleanly
+        if clean_exit and finished_path and finished_frames > 0 and self.on_session_finished:
+            try:
+                self.on_session_finished(finished_path, finished_frames, finished_elapsed)
+            except Exception as e:
+                app_logger.error(f"Timelapse: on_session_finished callback error: {e}")
 
     # ------------------------------------------------------------------ #
     #  Window detection                                                    #

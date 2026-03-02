@@ -170,7 +170,15 @@ class OutputSettingsPanel(QScrollArea):
         self.post_lifecycle_switch = SwitchRow("Post Start/Stop", "Send capture start/stop messages")
         self.post_lifecycle_switch.toggled.connect(self._on_discord_settings_changed)
         discord_card.add_widget(self.post_lifecycle_switch)
-        
+
+        # Post timelapse
+        self.post_timelapse_switch = SwitchRow(
+            "Post Timelapse Video",
+            "Upload completed timelapse video (up to 8 MB, camera mode only)"
+        )
+        self.post_timelapse_switch.toggled.connect(self._on_discord_settings_changed)
+        discord_card.add_widget(self.post_timelapse_switch)
+
         # Periodic posts
         self.periodic_switch = SwitchRow("Periodic Updates", "Post images at regular intervals")
         self.periodic_switch.toggled.connect(self._on_periodic_toggle)
@@ -359,6 +367,7 @@ class OutputSettingsPanel(QScrollArea):
             discord['webhook_url'] = self.webhook_input.text()
             discord['post_errors'] = self.post_errors_switch.is_checked()
             discord['post_startup_shutdown'] = self.post_lifecycle_switch.is_checked()
+            discord['post_timelapse'] = self.post_timelapse_switch.is_checked()
             discord['periodic_enabled'] = self.periodic_switch.is_checked()
             discord['periodic_interval_minutes'] = self.periodic_interval_spin.value()
             discord['include_latest_image'] = self.include_image_switch.is_checked()
@@ -425,7 +434,8 @@ class OutputSettingsPanel(QScrollArea):
             self.webhook_input.setText(discord.get('webhook_url', ''))
             self.post_errors_switch.set_checked(discord.get('post_errors', False))
             self.post_lifecycle_switch.set_checked(discord.get('post_startup_shutdown', False))
-            
+            self.post_timelapse_switch.set_checked(discord.get('post_timelapse', False))
+
             periodic_enabled = discord.get('periodic_enabled', False)
             self.periodic_switch.set_checked(periodic_enabled)
             self.periodic_options.setVisible(periodic_enabled)

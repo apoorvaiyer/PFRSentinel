@@ -3,6 +3,7 @@ Timelapse Controller
 Owns the TimelapseWriter, wires it to the image processing pipeline,
 and exposes status to the UI panel.
 """
+import threading
 from PySide6.QtCore import QObject, Signal, QTimer
 from services.timelapse_writer import TimelapseWriter
 from services.logger import app_logger
@@ -25,6 +26,7 @@ class TimelapseController(QObject):
         super().__init__(main_window)
         self._main_window = main_window
         self._writer = TimelapseWriter()
+        self._writer.on_session_finished = self._on_session_finished
 
         # Status timer: update panel every 5 seconds while recording
         self._status_timer = QTimer(self)
@@ -83,3 +85,22 @@ class TimelapseController(QObject):
 
     def _get_timelapse_config(self) -> dict:
         return self._main_window.config.get('timelapse', {})
+
+    def _on_session_finished(self, path: str, frame_count: int, elapsed_seconds: int):
+        """
+        Called by TimelapseWriter after each session finalizes.
+        Posts to Discord in a daemon thread so it doesn't block the caller.
+        """
+        discord_cfg = self._main_window.config.get('discord', {})
+        if not discord_cfg.get('enabled', False) or not discord_cfg.get('post_timelapse', False):
+            return
+
+        def _post():
+            try:
+                from services.discord_alerts import DiscordAlerts
+                alerts = DiscordAlerts(self._main_window.config)
+                alerts.send_timelapse_completed(path, frame_count, elapsed_seconds)
+            except Exception as e:
+                app_logger.error(f"Timelapse: Discord post failed: {e}")
+
+        threading.Thread(target=_post, daemon=True).start()

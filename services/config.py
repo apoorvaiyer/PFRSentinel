@@ -187,7 +187,8 @@ DEFAULT_CONFIG = {
         "periodic_interval_minutes": 60,
         "include_latest_image": True,
         "username_override": "",
-        "avatar_url": ""
+        "avatar_url": "",
+        "post_timelapse": False       # Post timelapse video when session completes
     },
     
     # All-sky camera settings (for ML training visual reference)

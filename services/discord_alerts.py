@@ -307,6 +307,112 @@ Latest sky capture from {APP_DISPLAY_NAME}."""
             image_path=image_to_send
         )
     
+    def send_timelapse_completed(self, video_path: str, frame_count: int, elapsed_seconds: int):
+        """
+        Post a timelapse-completed notification.
+
+        Attaches the MP4 file if it exists and is ≤ 8 MB (Discord free-tier
+        limit).  If the file is too large, posts a text-only message with the
+        file size noted so the user knows where to find it.
+        """
+        if not self.is_enabled():
+            return False
+        if not self.config.get('discord', {}).get('post_timelapse', False):
+            return False
+
+        h, rem = divmod(elapsed_seconds, 3600)
+        m, s = divmod(rem, 60)
+        filename = os.path.basename(video_path) if video_path else 'timelapse.mp4'
+
+        description = (
+            f"**{frame_count}** frames · {h:02d}:{m:02d}:{s:02d} session\n"
+            f"`{filename}`"
+        )
+
+        # Try to attach the video if it fits within Discord's free-tier limit
+        attach_path = None
+        DISCORD_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+        if video_path and os.path.isfile(video_path):
+            size = os.path.getsize(video_path)
+            if size <= DISCORD_MAX_BYTES:
+                attach_path = video_path
+            else:
+                size_mb = size / (1024 * 1024)
+                description += f"\n\n*Video too large to attach ({size_mb:.1f} MB > 8 MB limit)*"
+
+        return self._send_with_video(
+            "🎬 Timelapse Complete", description, attach_path
+        )
+
+    def _send_with_video(self, title: str, description: str, video_path=None):
+        """
+        Internal helper: send an embed, optionally attaching an MP4 file.
+
+        Unlike send_discord_message() which embeds images inline, video files
+        are sent as plain multipart attachments — Discord renders them as an
+        inline player automatically.
+        """
+        if not self.is_enabled():
+            return False
+
+        discord_config = self.config.get('discord', {})
+        webhook_url = discord_config.get('webhook_url', '')
+        if not webhook_url:
+            return False
+
+        try:
+            username = discord_config.get('username_override', '') or APP_DISPLAY_NAME
+            avatar_url = discord_config.get('avatar_url', '')
+
+            embed = {
+                "title": title,
+                "description": description,
+                "color": self.get_color_int(),
+                "timestamp": datetime.utcnow().isoformat(),
+                "footer": {"text": "✅ SUCCESS"},
+            }
+
+            payload = {"username": username, "embeds": [embed]}
+            if avatar_url:
+                payload["avatar_url"] = avatar_url
+
+            if video_path and os.path.isfile(video_path):
+                app_logger.debug(f"Attaching video to Discord: {video_path}")
+                with open(video_path, "rb") as fh:
+                    files = {"file": (os.path.basename(video_path), fh, "video/mp4")}
+                    response = requests.post(
+                        webhook_url,
+                        data={"payload_json": json.dumps(payload)},
+                        files=files,
+                        timeout=30,  # Video upload may take longer
+                    )
+            else:
+                response = requests.post(webhook_url, json=payload, timeout=10)
+
+            if response.status_code in [200, 204]:
+                self.last_send_time = datetime.now()
+                self.last_send_status = f"Success (HTTP {response.status_code})"
+                app_logger.info(f"Discord alert sent: {title}")
+                return True
+            else:
+                error_msg = f"HTTP {response.status_code}"
+                try:
+                    error_msg += f" - {response.json()}"
+                except Exception:
+                    error_msg += f" - {response.text[:100]}"
+                self.last_send_status = f"Failed: {error_msg}"
+                app_logger.error(f"Discord webhook failed: {error_msg}")
+                return False
+
+        except requests.exceptions.Timeout:
+            self.last_send_status = "Failed: Request timeout"
+            app_logger.error("Discord webhook timeout (video upload)")
+            return False
+        except Exception as e:
+            self.last_send_status = f"Failed: {str(e)[:50]}"
+            app_logger.error(f"Discord webhook error: {e}")
+            return False
+
     def get_last_status(self):
         """Get formatted last send status"""
         if self.last_send_time:
