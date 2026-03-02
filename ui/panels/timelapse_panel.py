@@ -140,13 +140,17 @@ class FfmpegInstallCard(CardWidget):
 
     def _on_install_finished(self, success: bool, message: str):
         self._progress.hide()
-        self._winget_btn.setEnabled(True)
 
-        if success and is_ffmpeg_available():
-            self._status_label.setText("✓ " + message)
+        if success:
+            # ffmpeg is now installed but the current process PATH won't reflect
+            # it until the app is restarted — prompt the user rather than re-probing.
+            self._winget_btn.setEnabled(False)
+            self._status_label.setText(
+                "✓ ffmpeg installed successfully. Please restart PFRSentinel to activate timelapse."
+            )
             self._status_label.setStyleSheet(f"color: {Colors.status_success};")
-            self.install_succeeded.emit()
         else:
+            self._winget_btn.setEnabled(True)
             self._status_label.setText("✗ " + message)
             self._status_label.setStyleSheet(f"color: {Colors.status_error};")
 
