@@ -8,7 +8,7 @@ import subprocess
 import webbrowser
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
-    QFileDialog, QSizePolicy, QStackedWidget
+    QFileDialog
 )
 from PySide6.QtCore import Qt, Signal, QThread, QTimer
 from qfluentwidgets import (
@@ -204,9 +204,9 @@ class TimelapsePanel(QScrollArea):
         content = QWidget()
         self.setWidget(content)
 
-        self._main_layout = QVBoxLayout(content)
-        self._main_layout.setContentsMargins(Spacing.base, Spacing.base, Spacing.base, Spacing.base)
-        self._main_layout.setSpacing(Spacing.card_gap)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(Spacing.base, Spacing.base, Spacing.base, Spacing.base)
+        layout.setSpacing(Spacing.card_gap)
 
         # Camera-mode-only notice (shown when in watch mode)
         self._watch_mode_notice = CardWidget()
@@ -217,39 +217,38 @@ class TimelapsePanel(QScrollArea):
         notice_lbl.setWordWrap(True)
         notice_lbl.setStyleSheet(f"color: {Colors.text_secondary};")
         notice_layout.addWidget(notice_lbl)
-        self._main_layout.addWidget(self._watch_mode_notice)
+        layout.addWidget(self._watch_mode_notice)
         self._watch_mode_notice.hide()
 
-        # Stacked widget: install card OR settings
-        self._stack = QStackedWidget()
-        self._main_layout.addWidget(self._stack)
-
-        # Page 0: ffmpeg install card
+        # ffmpeg install card (shown when ffmpeg missing, hidden otherwise)
         self._install_card = FfmpegInstallCard()
         self._install_card.install_succeeded.connect(self._on_ffmpeg_installed)
-        self._stack.addWidget(self._install_card)
+        layout.addWidget(self._install_card)
 
-        # Page 1: full settings
-        settings_widget = QWidget()
-        settings_layout = QVBoxLayout(settings_widget)
+        # Settings cards (shown when ffmpeg available, hidden otherwise)
+        self._settings_container = QWidget()
+        settings_layout = QVBoxLayout(self._settings_container)
         settings_layout.setContentsMargins(0, 0, 0, 0)
         settings_layout.setSpacing(Spacing.card_gap)
         self._build_settings(settings_layout)
-        self._stack.addWidget(settings_widget)
+        layout.addWidget(self._settings_container)
 
-        self._main_layout.addStretch()
+        layout.addStretch()
 
-        # Show correct page
+        # Show correct initial state
         self._check_ffmpeg()
 
     def _check_ffmpeg(self):
         if is_ffmpeg_available():
-            self._stack.setCurrentIndex(1)
+            self._install_card.hide()
+            self._settings_container.show()
         else:
-            self._stack.setCurrentIndex(0)
+            self._install_card.show()
+            self._settings_container.hide()
 
     def _on_ffmpeg_installed(self):
-        self._stack.setCurrentIndex(1)
+        self._install_card.hide()
+        self._settings_container.show()
 
     # ------------------------------------------------------------------ #
     #  Settings UI                                                         #
