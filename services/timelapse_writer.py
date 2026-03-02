@@ -1,0 +1,332 @@
+"""
+Timelapse video writer for camera capture mode.
+Pipes processed frames directly into a long-running ffmpeg subprocess,
+producing a growing fragmented MP4 with no intermediate frame files.
+"""
+import os
+import subprocess
+import threading
+from datetime import datetime, date, timedelta
+from typing import Optional, Tuple
+
+from PIL import Image
+import numpy as np
+
+from .logger import app_logger
+from .ffmpeg_utils import is_ffmpeg_available
+
+
+class TimelapseWriter:
+    """
+    Manages an ongoing daily timelapse session.
+
+    Every frame passed to add_frame() is written — timing is entirely
+    driven by the camera capture interval in Capture Settings.
+    Frames are piped as raw RGB24 bytes into ffmpeg, which encodes to
+    a fragmented MP4 in real-time.
+    Session boundaries (day rollover, window open/close) are managed
+    internally — callers just call add_frame() on every capture.
+    """
+
+    def __init__(self):
+        self._process: Optional[subprocess.Popen] = None
+        self._lock = threading.Lock()
+        self._session_date: Optional[date] = None
+        self._session_start: Optional[datetime] = None
+        self._frame_size: Optional[Tuple[int, int]] = None  # (width, height)
+        self._frame_count: int = 0
+        self._session_path: Optional[str] = None
+        self._config: dict = {}
+
+    # ------------------------------------------------------------------ #
+    #  Public API                                                          #
+    # ------------------------------------------------------------------ #
+
+    def configure(self, config: dict):
+        """Update config dict (call whenever settings change)."""
+        self._config = config
+
+    def add_frame(self, image: Image.Image) -> bool:
+        """
+        Attempt to add a frame to the current timelapse session.
+
+        Handles window detection, day rollover, ffmpeg startup and
+        resolution changes internally. Returns True if a frame was
+        actually written.
+        """
+        if not self._config.get('enabled', False):
+            return False
+
+        try:
+            now = datetime.now()
+
+            # Check session window
+            if not self._is_in_window(now):
+                if self._process is not None:
+                    self._stop_session()
+                return False
+
+            frame_size = (image.width, image.height)
+
+            # Start or restart session if needed
+            if self._process is None or self._session_date != now.date():
+                self._start_session(frame_size, now)
+            elif frame_size != self._frame_size:
+                # Resolution changed — restart with new size
+                app_logger.info(f"Timelapse: resolution changed {self._frame_size} → {frame_size}, restarting session")
+                self._stop_session()
+                self._start_session(frame_size, now)
+
+            if self._process is None:
+                return False
+
+            # Convert PIL Image to raw RGB24 bytes and pipe to ffmpeg
+            img_rgb = image.convert('RGB')
+            frame_bytes = np.array(img_rgb, dtype=np.uint8).tobytes()
+
+            with self._lock:
+                if self._process and self._process.poll() is None:
+                    self._process.stdin.write(frame_bytes)
+                    self._process.stdin.flush()
+                    self._frame_count += 1
+                    app_logger.debug(f"Timelapse: frame {self._frame_count} written ({len(frame_bytes):,} bytes)")
+                    return True
+
+        except BrokenPipeError:
+            app_logger.error("Timelapse: ffmpeg pipe broke — stopping session")
+            self._process = None
+        except Exception as e:
+            app_logger.error(f"Timelapse: add_frame error: {e}")
+
+        return False
+
+    def stop(self):
+        """Stop any active session gracefully (call on app shutdown)."""
+        self._stop_session()
+
+    def get_status(self) -> dict:
+        """Return current timelapse status for UI display."""
+        recording = self._process is not None and self._process.poll() is None
+        elapsed = 0
+        if self._session_start and recording:
+            elapsed = int((datetime.now() - self._session_start).total_seconds())
+        return {
+            'recording': recording,
+            'frame_count': self._frame_count,
+            'session_path': self._session_path,
+            'elapsed_seconds': elapsed,
+        }
+
+    # ------------------------------------------------------------------ #
+    #  Session management                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _start_session(self, frame_size: Tuple[int, int], now: datetime):
+        """Start a new ffmpeg session for today."""
+        if not is_ffmpeg_available():
+            app_logger.warning("Timelapse: ffmpeg not found — cannot start session")
+            return
+
+        output_path = self._build_output_path(now)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        cmd = self._build_ffmpeg_cmd(frame_size, output_path)
+        app_logger.info(f"Timelapse: starting session → {os.path.basename(output_path)}")
+
+        try:
+            self._process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._frame_size = frame_size
+            self._session_date = now.date()
+            self._session_start = now
+            self._session_path = output_path
+            self._frame_count = 0
+        except FileNotFoundError:
+            app_logger.error("Timelapse: ffmpeg executable not found")
+            self._process = None
+        except Exception as e:
+            app_logger.error(f"Timelapse: failed to start ffmpeg: {e}")
+            self._process = None
+
+    def _stop_session(self):
+        """Close the ffmpeg stdin pipe, letting it finalize the video."""
+        with self._lock:
+            proc = self._process
+            self._process = None
+
+        if proc is None:
+            return
+
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+
+        try:
+            proc.wait(timeout=10)
+            app_logger.info(
+                f"Timelapse: session finalized — {self._frame_count} frames → "
+                f"{os.path.basename(self._session_path or '')}"
+            )
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            app_logger.warning("Timelapse: ffmpeg did not exit cleanly, killed")
+
+        self._session_date = None
+        self._session_start = None
+
+    # ------------------------------------------------------------------ #
+    #  Window detection                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _is_in_window(self, now: datetime) -> bool:
+        """Return True if now falls within the configured recording window."""
+        mode = self._config.get('window_mode', 'sun')
+        try:
+            window_start, window_end = self._get_window_for_day(now.date())
+            return window_start <= now <= window_end
+        except Exception as e:
+            app_logger.debug(f"Timelapse: window check error ({e}), defaulting to False")
+            return False
+
+    def _get_window_for_day(self, day: date) -> Tuple[datetime, datetime]:
+        """
+        Return (window_start, window_end) for the given day.
+
+        For overnight windows (e.g. 18:00 → 06:00) the window_end
+        is on the following day.  The current time is tested against
+        windows anchored on both today and yesterday so sessions
+        started yesterday are still considered active.
+        """
+        mode = self._config.get('window_mode', 'sun')
+
+        if mode == 'always':
+            # Full day: midnight to next midnight
+            start = datetime.combine(day, datetime.min.time())
+            end = datetime.combine(day + timedelta(days=1), datetime.min.time())
+            return start, end
+
+        if mode == 'fixed':
+            return self._fixed_window(day)
+
+        # Default: sun-based
+        return self._sun_window(day)
+
+    def _fixed_window(self, day: date) -> Tuple[datetime, datetime]:
+        """Parse fixed HH:MM start/end into datetimes, handling midnight crossing."""
+        def parse_time(s: str, fallback: str) -> datetime:
+            try:
+                h, m = map(int, s.split(':'))
+            except Exception:
+                h, m = map(int, fallback.split(':'))
+            return datetime.combine(day, datetime.strptime(f"{h}:{m}", "%H:%M").time())
+
+        start = parse_time(self._config.get('fixed_start', '18:00'), '18:00')
+        end = parse_time(self._config.get('fixed_end', '06:00'), '06:00')
+
+        # If end is earlier than start, it crosses midnight → add a day
+        if end <= start:
+            end = end + timedelta(days=1)
+
+        return start, end
+
+    def _sun_window(self, day: date) -> Tuple[datetime, datetime]:
+        """Calculate sunset→sunrise window using the astral library."""
+        try:
+            from astral import LocationInfo
+            from astral.sun import sun, time_at_elevation, SunDirection
+
+            lat = self._config.get('sun_latitude')
+            lon = self._config.get('sun_longitude')
+            if lat is None or lon is None:
+                raise ValueError("No coordinates configured for sun mode")
+
+            loc = LocationInfo(latitude=float(lat), longitude=float(lon))
+            sun_mode = self._config.get('sun_mode', 'astronomical')
+            tomorrow = day + timedelta(days=1)
+
+            if sun_mode == 'sunset_sunrise':
+                s_today = sun(loc.observer, date=day)
+                s_tomorrow = sun(loc.observer, date=tomorrow)
+                window_start = s_today['sunset'].replace(tzinfo=None)
+                window_end = s_tomorrow['sunrise'].replace(tzinfo=None)
+
+            elif sun_mode == 'civil':
+                s_today = sun(loc.observer, date=day)
+                s_tomorrow = sun(loc.observer, date=tomorrow)
+                window_start = s_today['dusk'].replace(tzinfo=None)
+                window_end = s_tomorrow['dawn'].replace(tzinfo=None)
+
+            elif sun_mode == 'nautical':
+                window_start = time_at_elevation(
+                    loc.observer, -12, date=day,
+                    direction=SunDirection.SETTING
+                ).replace(tzinfo=None)
+                window_end = time_at_elevation(
+                    loc.observer, -12, date=tomorrow,
+                    direction=SunDirection.RISING
+                ).replace(tzinfo=None)
+
+            else:  # astronomical
+                window_start = time_at_elevation(
+                    loc.observer, -18, date=day,
+                    direction=SunDirection.SETTING
+                ).replace(tzinfo=None)
+                window_end = time_at_elevation(
+                    loc.observer, -18, date=tomorrow,
+                    direction=SunDirection.RISING
+                ).replace(tzinfo=None)
+
+            return window_start, window_end
+
+        except ImportError:
+            app_logger.warning("Timelapse: astral not available, falling back to fixed window")
+            return self._fixed_window(day)
+        except Exception as e:
+            app_logger.warning(f"Timelapse: sun window error ({e}), falling back to fixed window")
+            return self._fixed_window(day)
+
+    # ------------------------------------------------------------------ #
+    #  ffmpeg helpers                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _build_output_path(self, now: datetime) -> str:
+        """Build output path: {output_dir}/timelapse_YYYYMMDD.mp4"""
+        output_dir = self._config.get('output_dir', '')
+        if not output_dir:
+            from app_config import APP_DATA_FOLDER
+            import os
+            output_dir = os.path.join(
+                os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER, 'timelapse'
+            )
+        date_str = now.strftime('%Y%m%d')
+        return os.path.join(output_dir, f'timelapse_{date_str}.mp4')
+
+    def _build_ffmpeg_cmd(self, frame_size: Tuple[int, int], output_path: str) -> list:
+        """Build the ffmpeg subprocess command."""
+        width, height = frame_size
+        crf = self._config.get('video_crf', 23)
+        preset = self._config.get('video_preset', 'fast')
+        fps = self._config.get('playback_fps', 24)
+
+        return [
+            'ffmpeg',
+            '-f', 'rawvideo',
+            '-pixel_format', 'rgb24',
+            '-video_size', f'{width}x{height}',
+            '-framerate', '1',           # 1 input frame per add_frame() call
+            '-i', 'pipe:0',
+            '-c:v', 'libx264',
+            '-crf', str(crf),
+            '-preset', str(preset),
+            '-r', str(fps),              # output playback framerate
+            '-pix_fmt', 'yuv420p',
+            '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+            '-y',
+            output_path,
+        ]

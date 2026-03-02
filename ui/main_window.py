@@ -37,9 +37,11 @@ from .panels.capture_settings import CaptureSettingsPanel
 from .panels.output_settings import OutputSettingsPanel
 from .panels.image_processing import ImageProcessingPanel
 from .panels.overlay_settings import OverlaySettingsPanel
+from .panels.timelapse_panel import TimelapsePanel
 from .panels.settings_panel import SettingsPanel
 from .panels.logs_panel import LogsPanel
 from .controllers.image_processor import ImageProcessor
+from .controllers.timelapse_controller import TimelapseController
 
 
 class MainWindow(QMainWindow):
@@ -79,6 +81,7 @@ class MainWindow(QMainWindow):
         self.web_server = None
         self.rtsp_server = None
         self.weather_service = None
+        self.timelapse_controller = None
         self.system_tray = None  # Set by main_pyside.py when in tray mode
         
         # Initialize weather service from config
@@ -203,16 +206,21 @@ class MainWindow(QMainWindow):
         self.output_panel = OutputSettingsPanel(self)
         self.processing_panel = ImageProcessingPanel(self)
         self.overlay_panel = OverlaySettingsPanel(self)
+        self.timelapse_panel = TimelapsePanel(self)
         self.logs_panel = LogsPanel(self)
         self.settings_panel = SettingsPanel(self)
-        
+
+        # Timelapse controller (owns TimelapseWriter, wired to image processor below)
+        self.timelapse_controller = TimelapseController(self)
+
         # Add to stack
-        self.inspector_stack.addWidget(self.capture_panel)      # Index 0
-        self.inspector_stack.addWidget(self.output_panel)       # Index 1
-        self.inspector_stack.addWidget(self.processing_panel)   # Index 2
-        self.inspector_stack.addWidget(self.overlay_panel)      # Index 3
-        self.inspector_stack.addWidget(self.logs_panel)         # Index 4
-        self.inspector_stack.addWidget(self.settings_panel)     # Index 5
+        self.inspector_stack.addWidget(self.capture_panel)       # Index 0
+        self.inspector_stack.addWidget(self.output_panel)        # Index 1
+        self.inspector_stack.addWidget(self.processing_panel)    # Index 2
+        self.inspector_stack.addWidget(self.overlay_panel)       # Index 3
+        self.inspector_stack.addWidget(self.timelapse_panel)     # Index 4
+        self.inspector_stack.addWidget(self.logs_panel)          # Index 5
+        self.inspector_stack.addWidget(self.settings_panel)      # Index 6
         
         # Defer splitter restoration until window is shown
         # This ensures we have accurate available width
@@ -251,7 +259,16 @@ class MainWindow(QMainWindow):
         self.output_panel.settings_changed.connect(self._on_settings_changed)
         self.processing_panel.settings_changed.connect(self._on_settings_changed)
         self.overlay_panel.settings_changed.connect(self._on_settings_changed)
+        self.timelapse_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
+
+        # Timelapse: image processor → controller → panel status
+        self.image_processor.timelapse_ready.connect(
+            self.timelapse_controller.on_timelapse_ready
+        )
+        self.timelapse_controller.status_updated.connect(
+            self.timelapse_panel.update_status
+        )
         
         # RAW16 mode toggle - update camera on the fly if capturing
         self.capture_panel.raw16_mode_changed.connect(self._on_raw16_mode_changed)
@@ -617,8 +634,9 @@ class MainWindow(QMainWindow):
             'output': 1,
             'processing': 2,
             'overlays': 3,  # Show overlay panel, hide live panel
-            'logs': 4,
-            'settings': 5,  # Settings panel (hide live panel)
+            'timelapse': 4,
+            'logs': 5,
+            'settings': 6,  # Settings panel (hide live panel)
         }
         
         index = section_map.get(section, 0)
@@ -803,7 +821,11 @@ class MainWindow(QMainWindow):
                 self.watch_controller.stop_watching()
             
             self.capture_stopped.emit()
-            
+
+            # Stop timelapse session when capture stops
+            if self.timelapse_controller:
+                self.timelapse_controller.on_capture_stopped()
+
             # Slower status updates when idle
             self.status_timer.setInterval(1000)
             
@@ -964,6 +986,7 @@ class MainWindow(QMainWindow):
             self.output_panel.load_from_config(self.config)
             self.processing_panel.load_from_config(self.config)
             self.overlay_panel.load_from_config(self.config)
+            self.timelapse_panel.load_from_config(self.config)
             self.settings_panel.load_from_config(self.config)
             
             # Update ML display in live panel based on config
@@ -1368,7 +1391,13 @@ class MainWindow(QMainWindow):
                 self.rtsp_server.stop()
             except:
                 pass
-        
+
+        if self.timelapse_controller:
+            try:
+                self.timelapse_controller.shutdown()
+            except:
+                pass
+
         # Save config
         self.save_config()
         

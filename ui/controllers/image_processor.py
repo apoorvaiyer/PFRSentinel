@@ -34,6 +34,7 @@ class ImageProcessorWorker(QThread):
     processing_complete = Signal(object, dict, str)  # processed PIL Image, metadata, output_path
     preview_ready = Signal(object, dict)  # PIL Image for preview, histogram data
     error_occurred = Signal(str)
+    timelapse_ready = Signal(object, object)  # (clean PIL Image pre-overlay, overlaid PIL Image)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -254,8 +255,12 @@ class ImageProcessorWorker(QThread):
                     app_logger.debug(f"ML prediction skipped: {e}")
             
             # Add overlays using services/processor.py function
+            # stretched_for_preview is the clean pre-overlay frame (set at line ~194)
             img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
-            
+
+            # Emit both versions for timelapse (controller picks based on include_overlays setting)
+            self.timelapse_ready.emit(stretched_for_preview, img)
+
             # Generate output path
             session = metadata.get('session', datetime.now().strftime('%Y-%m-%d'))
             original_filename = metadata.get('FILENAME', 'capture.png')
@@ -302,15 +307,17 @@ class ImageProcessor(QObject):
     processing_complete = Signal(object, dict, str)  # PIL Image, metadata, output_path
     preview_ready = Signal(object, dict)  # PIL Image for preview, histogram data
     error_occurred = Signal(str)
-    
+    timelapse_ready = Signal(object, object)  # (clean PIL Image, overlaid PIL Image)
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # Worker thread
         self._worker = ImageProcessorWorker()
         self._worker.processing_complete.connect(self._on_processing_complete)
         self._worker.preview_ready.connect(self._on_preview_ready)
         self._worker.error_occurred.connect(self._on_error)
+        self._worker.timelapse_ready.connect(self.timelapse_ready)
         
         # Reference to main window for config access
         self._main_window = None

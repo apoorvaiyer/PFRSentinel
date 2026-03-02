@@ -203,6 +203,23 @@ DEFAULT_CONFIG = {
         "enabled": False,  # Opt-in data sharing
         "min_interval_minutes": 30,  # Don't collect more often than this
         "max_samples": 500,  # Auto-pause when reached (~50MB)
+    },
+
+    # Timelapse - daily video recording from camera capture mode
+    "timelapse": {
+        "enabled": False,
+        "window_mode": "sun",          # "sun" | "fixed" | "always"
+        "sun_mode": "astronomical",    # "astronomical" | "nautical" | "civil" | "sunset_sunrise"
+        "sun_latitude": None,          # Falls back to weather.latitude if None
+        "sun_longitude": None,         # Falls back to weather.longitude if None
+        "fixed_start": "18:00",        # HH:MM local time (used when window_mode="fixed")
+        "fixed_end": "06:00",          # HH:MM local time (crossing midnight is supported)
+        "playback_fps": 24,            # Output video playback frame rate
+        "video_crf": 23,               # H.264 CRF quality (0-51, lower=better, 23=default)
+        "video_preset": "fast",        # ffmpeg preset (ultrafast/fast/medium/slow)
+        "include_overlays": False,     # False = clean frame, True = frame with overlays
+        "output_dir": "",              # "" = AppData/PFRSentinel/timelapse/
+        "max_videos_to_keep": 30,      # Auto-delete oldest beyond this many days
     }
 }
 

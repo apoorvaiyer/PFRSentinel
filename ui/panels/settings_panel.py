@@ -2,7 +2,6 @@
 Settings Panel
 Application settings: Discord, Weather, Storage, System
 """
-import subprocess
 import webbrowser
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame,
@@ -18,19 +17,7 @@ from qfluentwidgets import (
 from version import __version__
 from ..theme.tokens import Colors, Typography, Spacing, Layout
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard
-
-
-def is_ffmpeg_available() -> bool:
-    """Check if ffmpeg is available in PATH"""
-    try:
-        result = subprocess.run(
-            ['ffmpeg', '-version'],
-            capture_output=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except:
-        return False
+from services.ffmpeg_utils import is_ffmpeg_available  # noqa: F401 – re-exported for legacy callers
 
 
 class SettingsPanel(QScrollArea):

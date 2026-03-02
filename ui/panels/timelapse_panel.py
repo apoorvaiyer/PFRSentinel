@@ -1,0 +1,496 @@
+"""
+Timelapse Panel
+Dedicated nav page for daily timelapse video recording (camera mode only).
+Includes in-app ffmpeg installation via winget.
+"""
+import os
+import subprocess
+import webbrowser
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
+    QFileDialog, QSizePolicy, QStackedWidget
+)
+from PySide6.QtCore import Qt, Signal, QThread, QTimer
+from qfluentwidgets import (
+    CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
+    PushButton, PrimaryPushButton, ComboBox, LineEdit,
+    SpinBox, SwitchButton, FluentIcon, IndeterminateProgressBar
+)
+
+from ..theme.tokens import Colors, Typography, Spacing
+from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard
+from services.ffmpeg_utils import is_ffmpeg_available, is_winget_available
+
+
+# ------------------------------------------------------------------ #
+#  winget install worker                                               #
+# ------------------------------------------------------------------ #
+
+class WingetInstallWorker(QThread):
+    """Runs winget install ffmpeg in a background thread."""
+
+    finished = Signal(bool, str)  # (success, message)
+
+    def run(self):
+        try:
+            result = subprocess.run(
+                [
+                    'winget', 'install',
+                    '--id', 'Gyan.FFmpeg',
+                    '--source', 'winget',
+                    '--accept-package-agreements',
+                    '--accept-source-agreements',
+                    '--silent',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if result.returncode == 0:
+                self.finished.emit(True, "ffmpeg installed successfully.")
+            else:
+                err = (result.stderr or result.stdout or "Unknown error").strip()
+                self.finished.emit(False, f"winget exited with code {result.returncode}: {err[:200]}")
+        except subprocess.TimeoutExpired:
+            self.finished.emit(False, "Installation timed out after 3 minutes.")
+        except FileNotFoundError:
+            self.finished.emit(False, "winget not found on this system.")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
+# ------------------------------------------------------------------ #
+#  ffmpeg install card                                                 #
+# ------------------------------------------------------------------ #
+
+class FfmpegInstallCard(CardWidget):
+    """Shown when ffmpeg is not installed. Offers winget or manual install."""
+
+    install_succeeded = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._worker: WingetInstallWorker | None = None
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(Spacing.card_padding, Spacing.card_padding,
+                                   Spacing.card_padding, Spacing.card_padding)
+        layout.setSpacing(Spacing.element_gap)
+
+        title = SubtitleLabel("ffmpeg Required")
+        title.setStyleSheet(f"color: {Colors.text_primary};")
+        layout.addWidget(title)
+
+        desc = BodyLabel(
+            "Timelapse recording requires ffmpeg — a free, open-source video encoder.\n"
+            "It is the same tool used by the RTSP streaming feature."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet(f"color: {Colors.text_secondary};")
+        layout.addWidget(desc)
+
+        # Button row
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(Spacing.sm)
+
+        self._winget_btn = PrimaryPushButton("Install via winget")
+        self._winget_btn.setIcon(FluentIcon.DOWNLOAD)
+        self._winget_btn.clicked.connect(self._start_winget_install)
+        btn_row.addWidget(self._winget_btn)
+
+        manual_btn = PushButton("Download manually")
+        manual_btn.setIcon(FluentIcon.LINK)
+        manual_btn.clicked.connect(lambda: webbrowser.open("https://ffmpeg.org/download.html"))
+        btn_row.addWidget(manual_btn)
+        btn_row.addStretch()
+
+        layout.addLayout(btn_row)
+
+        # Progress / status
+        self._progress = IndeterminateProgressBar(self)
+        self._progress.hide()
+        layout.addWidget(self._progress)
+
+        self._status_label = CaptionLabel("")
+        self._status_label.setWordWrap(True)
+        layout.addWidget(self._status_label)
+
+        # Hide winget button if not available
+        if not is_winget_available():
+            self._winget_btn.hide()
+            note = CaptionLabel(
+                "winget (Windows Package Manager) is not available on this system. "
+                "Please install ffmpeg manually and add it to PATH."
+            )
+            note.setWordWrap(True)
+            note.setStyleSheet(f"color: {Colors.text_muted};")
+            layout.addWidget(note)
+
+    def _start_winget_install(self):
+        self._winget_btn.setEnabled(False)
+        self._progress.show()
+        self._status_label.setText("Installing ffmpeg via winget…")
+        self._status_label.setStyleSheet(f"color: {Colors.text_secondary};")
+
+        self._worker = WingetInstallWorker()
+        self._worker.finished.connect(self._on_install_finished)
+        self._worker.start()
+
+    def _on_install_finished(self, success: bool, message: str):
+        self._progress.hide()
+        self._winget_btn.setEnabled(True)
+
+        if success and is_ffmpeg_available():
+            self._status_label.setText("✓ " + message)
+            self._status_label.setStyleSheet(f"color: {Colors.status_success};")
+            self.install_succeeded.emit()
+        else:
+            self._status_label.setText("✗ " + message)
+            self._status_label.setStyleSheet(f"color: {Colors.status_error};")
+
+
+# ------------------------------------------------------------------ #
+#  Main panel                                                          #
+# ------------------------------------------------------------------ #
+
+class TimelapsePanel(QScrollArea):
+    """
+    Full-page timelapse settings panel (camera mode only).
+
+    Shows an install prompt when ffmpeg is missing, and the
+    full settings UI once ffmpeg is available.
+    """
+
+    settings_changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_window = parent
+        self._loading_config = True
+        self._setup_ui()
+        self._loading_config = False
+
+        # Refresh status every 5 seconds
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(5000)
+        self._status_timer.timeout.connect(self._refresh_status)
+        self._status_timer.start()
+
+    def _setup_ui(self):
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: {Colors.bg_app};
+                border: none;
+            }}
+        """)
+
+        content = QWidget()
+        self.setWidget(content)
+
+        self._main_layout = QVBoxLayout(content)
+        self._main_layout.setContentsMargins(Spacing.base, Spacing.base, Spacing.base, Spacing.base)
+        self._main_layout.setSpacing(Spacing.card_gap)
+
+        # Camera-mode-only notice (shown when in watch mode)
+        self._watch_mode_notice = CardWidget()
+        notice_layout = QVBoxLayout(self._watch_mode_notice)
+        notice_layout.setContentsMargins(Spacing.card_padding, Spacing.card_padding,
+                                          Spacing.card_padding, Spacing.card_padding)
+        notice_lbl = BodyLabel("Timelapse recording is only available in Camera (ZWO) capture mode.")
+        notice_lbl.setWordWrap(True)
+        notice_lbl.setStyleSheet(f"color: {Colors.text_secondary};")
+        notice_layout.addWidget(notice_lbl)
+        self._main_layout.addWidget(self._watch_mode_notice)
+        self._watch_mode_notice.hide()
+
+        # Stacked widget: install card OR settings
+        self._stack = QStackedWidget()
+        self._main_layout.addWidget(self._stack)
+
+        # Page 0: ffmpeg install card
+        self._install_card = FfmpegInstallCard()
+        self._install_card.install_succeeded.connect(self._on_ffmpeg_installed)
+        self._stack.addWidget(self._install_card)
+
+        # Page 1: full settings
+        settings_widget = QWidget()
+        settings_layout = QVBoxLayout(settings_widget)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
+        settings_layout.setSpacing(Spacing.card_gap)
+        self._build_settings(settings_layout)
+        self._stack.addWidget(settings_widget)
+
+        self._main_layout.addStretch()
+
+        # Show correct page
+        self._check_ffmpeg()
+
+    def _check_ffmpeg(self):
+        if is_ffmpeg_available():
+            self._stack.setCurrentIndex(1)
+        else:
+            self._stack.setCurrentIndex(0)
+
+    def _on_ffmpeg_installed(self):
+        self._stack.setCurrentIndex(1)
+
+    # ------------------------------------------------------------------ #
+    #  Settings UI                                                         #
+    # ------------------------------------------------------------------ #
+
+    def _build_settings(self, layout: QVBoxLayout):
+        """Build the full timelapse settings cards."""
+
+        # === ENABLE ===
+        enable_card = SettingsCard("Daily Timelapse", "Record a compressed video of each night's session")
+
+        self._enable_switch = SwitchRow("Enable Timelapse", "Camera mode only")
+        self._enable_switch.toggled.connect(self._on_enable_changed)
+        enable_card.add_widget(self._enable_switch)
+        layout.addWidget(enable_card)
+
+        # === WINDOW ===
+        window_card = CollapsibleCard("Recording Window", FluentIcon.CALENDAR)
+
+        self._window_mode_combo = ComboBox()
+        self._window_mode_combo.addItems(["Sunset / Sunrise", "Fixed Times", "Always On"])
+        self._window_mode_combo.currentIndexChanged.connect(self._on_window_mode_changed)
+        window_card.add_row("Window Mode", self._window_mode_combo,
+                             "When to record each day")
+
+        # Sun mode sub-options
+        self._sun_options = QWidget()
+        sun_layout = QVBoxLayout(self._sun_options)
+        sun_layout.setContentsMargins(0, 0, 0, 0)
+        sun_layout.setSpacing(Spacing.input_gap)
+
+        self._sun_mode_combo = ComboBox()
+        self._sun_mode_combo.addItems([
+            "Astronomical (darkest)",
+            "Nautical",
+            "Civil",
+            "Sunset / Sunrise",
+        ])
+        self._sun_mode_combo.currentIndexChanged.connect(self._on_settings_changed)
+        sun_layout.addWidget(FormRow("Twilight Depth", self._sun_mode_combo))
+
+        sun_note = CaptionLabel("Location taken from weather settings (latitude / longitude).")
+        sun_note.setStyleSheet(f"color: {Colors.text_muted};")
+        sun_layout.addWidget(sun_note)
+        window_card.add_widget(self._sun_options)
+
+        # Fixed time sub-options
+        self._fixed_options = QWidget()
+        fixed_layout = QVBoxLayout(self._fixed_options)
+        fixed_layout.setContentsMargins(0, 0, 0, 0)
+        fixed_layout.setSpacing(Spacing.input_gap)
+
+        times_row = QHBoxLayout()
+        times_row.setSpacing(Spacing.sm)
+        self._start_time_input = LineEdit()
+        self._start_time_input.setPlaceholderText("18:00")
+        self._start_time_input.setFixedWidth(80)
+        self._start_time_input.textChanged.connect(self._on_settings_changed)
+        end_label = BodyLabel("→")
+        self._end_time_input = LineEdit()
+        self._end_time_input.setPlaceholderText("06:00")
+        self._end_time_input.setFixedWidth(80)
+        self._end_time_input.textChanged.connect(self._on_settings_changed)
+        times_row.addWidget(self._start_time_input)
+        times_row.addWidget(end_label)
+        times_row.addWidget(self._end_time_input)
+        times_row.addStretch()
+        times_widget = QWidget()
+        times_widget.setLayout(times_row)
+        fixed_layout.addWidget(FormRow("Start → End", times_widget,
+                                        "Overnight crossing (e.g. 18:00 → 06:00) is supported"))
+        self._fixed_options.hide()
+        window_card.add_widget(self._fixed_options)
+
+        layout.addWidget(window_card)
+
+        # === FRAME / QUALITY ===
+        quality_card = CollapsibleCard("Frame & Quality", FluentIcon.VIDEO)
+
+        self._fps_spin = SpinBox()
+        self._fps_spin.setRange(1, 60)
+        self._fps_spin.setValue(24)
+        self._fps_spin.setSuffix(" fps")
+        self._fps_spin.valueChanged.connect(self._on_settings_changed)
+        quality_card.add_row("Playback speed", self._fps_spin, "Output video frame rate")
+
+        self._crf_spin = SpinBox()
+        self._crf_spin.setRange(0, 51)
+        self._crf_spin.setValue(23)
+        self._crf_spin.valueChanged.connect(self._on_settings_changed)
+        quality_card.add_row("Quality (CRF)", self._crf_spin,
+                              "Lower = better quality, larger file (0-51, default 23)")
+
+        self._overlays_switch = SwitchRow(
+            "Include overlays in video",
+            "Overlay text will cycle visibly at playback speed"
+        )
+        self._overlays_switch.toggled.connect(self._on_settings_changed)
+        quality_card.add_widget(self._overlays_switch)
+
+        layout.addWidget(quality_card)
+
+        # === OUTPUT ===
+        output_card = CollapsibleCard("Output", FluentIcon.FOLDER)
+
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(Spacing.sm)
+        self._output_dir_input = LineEdit()
+        self._output_dir_input.setPlaceholderText("Default: AppData/PFRSentinel/timelapse/")
+        self._output_dir_input.textChanged.connect(self._on_settings_changed)
+        dir_row.addWidget(self._output_dir_input, 1)
+        browse_btn = PushButton("Browse")
+        browse_btn.setIcon(FluentIcon.FOLDER)
+        browse_btn.clicked.connect(self._browse_output_dir)
+        dir_row.addWidget(browse_btn)
+        dir_widget = QWidget()
+        dir_widget.setLayout(dir_row)
+        output_card.add_row("Output folder", dir_widget)
+
+        self._keep_spin = SpinBox()
+        self._keep_spin.setRange(1, 365)
+        self._keep_spin.setValue(30)
+        self._keep_spin.setSuffix(" days")
+        self._keep_spin.valueChanged.connect(self._on_settings_changed)
+        output_card.add_row("Keep videos for", self._keep_spin,
+                             "Oldest files deleted automatically beyond this limit")
+
+        layout.addWidget(output_card)
+
+        # === STATUS ===
+        self._status_card = SettingsCard("Status", "Current timelapse session")
+        self._status_label = BodyLabel("Not recording")
+        self._status_label.setStyleSheet(f"color: {Colors.text_muted};")
+        self._status_card.add_widget(self._status_label)
+        layout.addWidget(self._status_card)
+
+    # ------------------------------------------------------------------ #
+    #  Event handlers                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _on_enable_changed(self, checked: bool):
+        if self._loading_config:
+            return
+        self._save_config()
+
+    def _on_window_mode_changed(self, index: int):
+        self._sun_options.setVisible(index == 0)
+        self._fixed_options.setVisible(index == 1)
+        if not self._loading_config:
+            self._save_config()
+
+    def _on_settings_changed(self, *_):
+        if self._loading_config:
+            return
+        self._save_config()
+
+    def _browse_output_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Timelapse Output Folder")
+        if path:
+            self._output_dir_input.setText(path)
+
+    # ------------------------------------------------------------------ #
+    #  Config persistence                                                  #
+    # ------------------------------------------------------------------ #
+
+    _SUN_MODE_MAP = {
+        0: 'astronomical',
+        1: 'nautical',
+        2: 'civil',
+        3: 'sunset_sunrise',
+    }
+    _SUN_MODE_REVERSE = {v: k for k, v in _SUN_MODE_MAP.items()}
+
+    _WINDOW_MODE_MAP = {0: 'sun', 1: 'fixed', 2: 'always'}
+    _WINDOW_MODE_REVERSE = {'sun': 0, 'fixed': 1, 'always': 2}
+
+    def _save_config(self):
+        if not self.main_window or not hasattr(self.main_window, 'config'):
+            return
+        tl = self.main_window.config.get('timelapse', {}).copy()
+        tl['enabled'] = self._enable_switch.is_checked()
+        tl['window_mode'] = self._WINDOW_MODE_MAP.get(self._window_mode_combo.currentIndex(), 'sun')
+        tl['sun_mode'] = self._SUN_MODE_MAP.get(self._sun_mode_combo.currentIndex(), 'astronomical')
+        tl['fixed_start'] = self._start_time_input.text() or '18:00'
+        tl['fixed_end'] = self._end_time_input.text() or '06:00'
+        tl['playback_fps'] = self._fps_spin.value()
+        tl['video_crf'] = self._crf_spin.value()
+        tl['include_overlays'] = self._overlays_switch.is_checked()
+        tl['output_dir'] = self._output_dir_input.text()
+        tl['max_videos_to_keep'] = self._keep_spin.value()
+
+        # Inherit coordinates from weather config if not set separately
+        weather = self.main_window.config.get('weather', {})
+        tl.setdefault('sun_latitude', weather.get('latitude') or None)
+        tl.setdefault('sun_longitude', weather.get('longitude') or None)
+
+        self.main_window.config.set('timelapse', tl)
+        self.main_window.config.save()
+        self.settings_changed.emit()
+
+    def load_from_config(self, config):
+        """Load settings from config object."""
+        self._loading_config = True
+        try:
+            tl = config.get('timelapse', {})
+
+            self._enable_switch.set_checked(tl.get('enabled', False))
+
+            window_idx = self._WINDOW_MODE_REVERSE.get(tl.get('window_mode', 'sun'), 0)
+            self._window_mode_combo.setCurrentIndex(window_idx)
+            self._sun_options.setVisible(window_idx == 0)
+            self._fixed_options.setVisible(window_idx == 1)
+
+            sun_idx = self._SUN_MODE_REVERSE.get(tl.get('sun_mode', 'astronomical'), 0)
+            self._sun_mode_combo.setCurrentIndex(sun_idx)
+
+            self._start_time_input.setText(tl.get('fixed_start', '18:00'))
+            self._end_time_input.setText(tl.get('fixed_end', '06:00'))
+            self._fps_spin.setValue(tl.get('playback_fps', 24))
+            self._crf_spin.setValue(tl.get('video_crf', 23))
+            self._overlays_switch.set_checked(tl.get('include_overlays', False))
+            self._output_dir_input.setText(tl.get('output_dir', ''))
+            self._keep_spin.setValue(tl.get('max_videos_to_keep', 30))
+        finally:
+            self._loading_config = False
+
+        # Show watch mode notice if applicable
+        capture_mode = config.get('capture_mode', 'camera')
+        self._watch_mode_notice.setVisible(capture_mode == 'watch')
+
+    # ------------------------------------------------------------------ #
+    #  Status display                                                      #
+    # ------------------------------------------------------------------ #
+
+    def update_status(self, status: dict):
+        """Called by TimelapseController.status_updated signal."""
+        if not hasattr(self, '_status_label'):
+            return
+        if status.get('recording'):
+            elapsed = status.get('elapsed_seconds', 0)
+            h, rem = divmod(elapsed, 3600)
+            m, s = divmod(rem, 60)
+            filename = os.path.basename(status.get('session_path', ''))
+            text = (
+                f"● Recording  ·  {status.get('frame_count', 0)} frames  ·  "
+                f"{h:02d}:{m:02d}:{s:02d} elapsed  ·  {filename}"
+            )
+            self._status_label.setText(text)
+            self._status_label.setStyleSheet(f"color: {Colors.status_success};")
+        else:
+            self._status_label.setText("Not recording")
+            self._status_label.setStyleSheet(f"color: {Colors.text_muted};")
+
+    def _refresh_status(self):
+        """Pull status from controller if available."""
+        if self.main_window and hasattr(self.main_window, 'timelapse_controller'):
+            self.update_status(self.main_window.timelapse_controller.get_status())
