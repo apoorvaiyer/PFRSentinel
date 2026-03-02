@@ -240,9 +240,11 @@ class ImageProcessorWorker(QThread):
                         ml_tokens = analyze_image_for_tokens(raw_array, config=ml_config)
                         metadata.update(ml_tokens)
                         
-                        # Store full results for preview display
+                        # Store full results for preview display and roof-gated timelapse
                         ml_results = ml_service.get_last_results()
                         metadata['_ML_RESULTS'] = ml_results
+                        if self._main_window:
+                            self._main_window.last_ml_results = ml_results
                         
                         app_logger.debug(f"ML predictions: roof={ml_tokens.get('ROOF_STATUS')}, sky={ml_tokens.get('SKY_CONDITION')}")
                         

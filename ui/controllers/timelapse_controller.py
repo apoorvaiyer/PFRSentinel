@@ -45,6 +45,11 @@ class TimelapseController(QObject):
         if not cfg.get('enabled', False):
             return
 
+        # Inject current roof state for roof-gated window mode
+        if cfg.get('window_mode') == 'roof':
+            ml_results = getattr(self._main_window, 'last_ml_results', None) or {}
+            cfg['roof_open'] = ml_results.get('roof_status') == 'Open'
+
         self._writer.configure(cfg)
         frame = overlaid_image if cfg.get('include_overlays', False) else clean_image
         self._writer.add_frame(frame)

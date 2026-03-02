@@ -269,7 +269,7 @@ class TimelapsePanel(QScrollArea):
         window_card = CollapsibleCard("Recording Window", FluentIcon.CALENDAR)
 
         self._window_mode_combo = ComboBox()
-        self._window_mode_combo.addItems(["Sunset / Sunrise", "Fixed Times", "Always On"])
+        self._window_mode_combo.addItems(["Sunset / Sunrise", "Fixed Times", "Always On", "Roof Open (Beta)"])
         self._window_mode_combo.currentIndexChanged.connect(self._on_window_mode_changed)
         window_card.add_row("Window Mode", self._window_mode_combo,
                              "When to record each day")
@@ -322,6 +322,24 @@ class TimelapsePanel(QScrollArea):
                                         "Overnight crossing (e.g. 18:00 → 06:00) is supported"))
         self._fixed_options.hide()
         window_card.add_widget(self._fixed_options)
+
+        # Roof open sub-options (Beta)
+        self._roof_options = QWidget()
+        roof_layout = QVBoxLayout(self._roof_options)
+        roof_layout.setContentsMargins(0, 0, 0, 0)
+        roof_layout.setSpacing(Spacing.xs)
+
+        roof_warning = CaptionLabel(
+            "\u26a0 Beta — Records while the ML roof model reports the roof as open. "
+            "ML Models must be enabled in Image Processing settings. "
+            "If ML is disabled or no frame has been processed yet, recording will not start."
+        )
+        roof_warning.setWordWrap(True)
+        roof_warning.setStyleSheet(f"color: {Colors.warning_text};")
+        roof_layout.addWidget(roof_warning)
+
+        self._roof_options.hide()
+        window_card.add_widget(self._roof_options)
 
         layout.addWidget(window_card)
 
@@ -404,6 +422,7 @@ class TimelapsePanel(QScrollArea):
     def _on_window_mode_changed(self, index: int):
         self._sun_options.setVisible(index == 0)
         self._fixed_options.setVisible(index == 1)
+        self._roof_options.setVisible(index == 3)
         if not self._loading_config:
             self._save_config()
 
@@ -429,8 +448,8 @@ class TimelapsePanel(QScrollArea):
     }
     _SUN_MODE_REVERSE = {v: k for k, v in _SUN_MODE_MAP.items()}
 
-    _WINDOW_MODE_MAP = {0: 'sun', 1: 'fixed', 2: 'always'}
-    _WINDOW_MODE_REVERSE = {'sun': 0, 'fixed': 1, 'always': 2}
+    _WINDOW_MODE_MAP = {0: 'sun', 1: 'fixed', 2: 'always', 3: 'roof'}
+    _WINDOW_MODE_REVERSE = {'sun': 0, 'fixed': 1, 'always': 2, 'roof': 3}
 
     def _save_config(self):
         if not self.main_window or not hasattr(self.main_window, 'config'):
@@ -468,6 +487,7 @@ class TimelapsePanel(QScrollArea):
             self._window_mode_combo.setCurrentIndex(window_idx)
             self._sun_options.setVisible(window_idx == 0)
             self._fixed_options.setVisible(window_idx == 1)
+            self._roof_options.setVisible(window_idx == 3)
 
             sun_idx = self._SUN_MODE_REVERSE.get(tl.get('sun_mode', 'astronomical'), 0)
             self._sun_mode_combo.setCurrentIndex(sun_idx)

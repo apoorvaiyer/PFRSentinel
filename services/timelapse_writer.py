@@ -187,6 +187,19 @@ class TimelapseWriter:
     def _is_in_window(self, now: datetime) -> bool:
         """Return True if now falls within the configured recording window."""
         mode = self._config.get('window_mode', 'sun')
+
+        if mode == 'roof':
+            # [Beta] Record only while the ML roof model reports the roof is open.
+            # roof_open is injected by TimelapseController on every frame.
+            # Defaults to False if ML is disabled or no frame has been processed yet.
+            is_open = bool(self._config.get('roof_open', False))
+            if is_open != getattr(self, '_last_roof_open', None):
+                self._last_roof_open = is_open
+                app_logger.info(
+                    f"Timelapse [roof mode]: roof {'open — recording' if is_open else 'closed — pausing'}"
+                )
+            return is_open
+
         try:
             window_start, window_end = self._get_window_for_day(now.date())
             return window_start <= now <= window_end
