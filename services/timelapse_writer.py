@@ -300,7 +300,6 @@ class TimelapseWriter:
         output_dir = self._config.get('output_dir', '')
         if not output_dir:
             from app_config import APP_DATA_FOLDER
-            import os
             output_dir = os.path.join(
                 os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER, 'timelapse'
             )
