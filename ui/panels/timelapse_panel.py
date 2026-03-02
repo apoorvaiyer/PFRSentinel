@@ -513,12 +513,33 @@ class TimelapsePanel(QScrollArea):
             self._status_label.setStyleSheet(f"color: {Colors.text_muted};")
 
         self._current_video_path = session_path
-        self._open_video_btn.setEnabled(bool(session_path and os.path.isfile(session_path)))
+        self._recording_active = status.get('recording', False)
+        file_exists = bool(session_path and os.path.isfile(session_path))
+
+        if self._recording_active and file_exists:
+            # File is locked by ffmpeg — show folder instead so user can drag to VLC
+            self._open_video_btn.setText("Show in folder")
+            self._open_video_btn.setIcon(FluentIcon.FOLDER)
+            self._open_video_btn.setEnabled(True)
+        elif file_exists:
+            # Recording stopped — file is finalized and safe to open directly
+            self._open_video_btn.setText("Open video")
+            self._open_video_btn.setIcon(FluentIcon.PLAY)
+            self._open_video_btn.setEnabled(True)
+        else:
+            self._open_video_btn.setText("Open video")
+            self._open_video_btn.setIcon(FluentIcon.PLAY)
+            self._open_video_btn.setEnabled(False)
 
     def _open_current_video(self):
-        """Open the current timelapse video with the system default player."""
+        """Open video or reveal in Explorer depending on recording state."""
         path = getattr(self, '_current_video_path', '')
-        if path and os.path.isfile(path):
+        if not path or not os.path.isfile(path):
+            return
+        if getattr(self, '_recording_active', False):
+            # Reveal in Explorer with the file selected
+            subprocess.run(['explorer', f'/select,{path}'])
+        else:
             os.startfile(path)
 
     def _refresh_status(self):
