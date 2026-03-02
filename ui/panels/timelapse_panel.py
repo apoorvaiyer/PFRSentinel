@@ -383,6 +383,13 @@ class TimelapsePanel(QScrollArea):
         self._status_label = BodyLabel("Not recording")
         self._status_label.setStyleSheet(f"color: {Colors.text_muted};")
         self._status_card.add_widget(self._status_label)
+
+        self._open_video_btn = PushButton("Open video")
+        self._open_video_btn.setIcon(FluentIcon.PLAY)
+        self._open_video_btn.setEnabled(False)
+        self._open_video_btn.clicked.connect(self._open_current_video)
+        self._status_card.add_widget(self._open_video_btn)
+
         layout.addWidget(self._status_card)
 
     # ------------------------------------------------------------------ #
@@ -487,11 +494,14 @@ class TimelapsePanel(QScrollArea):
         """Called by TimelapseController.status_updated signal."""
         if not hasattr(self, '_status_label'):
             return
+
+        session_path = status.get('session_path', '')
+
         if status.get('recording'):
             elapsed = status.get('elapsed_seconds', 0)
             h, rem = divmod(elapsed, 3600)
             m, s = divmod(rem, 60)
-            filename = os.path.basename(status.get('session_path', ''))
+            filename = os.path.basename(session_path)
             text = (
                 f"● Recording  ·  {status.get('frame_count', 0)} frames  ·  "
                 f"{h:02d}:{m:02d}:{s:02d} elapsed  ·  {filename}"
@@ -501,6 +511,15 @@ class TimelapsePanel(QScrollArea):
         else:
             self._status_label.setText("Not recording")
             self._status_label.setStyleSheet(f"color: {Colors.text_muted};")
+
+        self._current_video_path = session_path
+        self._open_video_btn.setEnabled(bool(session_path and os.path.isfile(session_path)))
+
+    def _open_current_video(self):
+        """Open the current timelapse video with the system default player."""
+        path = getattr(self, '_current_video_path', '')
+        if path and os.path.isfile(path):
+            os.startfile(path)
 
     def _refresh_status(self):
         """Pull status from controller if available."""
