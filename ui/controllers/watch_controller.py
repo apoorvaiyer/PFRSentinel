@@ -42,7 +42,8 @@ class WatchControllerQt(QObject):
             return
         
         try:
-            self.watcher = FileWatcher(self.config, on_image_processed=self._on_file_processed)
+            weather_service = getattr(self.main_window, 'weather_service', None)
+            self.watcher = FileWatcher(self.config, on_image_processed=self._on_file_processed, weather_service=weather_service)
             self.watcher.start()
             self.is_watching = True
             self.started.emit()

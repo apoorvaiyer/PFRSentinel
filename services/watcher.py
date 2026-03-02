@@ -15,10 +15,11 @@ from .logger import app_logger
 class ImageFileHandler(FileSystemEventHandler):
     """Handler for image file events"""
     
-    def __init__(self, config, on_image_processed=None):
+    def __init__(self, config, on_image_processed=None, weather_service=None):
         super().__init__()  # Initialize parent class
         self.config = config
         self.on_image_processed = on_image_processed
+        self.weather_service = weather_service
         self.processing = set()  # Track files being processed
         self.lock = threading.Lock()
         # Thread pool for concurrent file processing (REL-002 fix)
@@ -80,7 +81,7 @@ class ImageFileHandler(FileSystemEventHandler):
             
             # Process the image
             self.update_status(f"Processing: {filename}")
-            success, output_path, error, processed_img = process_image(filepath, self.config)
+            success, output_path, error, processed_img = process_image(filepath, self.config, weather_service=self.weather_service)
             
             if success:
                 self.update_status(f"✓ Saved: {os.path.basename(output_path)}")
@@ -155,9 +156,10 @@ class ImageFileHandler(FileSystemEventHandler):
 class FileWatcher:
     """Main file watcher class"""
     
-    def __init__(self, config, on_image_processed=None):
+    def __init__(self, config, on_image_processed=None, weather_service=None):
         self.config = config
         self.on_image_processed = on_image_processed
+        self.weather_service = weather_service
         self.observer = None
         self.handler = None
     
@@ -171,7 +173,7 @@ class FileWatcher:
         recursive = self.config.get('watch_recursive', True)
         
         # Create handler
-        self.handler = ImageFileHandler(self.config, self.on_image_processed)
+        self.handler = ImageFileHandler(self.config, self.on_image_processed, self.weather_service)
         
         # Create observer
         self.observer = Observer()

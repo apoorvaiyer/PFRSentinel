@@ -1051,7 +1051,7 @@ def build_output_filename(pattern, metadata, output_format='PNG'):
     return result
 
 
-def process_image(image_path, config, metadata_dict=None):
+def process_image(image_path, config, metadata_dict=None, weather_service=None):
     """
     Main processing function:
     1. Parse sidecar file OR use provided metadata
@@ -1114,6 +1114,23 @@ def process_image(image_path, config, metadata_dict=None):
             }
             overlays_to_apply.append(timestamp_overlay)
         
+        # === ML tokens (watch mode) ===
+        ml_config = config.get('ml_models', {})
+        if ml_config.get('enabled', False):
+            try:
+                from services.ml_service import get_ml_service, analyze_image_for_tokens
+                ml_service = get_ml_service()
+                if not ml_service.is_available():
+                    ml_service.initialize()
+                if ml_service.is_available():
+                    load_src = image_path if isinstance(image_path, str) else image_path
+                    ml_img = Image.open(load_src) if isinstance(load_src, str) else load_src
+                    ml_tokens = analyze_image_for_tokens(np.array(ml_img.convert('RGB')), config=ml_config)
+                    metadata.update(ml_tokens)
+                    app_logger.debug(f"ML tokens: {ml_tokens}")
+            except Exception as e:
+                app_logger.debug(f"ML prediction skipped: {e}")
+
         # Apply auto-stretch (MTF) BEFORE overlays for best results
         auto_stretch_config = config.get('auto_stretch', {})
         if auto_stretch_config.get('enabled', False):
@@ -1122,19 +1139,19 @@ def process_image(image_path, config, metadata_dict=None):
                 raw_img = Image.open(image_path)
             else:
                 raw_img = image_path
-            
+
             # Convert to RGB if needed for stretching
             if raw_img.mode not in ('RGB', 'RGBA', 'L'):
                 raw_img = raw_img.convert('RGB')
-            
+
             # Apply MTF stretch
             raw_img = auto_stretch_image(raw_img, auto_stretch_config)
-            
+
             # Add overlays to stretched image
-            processed_img = add_overlays(raw_img, overlays_to_apply, metadata)
+            processed_img = add_overlays(raw_img, overlays_to_apply, metadata, weather_service=weather_service)
         else:
             # Add overlays to image (no stretch)
-            processed_img = add_overlays(image_path, overlays_to_apply, metadata)
+            processed_img = add_overlays(image_path, overlays_to_apply, metadata, weather_service=weather_service)
         
         # Apply auto brightness if enabled (for saved images)
         if config.get('auto_brightness', False):
