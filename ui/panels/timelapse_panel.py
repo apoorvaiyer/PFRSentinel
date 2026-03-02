@@ -440,10 +440,10 @@ class TimelapsePanel(QScrollArea):
         tl['output_dir'] = self._output_dir_input.text()
         tl['max_videos_to_keep'] = self._keep_spin.value()
 
-        # Inherit coordinates from weather config if not set separately
+        # Inherit coordinates from weather config (always override None with weather values)
         weather = self.main_window.config.get('weather', {})
-        tl.setdefault('sun_latitude', weather.get('latitude') or None)
-        tl.setdefault('sun_longitude', weather.get('longitude') or None)
+        tl['sun_latitude'] = tl.get('sun_latitude') or weather.get('latitude') or None
+        tl['sun_longitude'] = tl.get('sun_longitude') or weather.get('longitude') or None
 
         self.main_window.config.set('timelapse', tl)
         self.main_window.config.save()
