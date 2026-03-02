@@ -36,9 +36,9 @@ try:
             if line.startswith('__version__'):
                 version_str = line.split('=')[1].strip().strip('"\'')
                 break
-    print(f"✓ Version from version.py: {version_str}")
+    print(f"[OK] Version from version.py: {version_str}")
 except Exception as e:
-    print(f"⚠ Could not read version.py: {e}")
+    print(f"[WARN] Could not read version.py: {e}")
 
 # Parse version components (e.g., "3.2.3" -> (3, 2, 3, 0))
 version_parts = version_str.split('.')
@@ -81,7 +81,7 @@ version_info = VSVersionInfo(
     ]
 )
 
-print(f"✓ Version info generated: {version_tuple}")
+print(f"[OK] Version info generated: {version_tuple}")
 
 # ============================================================================
 # COLLECT REQUIRED PACKAGES
@@ -90,41 +90,41 @@ print(f"✓ Version info generated: {version_tuple}")
 # --- qfluentwidgets (Fluent Design UI components) ---
 try:
     fluent_datas, fluent_binaries, fluent_hiddenimports = collect_all('qfluentwidgets')
-    print(f"✓ qfluentwidgets: {len(fluent_datas)} datas, {len(fluent_hiddenimports)} imports")
+    print(f"[OK] qfluentwidgets: {len(fluent_datas)} datas, {len(fluent_hiddenimports)} imports")
 except Exception as e:
-    print(f"⚠ qfluentwidgets: {e}")
+    print(f"[WARN] qfluentwidgets: {e}")
     fluent_datas, fluent_binaries, fluent_hiddenimports = [], [], []
 
 # --- requests (Discord webhooks, weather API) ---
 try:
     requests_datas, requests_binaries, requests_hiddenimports = collect_all('requests')
-    print(f"✓ requests: {len(requests_datas)} datas, {len(requests_hiddenimports)} imports")
+    print(f"[OK] requests: {len(requests_datas)} datas, {len(requests_hiddenimports)} imports")
 except Exception as e:
-    print(f"⚠ requests: {e}")
+    print(f"[WARN] requests: {e}")
     requests_datas, requests_binaries, requests_hiddenimports = [], [], []
 
 # --- jaraco (required by pkg_resources/setuptools) ---
 try:
     jaraco_datas, jaraco_binaries, jaraco_hiddenimports = collect_all('jaraco')
-    print(f"✓ jaraco: {len(jaraco_datas)} datas, {len(jaraco_hiddenimports)} imports")
+    print(f"[OK] jaraco: {len(jaraco_datas)} datas, {len(jaraco_hiddenimports)} imports")
 except Exception as e:
-    print(f"⚠ jaraco: {e}")
+    print(f"[WARN] jaraco: {e}")
     jaraco_datas, jaraco_binaries, jaraco_hiddenimports = [], [], []
 
 # --- pystray (system tray) ---
 try:
     pystray_datas, pystray_binaries, pystray_hiddenimports = collect_all('pystray')
-    print(f"✓ pystray: {len(pystray_datas)} datas, {len(pystray_hiddenimports)} imports")
+    print(f"[OK] pystray: {len(pystray_datas)} datas, {len(pystray_hiddenimports)} imports")
 except Exception as e:
-    print(f"⚠ pystray: {e}")
+    print(f"[WARN] pystray: {e}")
     pystray_datas, pystray_binaries, pystray_hiddenimports = [], [], []
 
 # --- platformdirs (required by pkg_resources) ---
 try:
     platformdirs_datas, platformdirs_binaries, platformdirs_hiddenimports = collect_all('platformdirs')
-    print(f"✓ platformdirs: {len(platformdirs_datas)} datas, {len(platformdirs_hiddenimports)} imports")
+    print(f"[OK] platformdirs: {len(platformdirs_datas)} datas, {len(platformdirs_hiddenimports)} imports")
 except Exception as e:
-    print(f"⚠ platformdirs: {e}")
+    print(f"[WARN] platformdirs: {e}")
     platformdirs_datas, platformdirs_binaries, platformdirs_hiddenimports = [], [], []
 
 # --- onnxruntime (ML inference - lightweight, minimal collection) ---
@@ -134,9 +134,9 @@ try:
     onnx_datas = collect_data_files('onnxruntime')
     onnx_binaries = collect_dynamic_libs('onnxruntime')
     onnx_hiddenimports = ['onnxruntime', 'onnxruntime.capi', 'onnxruntime.capi._pybind_state']
-    print(f"✓ onnxruntime: {len(onnx_datas)} datas, {len(onnx_hiddenimports)} imports")
+    print(f"[OK] onnxruntime: {len(onnx_datas)} datas, {len(onnx_hiddenimports)} imports")
 except Exception as e:
-    print(f"⚠ onnxruntime: {e}")
+    print(f"[WARN] onnxruntime: {e}")
     onnx_datas, onnx_binaries, onnx_hiddenimports = [], [], []
 
 # --- Python 3.13 critical: xml.parsers.expat binary ---
@@ -147,9 +147,9 @@ try:
         pyd_path = os.path.join(dll_path, pyd)
         if os.path.exists(pyd_path):
             xml_binaries.append((pyd_path, '.'))
-            print(f"✓ {pyd}: found")
+            print(f"[OK] {pyd}: found")
 except Exception as e:
-    print(f"⚠ XML binaries: {e}")
+    print(f"[WARN] XML binaries: {e}")
 
 # ============================================================================
 # DATA FILES

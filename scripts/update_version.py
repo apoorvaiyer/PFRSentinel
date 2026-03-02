@@ -24,7 +24,7 @@ if match:
     version_iss = project_root / "version.iss"
     version_iss.write_text(f'; Auto-generated from version.py - DO NOT EDIT MANUALLY\n#define MyAppVersion "{version}"\n')
     
-    print(f"✓ Generated version.iss with version {version}")
+    print(f"[OK] Generated version.iss with version {version}")
 else:
-    print("✗ Could not find version in version.py")
+    print("[FAIL] Could not find version in version.py")
     exit(1)
