@@ -141,12 +141,21 @@ class FfmpegInstallCard(CardWidget):
     def _on_install_finished(self, success: bool, message: str):
         self._progress.hide()
 
-        if success:
-            # ffmpeg is now installed but the current process PATH won't reflect
-            # it until the app is restarted — prompt the user rather than re-probing.
+        # Always re-probe after winget exits — it may have installed ffmpeg
+        # to the winget packages folder even when the exit code is non-zero
+        # (e.g. "already installed, upgrade not applicable" = exit 2316632107).
+        ffmpeg_found = is_ffmpeg_available()
+
+        if ffmpeg_found:
+            self._winget_btn.setEnabled(False)
+            self._status_label.setText("✓ ffmpeg is ready.")
+            self._status_label.setStyleSheet(f"color: {Colors.status_success};")
+            self.install_succeeded.emit()
+        elif success:
+            # winget exited cleanly but ffmpeg isn't findable yet (PATH not updated)
             self._winget_btn.setEnabled(False)
             self._status_label.setText(
-                "✓ ffmpeg installed successfully. Please restart PFRSentinel to activate timelapse."
+                "✓ ffmpeg installed. Please restart PFRSentinel to activate timelapse."
             )
             self._status_label.setStyleSheet(f"color: {Colors.status_success};")
         else:

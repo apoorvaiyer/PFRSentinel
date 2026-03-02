@@ -13,7 +13,7 @@ from PIL import Image
 import numpy as np
 
 from .logger import app_logger
-from .ffmpeg_utils import is_ffmpeg_available
+from .ffmpeg_utils import is_ffmpeg_available, get_ffmpeg_path
 
 
 class TimelapseWriter:
@@ -315,7 +315,7 @@ class TimelapseWriter:
         fps = self._config.get('playback_fps', 24)
 
         return [
-            'ffmpeg',
+            get_ffmpeg_path(),
             '-f', 'rawvideo',
             '-pixel_format', 'rgb24',
             '-video_size', f'{width}x{height}',
