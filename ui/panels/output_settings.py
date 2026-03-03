@@ -18,6 +18,7 @@ import os
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard
+from services.ffmpeg_utils import is_ffmpeg_available
 
 
 class OutputSettingsPanel(QScrollArea):
@@ -238,7 +239,56 @@ class OutputSettingsPanel(QScrollArea):
         discord_card.add_widget(test_widget)
         
         layout.addWidget(discord_card)
-        
+
+        # === RTSP STREAMING ===
+        rtsp_card = CollapsibleCard("RTSP Streaming", FluentIcon.VIDEO)
+
+        self._rtsp_ffmpeg_available = is_ffmpeg_available()
+        if not self._rtsp_ffmpeg_available:
+            rtsp_warn = CaptionLabel(
+                "⚠  ffmpeg not found — install it via the Timelapse panel to enable RTSP streaming."
+            )
+            rtsp_warn.setWordWrap(True)
+            rtsp_warn.setStyleSheet(f"color: {Colors.warning_text};")
+            rtsp_card.add_widget(rtsp_warn)
+
+        self.rtsp_enabled_switch = SwitchRow(
+            "Enable RTSP Stream",
+            "Push the latest image to an RTSP endpoint (requires ffmpeg)"
+        )
+        if not self._rtsp_ffmpeg_available:
+            self.rtsp_enabled_switch.setEnabled(False)
+        self.rtsp_enabled_switch.toggled.connect(self._on_rtsp_settings_changed)
+        rtsp_card.add_widget(self.rtsp_enabled_switch)
+
+        self.rtsp_host_input = LineEdit()
+        self.rtsp_host_input.setPlaceholderText("127.0.0.1")
+        self.rtsp_host_input.textChanged.connect(self._on_rtsp_settings_changed)
+        rtsp_card.add_row("Host", self.rtsp_host_input)
+
+        self.rtsp_port_spin = SpinBox()
+        self.rtsp_port_spin.setRange(1, 65535)
+        self.rtsp_port_spin.setValue(8554)
+        self.rtsp_port_spin.valueChanged.connect(self._on_rtsp_settings_changed)
+        rtsp_card.add_row("Port", self.rtsp_port_spin)
+
+        self.rtsp_stream_name_input = LineEdit()
+        self.rtsp_stream_name_input.setPlaceholderText("asiwatchdog")
+        self.rtsp_stream_name_input.textChanged.connect(self._on_rtsp_settings_changed)
+        rtsp_card.add_row("Stream name", self.rtsp_stream_name_input,
+                          "Full URL: rtsp://host:port/stream-name")
+
+        self.rtsp_fps_spin = DoubleSpinBox()
+        self.rtsp_fps_spin.setRange(0.1, 60.0)
+        self.rtsp_fps_spin.setDecimals(1)
+        self.rtsp_fps_spin.setValue(1.0)
+        self.rtsp_fps_spin.setSuffix(" fps")
+        self.rtsp_fps_spin.valueChanged.connect(self._on_rtsp_settings_changed)
+        rtsp_card.add_row("Frame rate", self.rtsp_fps_spin,
+                          "How often the latest image is pushed to the stream")
+
+        layout.addWidget(rtsp_card)
+
         # === CLEANUP ===
         cleanup_card = CollapsibleCard("Storage Cleanup", FluentIcon.DELETE)
         
@@ -395,6 +445,19 @@ class OutputSettingsPanel(QScrollArea):
             self.discord_status_label.setText(f"❌ {message}")
             self.discord_status_label.setStyleSheet(f"color: {Colors.status_error};")
     
+    def _on_rtsp_settings_changed(self):
+        if self._loading_config:
+            return
+        if self.main_window and hasattr(self.main_window, 'config'):
+            output = self.main_window.config.get('output', {})
+            output['rtsp_enabled'] = self.rtsp_enabled_switch.is_checked()
+            output['rtsp_host'] = self.rtsp_host_input.text() or '127.0.0.1'
+            output['rtsp_port'] = self.rtsp_port_spin.value()
+            output['rtsp_stream_name'] = self.rtsp_stream_name_input.text() or 'asiwatchdog'
+            output['rtsp_fps'] = self.rtsp_fps_spin.value()
+            self.main_window.config.set('output', output)
+            self.settings_changed.emit()
+
     def _on_cleanup_settings_changed(self):
         if self._loading_config:
             return
@@ -446,6 +509,13 @@ class OutputSettingsPanel(QScrollArea):
             embed_color = discord.get('embed_color_hex', '#0EA5E9')
             self.embed_color_picker.setColor(QColor(embed_color))
             
+            # RTSP
+            self.rtsp_enabled_switch.set_checked(output.get('rtsp_enabled', False))
+            self.rtsp_host_input.setText(output.get('rtsp_host', '127.0.0.1'))
+            self.rtsp_port_spin.setValue(output.get('rtsp_port', 8554))
+            self.rtsp_stream_name_input.setText(output.get('rtsp_stream_name', 'asiwatchdog'))
+            self.rtsp_fps_spin.setValue(output.get('rtsp_fps', 1.0))
+
             # Cleanup
             self.cleanup_enabled_switch.set_checked(config.get('cleanup_enabled', False))
             self.max_size_spin.setValue(config.get('cleanup_max_size_gb', 10.0))

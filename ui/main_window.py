@@ -904,11 +904,20 @@ class MainWindow(QMainWindow):
                 camera_controller=self.camera_controller,
                 live_panel=self.live_panel
             )
-            
+
             # Update live monitoring if capturing
             if self.is_capturing and self.camera_controller:
                 self.live_panel.update_from_camera(self.camera_controller)
-                
+
+            # Timelapse recording badge
+            if self.timelapse_controller:
+                recording = self.timelapse_controller.get_status().get('recording', False)
+                self.nav_rail.set_badge('timelapse', recording)
+
+            # RTSP streaming badge
+            rtsp_running = bool(self.rtsp_server and self.rtsp_server.running)
+            self.nav_rail.set_badge('output', rtsp_running)
+
         except Exception as e:
             app_logger.debug(f"Status update error: {e}")
     
@@ -1151,11 +1160,16 @@ class MainWindow(QMainWindow):
     def _ensure_output_servers_started(self):
         """Ensure output servers are started if configured (called when capture begins)"""
         output_config = self.config.get('output', {})
-        
+
         # Start web server if enabled and not running
         if output_config.get('webserver_enabled', False):
             if not self.web_server or not self.web_server.running:
                 self._start_web_server()
+
+        # Start RTSP server if enabled and not running
+        if output_config.get('rtsp_enabled', False):
+            if not self.rtsp_server or not self.rtsp_server.running:
+                self._start_rtsp_server()
     
     def _start_web_server(self):
         """Start web server with current settings"""
@@ -1190,7 +1204,20 @@ class MainWindow(QMainWindow):
                 self.app_bar.set_web_status(False, False)
             except Exception as e:
                 app_logger.error(f"Error stopping web server: {e}")
-    
+
+    def _start_rtsp_server(self):
+        """Start the RTSP streaming server with current settings"""
+        from services.rtsp_output import RTSPStreamServer
+        output_config = self.config.get('output', {})
+        host = output_config.get('rtsp_host', '0.0.0.0')
+        port = output_config.get('rtsp_port', 8554)
+        stream_name = output_config.get('rtsp_stream_name', 'asiwatchdog')
+        fps = output_config.get('rtsp_fps', 1.0)
+        self.rtsp_server = RTSPStreamServer(host, port, stream_name, fps)
+        if not self.rtsp_server.start():
+            app_logger.error("Failed to start RTSP server")
+            self.rtsp_server = None
+
     def _push_to_output_servers(self, image_path: str, processed_img):
         """Push processed image to active output servers
         
@@ -1225,9 +1252,9 @@ class MainWindow(QMainWindow):
                 )
                 app_logger.debug(f"Pushed image to web server ({content_type})")
             
-            # TODO: Push to RTSP server if running
-            # if self.rtsp_server and self.rtsp_server.running:
-            #     self.rtsp_server.update_image(processed_img)
+            # Push to RTSP server if running
+            if self.rtsp_server and self.rtsp_server.running:
+                self.rtsp_server.update_image(processed_img)
             
             # Send to Discord if enabled and periodic posting is on
             discord_config = self.config.get('discord', {})
