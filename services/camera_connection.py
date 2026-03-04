@@ -699,6 +699,14 @@ class CameraConnection:
                     except Exception as e:
                         self.log(f"Exposure stop callback error: {e}")
                 
+                # Stop any in-progress exposure before touching camera state.
+                # If the camera is mid-exposure or in ASI_EXP_FAILED, calls like
+                # set_roi() will fail. stop_exposure() returns it to idle first.
+                try:
+                    self.camera.stop_exposure()
+                except Exception:
+                    pass  # Ignore — camera may already be idle or not support this
+
                 # CRITICAL: Reset camera properties to factory defaults BEFORE closing
                 # This prevents SDK state contamination that affects other applications
                 try:
@@ -726,7 +734,8 @@ class CameraConnection:
                         self.camera.set_control_value(self.asi.ASI_FLIP, 0)  # No flip
                         self.camera.set_control_value(self.asi.ASI_AUTO_MAX_GAIN, 0)  # Disable auto
                         self.camera.set_control_value(self.asi.ASI_AUTO_MAX_EXP, 0)  # Disable auto
-                        self.camera.set_control_value(self.asi.ASI_AUTO_TARGET_BRIGHTNESS, 100)
+                        if hasattr(self.asi, 'ASI_AUTO_TARGET_BRIGHTNESS'):
+                            self.camera.set_control_value(self.asi.ASI_AUTO_TARGET_BRIGHTNESS, 100)
                         self.log("  ✓ Camera controls reset to factory defaults")
                     except Exception as e:
                         self.log(f"  ⚠ Some controls could not be reset (camera may be monochrome): {e}")
