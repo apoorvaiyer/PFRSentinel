@@ -752,7 +752,10 @@ class CameraConnection:
                     
                     # IMPORTANT: Add delay after close to ensure SDK fully releases USB device
                     # Without this, rapid reconnection attempts can find device in bad state
-                    time.sleep(0.5)
+                    try:
+                        time.sleep(0.5)
+                    except OSError:
+                        pass  # WinError 6: handle invalid during interpreter shutdown
                     
                 except Exception as e:
                     self.log(f"⚠ Warning during camera close: {e}")
