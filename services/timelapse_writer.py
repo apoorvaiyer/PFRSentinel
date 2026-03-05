@@ -1,7 +1,7 @@
 """
 Timelapse video writer for camera capture mode.
 Pipes processed frames directly into a long-running ffmpeg subprocess,
-producing a growing fragmented MP4 with no intermediate frame files.
+producing a standard MP4 with correct duration metadata.
 """
 import os
 import subprocess
@@ -126,6 +126,10 @@ class TimelapseWriter:
 
     def _start_session(self, frame_size: Tuple[int, int], now: datetime):
         """Start a new ffmpeg session for today."""
+        # Stop any in-progress session first (e.g. day rollover while still recording)
+        if self._process is not None:
+            self._stop_session()
+
         if not is_ffmpeg_available():
             app_logger.warning("Timelapse: ffmpeg not found — cannot start session")
             return
@@ -179,7 +183,9 @@ class TimelapseWriter:
 
         clean_exit = True
         try:
-            proc.wait(timeout=10)
+            # Allow up to 60 s — +faststart rewrites the entire file after encoding,
+            # which can take 20–40 s for a large overnight session.
+            proc.wait(timeout=60)
             app_logger.info(
                 f"Timelapse: session finalized — {finished_frames} frames → "
                 f"{os.path.basename(finished_path or '')}"
@@ -364,14 +370,14 @@ class TimelapseWriter:
             '-f', 'rawvideo',
             '-pixel_format', 'rgb24',
             '-video_size', f'{width}x{height}',
-            '-framerate', str(fps),      # input PTS step = 1/fps → each frame = 1 output frame
+            '-framerate', str(fps),      # each piped frame = 1/fps seconds → correct playback speed
             '-i', 'pipe:0',
             '-c:v', 'libx264',
             '-crf', str(crf),
             '-preset', str(preset),
-            '-r', str(fps),              # output playback framerate
+            '-r', str(fps),
             '-pix_fmt', 'yuv420p',
-            '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+            '-movflags', '+faststart',   # correct duration metadata; moov moved to front after encode
             '-y',
             output_path,
         ]
