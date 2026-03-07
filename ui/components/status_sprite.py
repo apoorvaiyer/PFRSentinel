@@ -63,6 +63,8 @@ class StatusSpriteWidget(QWidget):
         self._waiting_word = ""       # current word shown in speech bubble
         self._waiting_word_pool = []  # shuffled queue — drains before reshuffling
         self._state_start = 0.0       # wall-clock time when current state began
+        self._stretch_dir = 1         # +1 left→right, -1 right→left
+        self._stretch_flip_at = 2.0   # elapsed seconds until next direction flip
 
         self.setMinimumSize(self.MIN_SIZE, self.MIN_SIZE)
         sp = self.sizePolicy()
@@ -87,6 +89,9 @@ class StatusSpriteWidget(QWidget):
             self._frame = 0
             self._state_start = time.monotonic()
             self._waiting_cycle = -1  # force fresh word pick on next waiting paint
+            if new_state == 'stretching':
+                self._stretch_dir = random.choice([-1, 1])
+                self._stretch_flip_at = random.uniform(1.5, 3.0)
         self._state = new_state
         self.setToolTip(self.STATE_TOOLTIPS.get(self._state, '') if self._state else '')
         if self._state is not None:
@@ -300,8 +305,12 @@ class StatusSpriteWidget(QWidget):
         s = min(w, h)
         cx = w / 2.0
 
-        # Wall-clock elapsed time — always advances regardless of _frame or GIL state
         elapsed = time.monotonic() - self._state_start
+
+        # Randomly flip wave direction
+        if elapsed >= self._stretch_flip_at:
+            self._stretch_dir *= -1
+            self._stretch_flip_at = elapsed + random.uniform(1.5, 3.0)
 
         num = 9
         bar_w = s * 0.07
@@ -313,20 +322,17 @@ class StatusSpriteWidget(QWidget):
         for i in range(num):
             norm = (i - (num - 1) / 2) / ((num - 1) / 2)  # -1 to +1
 
-            # Centre bar leads; edge bars lag — creates "spreading outward" histogram look
-            # Edge bars are delayed by up to 0.5 s, so the bell curve grows from the middle out
-            phase_delay = abs(norm) * 0.5
-            t = max(0.0, elapsed - phase_delay) * 1.5 + math.pi * 0.75
-            stretch_factor = abs(math.sin(t))
+            # Traveling wave across bars: phase offset per bar gives a left→right (or right→left) sweep
+            wave_phase = elapsed * 2.2 * self._stretch_dir - i * (2 * math.pi / (num - 1))
+            stretch_factor = (math.sin(wave_phase) + 1) / 2
 
-            # Compressed: all bars ~15 % of available height
-            # Stretched: bell-curve peak (centre tallest, edges shortest)
-            compressed_h = (h - 8) * 0.15
+            # Bell-curve caps per-bar peak height (centre tallest, edges shorter)
+            compressed_h = (h - 8) * 0.12
             peak_h = math.exp(-0.5 * (norm * 1.5) ** 2) * (h - 8)
             bar_h = max(3.0, compressed_h + stretch_factor * (peak_h - compressed_h))
 
             c = QColor(c_iris)
-            c.setAlphaF(0.35 + stretch_factor * 0.65)
+            c.setAlphaF(0.30 + stretch_factor * 0.70)
             p.setBrush(c)
             x = x0 + i * (bar_w + gap)
             p.drawRoundedRect(QRectF(x, h - bar_h - 4, bar_w, bar_h), 1.5, 1.5)

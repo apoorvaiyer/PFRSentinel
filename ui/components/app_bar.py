@@ -352,11 +352,11 @@ class AppBar(QFrame):
         gen = self._status_generation
 
         current = self.status_sprite._state
-        # Hold stretching/processing animations for at least 500 ms so they're visible
+        # Hold stretching/processing animations for at least 250 ms so they're visible
         # Only delay "end-of-pipeline" transitions; urgent state changes apply immediately
         if current in ('stretching', 'processing') and status in ('sending', 'waiting', None):
             from PySide6.QtCore import QTimer as _QTimer
-            _QTimer.singleShot(500, lambda: self._apply_status(status, gen))
+            _QTimer.singleShot(250, lambda: self._apply_status(status, gen))
         else:
             self._apply_status(status, gen)
 
