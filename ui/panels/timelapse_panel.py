@@ -360,12 +360,17 @@ class TimelapsePanel(QScrollArea):
         quality_card.add_row("Output resolution", self._resolution_combo,
                               "Downscale longest side — reduces file size significantly")
 
-        self._crf_spin = SpinBox()
-        self._crf_spin.setRange(0, 51)
-        self._crf_spin.setValue(23)
-        self._crf_spin.valueChanged.connect(self._on_settings_changed)
-        quality_card.add_row("Quality (CRF)", self._crf_spin,
-                              "Lower = better quality, larger file (0-51, default 23)")
+        self._quality_combo = ComboBox()
+        self._quality_combo.addItems([
+            "Efficient  ·  smallest file",
+            "Balanced  ·  recommended",
+            "High quality  ·  larger file",
+            "Maximum  ·  largest file",
+        ])
+        self._quality_combo.setCurrentIndex(1)  # default: Balanced
+        self._quality_combo.currentIndexChanged.connect(self._on_settings_changed)
+        quality_card.add_row("Video quality", self._quality_combo,
+                              "Higher quality = larger file size")
 
         self._overlays_switch = SwitchRow(
             "Include overlays in video",
@@ -470,7 +475,8 @@ class TimelapsePanel(QScrollArea):
         tl['playback_fps'] = self._fps_spin.value()
         _res_map = {0: 0, 1: 1920, 2: 1440, 3: 1280, 4: 720}
         tl['output_max_dim'] = _res_map.get(self._resolution_combo.currentIndex(), 0)
-        tl['video_crf'] = self._crf_spin.value()
+        _quality_map = {0: 28, 1: 23, 2: 18, 3: 12}
+        tl['video_crf'] = _quality_map.get(self._quality_combo.currentIndex(), 23)
         tl['include_overlays'] = self._overlays_switch.is_checked()
         tl['output_dir'] = self._output_dir_input.text()
         tl['max_videos_to_keep'] = self._keep_spin.value()
@@ -508,7 +514,10 @@ class TimelapsePanel(QScrollArea):
             self._resolution_combo.setCurrentIndex(
                 _res_reverse.get(tl.get('output_max_dim', 1920), 1)
             )
-            self._crf_spin.setValue(tl.get('video_crf', 23))
+            _quality_reverse = {28: 0, 23: 1, 18: 2, 12: 3}
+            self._quality_combo.setCurrentIndex(
+                _quality_reverse.get(tl.get('video_crf', 23), 1)
+            )
             self._overlays_switch.set_checked(tl.get('include_overlays', False))
             self._output_dir_input.setText(tl.get('output_dir', ''))
             self._keep_spin.setValue(tl.get('max_videos_to_keep', 30))
