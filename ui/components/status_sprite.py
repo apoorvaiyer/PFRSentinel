@@ -58,8 +58,9 @@ class StatusSpriteWidget(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.setInterval(40)   # 25 fps
 
-        self._waiting_cycle = -1   # tracks which 750-frame cycle we're in
-        self._waiting_word = ""    # current word shown in speech bubble
+        self._waiting_cycle = -1      # tracks which 750-frame cycle we're in
+        self._waiting_word = ""       # current word shown in speech bubble
+        self._waiting_word_pool = []  # shuffled queue — drains before reshuffling
 
         self.setMinimumSize(self.MIN_SIZE, self.MIN_SIZE)
         sp = self.sizePolicy()
@@ -161,8 +162,8 @@ class StatusSpriteWidget(QWidget):
         t = self._frame * 0.055
         c_iris = QColor(Colors.accent_text)
 
-        # Speech bubble: visible for first 100 frames of every 750-frame cycle (~4s on, ~26s off)
-        SHOW_FRAMES = 100
+        # Speech bubble: visible for first 200 frames of every 750-frame cycle (~8s on, ~22s off)
+        SHOW_FRAMES = 200
         CYCLE = 750
         frame_in_cycle = self._frame % CYCLE
         bubble_visible = frame_in_cycle < SHOW_FRAMES
@@ -178,10 +179,10 @@ class StatusSpriteWidget(QWidget):
         if not bubble_visible:
             return
 
-        # Fade in (0-15) / hold (15-85) / fade out (85-100)
+        # Fade in (0-15) / hold (15-185) / fade out (185-200)
         if frame_in_cycle < 15:
             fade = frame_in_cycle / 15.0
-        elif frame_in_cycle > 85:
+        elif frame_in_cycle > 185:
             fade = (SHOW_FRAMES - frame_in_cycle) / 15.0
         else:
             fade = 1.0
@@ -189,7 +190,11 @@ class StatusSpriteWidget(QWidget):
         current_cycle = self._frame // CYCLE
         if current_cycle != self._waiting_cycle:
             self._waiting_cycle = current_cycle
-            self._waiting_word = random.choice(self.WAITING_WORDS)
+            if not self._waiting_word_pool:
+                pool = list(self.WAITING_WORDS)
+                random.shuffle(pool)
+                self._waiting_word_pool = pool
+            self._waiting_word = self._waiting_word_pool.pop()
         word = self._waiting_word
 
         # Bubble geometry: sits above the dots, tail points down to the center dot
@@ -299,8 +304,9 @@ class StatusSpriteWidget(QWidget):
             # Bell curve caps how tall each bar can grow (centre tallest)
             max_h = math.exp(-0.5 * (norm * 1.1) ** 2) * (h - 8)
 
-            # Left-to-right wave phase offset per bar
-            stretch = max(0.0, math.sin(t - i * 0.42))
+            # Evenly spread bars across a full 2π cycle — always moving, no dead periods
+            phase = t - i * (2 * math.pi / num)
+            stretch = (math.sin(phase) + 1) / 2   # 0.0 → 1.0, never clamps flat
             bar_h = stub_h + stretch * (max_h - stub_h)
 
             c = QColor(c_iris)
