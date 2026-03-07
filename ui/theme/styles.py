@@ -12,10 +12,40 @@ from .tokens import Colors, Typography, Spacing, Layout
 
 def apply_theme():
     """Apply PFRAstro dark theme to QFluentWidgets"""
-    # Set dark theme
     setTheme(Theme.DARK)
-    
-    # Set accent color to Iris purple
+    setThemeColor(QColor(Colors.iris_9))
+
+
+def apply_accent_theme(name: str) -> None:
+    """
+    Switch the accent colour palette at runtime.
+
+    Updates the Colors class attributes for the iris/accent scale, then
+    calls setThemeColor() so qfluentwidgets components update immediately.
+    The caller is responsible for re-applying get_stylesheet() to the main
+    window so QSS-based widgets also refresh.
+
+    Args:
+        name: Key from ACCENT_PRESETS (e.g. 'nebula', 'aurora').
+              Falls back to 'iris' if unknown.
+    """
+    from .accent_themes import ACCENT_PRESETS
+
+    preset = ACCENT_PRESETS.get(name, ACCENT_PRESETS['iris'])
+    overrides = preset['colors']
+
+    # Patch Colors class attributes in-place
+    for attr, value in overrides.items():
+        setattr(Colors, attr, value)
+
+    # Rebuild semantic accent aliases from patched iris values
+    Colors.accent_subtle  = Colors.iris_3
+    Colors.accent_default = Colors.iris_9
+    Colors.accent_hover   = Colors.iris_10
+    Colors.accent_active  = Colors.iris_4
+    Colors.accent_text    = Colors.iris_11
+    Colors.border_focus   = Colors.iris_6
+
     setThemeColor(QColor(Colors.iris_9))
 
 

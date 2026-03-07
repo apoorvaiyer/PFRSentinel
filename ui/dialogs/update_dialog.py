@@ -12,6 +12,7 @@ from qfluentwidgets import (
     PrimaryPushButton, PushButton, FluentIcon
 )
 
+from services.logger import app_logger
 from ..theme.tokens import Colors, Spacing
 
 
@@ -148,7 +149,12 @@ class UpdateDialog(MessageBoxBase):
     def _on_download(self):
         """Start download in background thread."""
         from services.update_checker import get_update_checker
-        
+
+        app_logger.info(
+            f"Update download started: {self.update_info.installer_name} "
+            f"({self.update_info.installer_size_mb:.1f} MB)"
+        )
+
         self.download_btn.setEnabled(False)
         self.download_btn.setText("Downloading...")
         self.progress_bar.setVisible(True)
@@ -174,13 +180,14 @@ class UpdateDialog(MessageBoxBase):
     def _on_download_finished(self, result):
         """Handle download completion."""
         self._download_thread = None
-        
+
         if result:
             self._downloaded_path = result
             self.progress_bar.setValue(100)
             self.status_label.setText(f"✅ Downloaded to: {result}")
             self.status_label.setStyleSheet(f"color: {Colors.status_ok};")
-            
+            app_logger.info(f"Update ready to install: {result}")
+
             # Disconnect old handler first
             try:
                 self.download_btn.clicked.disconnect()
@@ -192,6 +199,9 @@ class UpdateDialog(MessageBoxBase):
             self.progress_bar.setVisible(False)
             self.status_label.setText("❌ Download failed - try View on GitHub")
             self.status_label.setStyleSheet(f"color: {Colors.status_error};")
+            app_logger.warning(
+                f"Update download failed: {self.update_info.installer_name}"
+            )
             self._reset_download_button("Retry Download")
     
     def _set_run_installer_button(self):
@@ -212,7 +222,6 @@ class UpdateDialog(MessageBoxBase):
         """Launch the downloaded installer and close the app."""
         import os
         import subprocess
-        from services.logger import app_logger
         
         if not self._downloaded_path or not os.path.exists(self._downloaded_path):
             self.status_label.setText("❌ Installer file not found")

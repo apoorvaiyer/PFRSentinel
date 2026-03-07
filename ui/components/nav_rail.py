@@ -276,6 +276,12 @@ class NavRail(QFrame):
         
         self.collapsed_changed.emit(self._collapsed)
     
+    def refresh_styles(self):
+        """Re-apply inline stylesheets on all buttons using current Colors values.
+        Call after an accent theme change so the selected highlight updates."""
+        for btn in self._buttons.values():
+            btn._update_style()
+
     def set_badge(self, key: str, visible: bool, text: str = ""):
         """Set badge visibility on a navigation button.
         

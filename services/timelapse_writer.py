@@ -37,6 +37,8 @@ class TimelapseWriter:
         self._frame_count: int = 0
         self._session_path: Optional[str] = None
         self._config: dict = {}
+        self._last_in_window: Optional[bool] = None   # for transition logging
+        self._last_enabled: bool = False               # for configure change logging
         # Optional callback(path, frame_count, elapsed_seconds) called after
         # each session finalizes. Set by TimelapseController for Discord posts.
         self.on_session_finished = None
@@ -47,6 +49,10 @@ class TimelapseWriter:
 
     def configure(self, config: dict):
         """Update config dict (call whenever settings change)."""
+        enabled = config.get('enabled', False)
+        if enabled != self._last_enabled:
+            self._last_enabled = enabled
+            app_logger.info(f"Timelapse: {'enabled' if enabled else 'disabled'}")
         self._config = config
 
     def add_frame(self, image: Image.Image) -> bool:
@@ -92,7 +98,8 @@ class TimelapseWriter:
                     self._process.stdin.write(frame_bytes)
                     self._process.stdin.flush()
                     self._frame_count += 1
-                    app_logger.debug(f"Timelapse: frame {self._frame_count} written ({len(frame_bytes):,} bytes)")
+                    if self._frame_count % 100 == 0:
+                        app_logger.debug(f"Timelapse: {self._frame_count} frames recorded")
                     return True
 
         except BrokenPipeError:
@@ -138,7 +145,13 @@ class TimelapseWriter:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
         cmd = self._build_ffmpeg_cmd(frame_size, output_path)
+        crf = self._config.get('video_crf', 23)
+        fps = self._config.get('playback_fps', 24)
+        preset = self._config.get('video_preset', 'fast')
         app_logger.info(f"Timelapse: starting session → {os.path.basename(output_path)}")
+        app_logger.debug(
+            f"Timelapse: {frame_size[0]}x{frame_size[1]} @ {fps}fps  CRF={crf}  preset={preset}"
+        )
 
         try:
             self._process = subprocess.Popen(
@@ -186,9 +199,10 @@ class TimelapseWriter:
             # Allow up to 60 s — +faststart rewrites the entire file after encoding,
             # which can take 20–40 s for a large overnight session.
             proc.wait(timeout=60)
+            mins, secs = divmod(finished_elapsed, 60)
             app_logger.info(
-                f"Timelapse: session finalized — {finished_frames} frames → "
-                f"{os.path.basename(finished_path or '')}"
+                f"Timelapse: session finalized — {finished_frames} frames  "
+                f"{mins}m{secs:02d}s → {os.path.basename(finished_path or '')}"
             )
         except subprocess.TimeoutExpired:
             clean_exit = False
@@ -228,7 +242,16 @@ class TimelapseWriter:
 
         try:
             window_start, window_end = self._get_window_for_day(now.date())
-            return window_start <= now <= window_end
+            in_window = window_start <= now <= window_end
+            if in_window != self._last_in_window:
+                self._last_in_window = in_window
+                w_str = (f"{window_start.strftime('%H:%M')} → "
+                         f"{window_end.strftime('%H:%M')}")
+                if in_window:
+                    app_logger.info(f"Timelapse [{mode}]: entered recording window ({w_str})")
+                else:
+                    app_logger.info(f"Timelapse [{mode}]: outside recording window ({w_str})")
+            return in_window
         except Exception as e:
             app_logger.debug(f"Timelapse: window check error ({e}), defaulting to False")
             return False

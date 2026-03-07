@@ -28,7 +28,7 @@ from services.ml_data_collector import init_ml_collector
 from services.update_checker import get_update_checker, UpdateInfo
 from version import __version__
 
-from .theme import apply_theme, get_stylesheet
+from .theme import apply_theme, apply_accent_theme, get_stylesheet
 from .theme.tokens import Colors, Typography, Spacing, Layout
 from .components.app_bar import AppBar
 from .components.nav_rail import NavRail
@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
         self.overlay_panel.settings_changed.connect(self._on_settings_changed)
         self.timelapse_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
+        self.settings_panel.accent_changed.connect(self.set_accent_theme)
 
         # Timelapse: image processor → controller → panel status
         self.image_processor.timelapse_ready.connect(
@@ -460,8 +461,17 @@ class MainWindow(QMainWindow):
             self.output_panel.set_discord_test_result(False, str(e)[:50])
     
     def _apply_styles(self):
-        """Apply stylesheet to window"""
+        """Apply stylesheet and saved accent theme to window."""
+        saved_accent = self.config.get('ui_accent', 'iris')
+        apply_accent_theme(saved_accent)
         self.setStyleSheet(get_stylesheet())
+
+    def set_accent_theme(self, name: str) -> None:
+        """Switch accent colour at runtime and refresh all styled widgets."""
+        apply_accent_theme(name)
+        self.setStyleSheet(get_stylesheet())
+        if hasattr(self, 'nav_rail'):
+            self.nav_rail.refresh_styles()
     
     def _start_timers(self):
         """Start periodic update timers"""

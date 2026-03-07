@@ -5,14 +5,16 @@ Application settings: Discord, Weather, Storage, System
 import webbrowser
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame,
-    QSizePolicy
+    QSizePolicy, QPushButton
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit,
     SpinBox, DoubleSpinBox, SwitchButton, FluentIcon, HyperlinkLabel
 )
+from ..theme.accent_themes import ACCENT_PRESETS
 
 from version import __version__
 from ..theme.tokens import Colors, Typography, Spacing, Layout
@@ -31,6 +33,7 @@ class SettingsPanel(QScrollArea):
     
     settings_changed = Signal()
     test_discord_requested = Signal()
+    accent_changed = Signal(str)   # emits preset name
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,6 +59,41 @@ class SettingsPanel(QScrollArea):
         layout.setContentsMargins(Spacing.base, Spacing.base, Spacing.base, Spacing.base)
         layout.setSpacing(Spacing.card_gap)
         
+        # === APPEARANCE ===
+        appearance_card = SettingsCard(
+            "Appearance",
+            "Accent colour — dark theme is always preserved"
+        )
+
+        swatch_row = QHBoxLayout()
+        swatch_row.setSpacing(Spacing.sm)
+        swatch_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self._accent_swatches: dict[str, QPushButton] = {}
+        for key, preset in ACCENT_PRESETS.items():
+            btn = QPushButton()
+            btn.setFixedSize(28, 28)
+            btn.setCheckable(True)
+            btn.setToolTip(preset['label'])
+            swatch_color = preset['swatch']
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {swatch_color};
+                    border-radius: 14px;
+                    border: 2px solid transparent;
+                }}
+                QPushButton:hover {{ border-color: rgba(255,255,255,0.5); }}
+                QPushButton:checked {{ border-color: white; border-width: 3px; }}
+            """)
+            btn.clicked.connect(lambda checked, k=key: self._on_accent_changed(k))
+            swatch_row.addWidget(btn)
+            self._accent_swatches[key] = btn
+
+        swatch_widget = QWidget()
+        swatch_widget.setLayout(swatch_row)
+        appearance_card.add_row("Accent", swatch_widget)
+        layout.addWidget(appearance_card)
+
         # === SYSTEM SETTINGS ===
         system_card = SettingsCard(
             "System",
@@ -291,6 +329,17 @@ class SettingsPanel(QScrollArea):
         
         layout.addStretch()
     
+    def _on_accent_changed(self, key: str):
+        """Handle accent swatch click."""
+        if self._loading_config:
+            return
+        for k, btn in self._accent_swatches.items():
+            btn.setChecked(k == key)
+        if self.main_window and hasattr(self.main_window, 'config'):
+            self.main_window.config.set('ui_accent', key)
+            self.main_window.config.save()
+        self.accent_changed.emit(key)
+
     def _toggle_api_key_visibility(self):
         """Toggle API key visibility"""
         if self.show_key_btn.isChecked():
@@ -423,6 +472,11 @@ class SettingsPanel(QScrollArea):
         """Load settings from config object"""
         self._loading_config = True
         try:
+            # Appearance
+            active_accent = config.get('ui_accent', 'iris')
+            for key, btn in self._accent_swatches.items():
+                btn.setChecked(key == active_accent)
+
             # System
             self.tray_enabled_switch.setChecked(config.get('tray_mode_enabled', False))
             

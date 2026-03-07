@@ -125,11 +125,17 @@ class UpdateChecker:
         
         if not last_check:
             return True
-            
+
         last_check_time = datetime.fromisoformat(last_check)
         hours_since = (datetime.now() - last_check_time).total_seconds() / 3600
-        
-        return hours_since >= CHECK_INTERVAL_HOURS
+
+        if hours_since < CHECK_INTERVAL_HOURS:
+            app_logger.debug(
+                f"Update check skipped — last checked {hours_since:.1f}h ago "
+                f"(next in {CHECK_INTERVAL_HOURS - hours_since:.1f}h)"
+            )
+            return False
+        return True
     
     def _record_check(self):
         """Record that we performed a check."""
@@ -148,9 +154,10 @@ class UpdateChecker:
             UpdateInfo if update available, None otherwise
         """
         if not force and not self._should_check():
-            app_logger.debug("Skipping update check - checked recently")
             return self._last_update_info
-        
+
+        if force:
+            app_logger.info("Update check: forced by user")
         app_logger.info("Checking for updates...")
         
         try:
@@ -247,9 +254,10 @@ class UpdateChecker:
                 if self._stop_event.wait(timeout=60):  # Check every minute
                     app_logger.debug("Update checker stopped during delay")
                     return
-            
+
             # Perform check
             if not self._stop_event.is_set():
+                app_logger.debug("Update checker: scheduled delay elapsed, running check")
                 self.check_for_update()
         
         self._check_thread = threading.Thread(
@@ -310,7 +318,8 @@ class UpdateChecker:
             
             total_size = int(response.headers.get('content-length', 0))
             downloaded = 0
-            
+            _last_logged_pct = -1
+
             # Use larger chunk size (256KB) for faster downloads
             with open(output_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=262144):
@@ -319,6 +328,17 @@ class UpdateChecker:
                         downloaded += len(chunk)
                         if progress_callback:
                             progress_callback(downloaded, total_size)
+                        # Log at 25 / 50 / 75 % milestones
+                        if total_size > 0:
+                            pct = int(downloaded * 100 / total_size)
+                            milestone = (pct // 25) * 25
+                            if milestone > _last_logged_pct and milestone in (25, 50, 75):
+                                _last_logged_pct = milestone
+                                mb = downloaded / (1024 * 1024)
+                                app_logger.debug(
+                                    f"Downloading update: {milestone}% "
+                                    f"({mb:.1f} / {total_size / (1024*1024):.1f} MB)"
+                                )
             
             app_logger.info(f"Download complete: {output_path}")
             return output_path

@@ -62,11 +62,13 @@ class TimelapseController(QObject):
 
     def on_capture_stopped(self):
         """Stop the active session when capture is stopped."""
+        app_logger.info("Timelapse: capture stopped, closing active session")
         self._writer.stop()
         self._emit_status()
 
     def shutdown(self):
         """Graceful shutdown — close any active session."""
+        app_logger.debug("Timelapse: controller shutdown")
         self._writer.stop()
 
     # ------------------------------------------------------------------ #
@@ -91,15 +93,23 @@ class TimelapseController(QObject):
         Called by TimelapseWriter after each session finalizes.
         Posts to Discord in a daemon thread so it doesn't block the caller.
         """
+        mins, secs = divmod(elapsed_seconds, 60)
+        app_logger.info(
+            f"Timelapse: session finished — {frame_count} frames  {mins}m{secs:02d}s"
+        )
+
         discord_cfg = self._main_window.config.get('discord', {})
         if not discord_cfg.get('enabled', False) or not discord_cfg.get('post_timelapse', False):
             return
+
+        app_logger.info("Timelapse: posting completed video to Discord")
 
         def _post():
             try:
                 from services.discord_alerts import DiscordAlerts
                 alerts = DiscordAlerts(self._main_window.config)
                 alerts.send_timelapse_completed(path, frame_count, elapsed_seconds)
+                app_logger.info("Timelapse: Discord post sent")
             except Exception as e:
                 app_logger.error(f"Timelapse: Discord post failed: {e}")
 

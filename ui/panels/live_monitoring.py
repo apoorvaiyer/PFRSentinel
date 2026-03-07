@@ -324,12 +324,12 @@ class MetadataWidget(QFrame):
         layout.addWidget(self.gain_value, 1, 3)
         
         # Row 2: ML Predictions (Roof, Sky) - hidden by default
-        self.roof_label = CaptionLabel("🔭 Roof:")
+        self.roof_label = CaptionLabel("Roof:")
         self.roof_label.setStyleSheet(f"color: {Colors.text_muted};")
         self.roof_value = BodyLabel("-")
         self.roof_value.setStyleSheet(f"color: {Colors.text_secondary};")
         
-        self.sky_label = CaptionLabel("🌤️ Sky:")
+        self.sky_label = CaptionLabel("Sky:")
         self.sky_label.setStyleSheet(f"color: {Colors.text_muted};")
         self.sky_value = BodyLabel("-")
         self.sky_value.setStyleSheet(f"color: {Colors.text_secondary};")

@@ -2,36 +2,36 @@
 Status Sprite Widget
 Procedural QPainter animations for each processing state.
 Night sky / astrophotography themed — no external assets required.
+Text is omitted; hover the widget to see the state label as a tooltip.
 """
 import math
 
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFont
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath
 
 from ..theme.tokens import Colors
 
 
 class StatusSpriteWidget(QWidget):
     """
-    Animated status sprite — drop-in replacement for the plain text
-    processing_label in AppBar.  Shows a small night-sky themed graphic
-    (24 x 24 px) next to the state label.
+    Animated status sprite — 44 × 44 px square, pure animation, no text.
+    The state name is surfaced as a QToolTip on hover.
 
     States: idle, waiting, capturing, stretching, processing, sending
     Call set_state(state_str | None) to switch / stop.
     """
 
-    STATE_LABELS = {
-        'idle':        'Idle',
-        'waiting':     'Waiting...',
-        'capturing':   'Capturing...',
-        'stretching':  'Stretching...',
-        'processing':  'Processing...',
-        'sending':     'Sending...',
+    STATE_TOOLTIPS = {
+        'idle':        'Idle — session not running',
+        'waiting':     'Waiting for new image',
+        'capturing':   'Capturing exposure',
+        'stretching':  'Applying histogram stretch',
+        'processing':  'Processing image',
+        'sending':     'Sending to outputs',
     }
 
-    SPRITE = 24   # sprite canvas side length (px)
+    SIZE = 44   # widget and canvas side length (px)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,15 +42,7 @@ class StatusSpriteWidget(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.setInterval(40)   # 25 fps
 
-        # Night-sky colour palette (iris purples + warm star tones)
-        self._c_iris   = QColor("#B1A9FF")   # lavender iris — main sprite colour
-        self._c_blue   = QColor("#5B5BD6")   # deep iris
-        self._c_dim    = QColor("#3D3E94")   # dark iris ring / outline
-        self._c_gold   = QColor("#FFD166")   # warm star / moon
-        self._c_silver = QColor("#EEEEEC")   # moon highlight / faint stars
-        self._c_text   = QColor("#A1A09A")   # secondary text label
-
-        self.setFixedSize(130, 24)
+        self.setFixedSize(self.SIZE, self.SIZE)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
 
@@ -62,6 +54,7 @@ class StatusSpriteWidget(QWidget):
         """Set animation state.  Pass None to stop."""
         self._state = state.lower() if state else None
         self._frame = 0
+        self.setToolTip(self.STATE_TOOLTIPS.get(self._state, '') if self._state else '')
         if self._state is not None:
             self._timer.start()
         else:
@@ -73,7 +66,7 @@ class StatusSpriteWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _tick(self):
-        self._frame = (self._frame + 1) % 3600   # ~2.4 min cycle at 25 fps
+        self._frame = (self._frame + 1) % 3600
         self.update()
 
     def paintEvent(self, event):
@@ -83,12 +76,6 @@ class StatusSpriteWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        sw = self.SPRITE
-        cx, cy = sw / 2.0, sw / 2.0
-
-        # --- sprite canvas (left square) ---
-        p.save()
-        p.setClipRect(0, 0, sw, sw)
         draw = {
             'idle':       self._draw_idle,
             'waiting':    self._draw_waiting,
@@ -98,161 +85,158 @@ class StatusSpriteWidget(QWidget):
             'sending':    self._draw_sending,
         }.get(self._state)
         if draw:
-            draw(p, cx, cy, sw, sw)
-        p.restore()
-
-        # --- text label ---
-        text = self.STATE_LABELS.get(self._state, self._state.title())
-        p.setPen(self._c_text)
-        font = QFont("Segoe UI", 9)
-        p.setFont(font)
-        p.drawText(
-            sw + 4, 0, self.width() - sw - 4, self.height(),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            text
-        )
+            draw(p)
         p.end()
 
     # ==================================================================
-    # Animation painters
-    # Each receives (painter, cx, cy, canvas_w, canvas_h)
+    # Animation painters — each reads Colors tokens directly so theme
+    # changes are reflected automatically at paint time
     # ==================================================================
 
-    def _draw_idle(self, p, cx, cy, w, h):
+    def _draw_idle(self, p):
         """Crescent moon + three slowly twinkling background stars."""
+        s = self.SIZE
+        cx = cy = s / 2.0
         t = self._frame * 0.012
 
-        # Crescent moon via path subtraction
-        r = 7.5
+        r = s * 0.32
         outer = QPainterPath()
         outer.addEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
         bite = QPainterPath()
-        bite.addEllipse(QRectF(cx - r + 4.5, cy - r - 1.5, r * 2, r * 2))
+        bite.addEllipse(QRectF(cx - r + r * 0.57, cy - r - r * 0.14, r * 2, r * 2))
         crescent = outer.subtracted(bite)
 
-        moon_alpha = 0.70 + 0.30 * math.sin(t)
-        moon_c = QColor(self._c_gold)
-        moon_c.setAlphaF(moon_alpha)
+        moon_c = QColor("#FFD166")
+        moon_c.setAlphaF(0.70 + 0.30 * math.sin(t))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(moon_c))
         p.drawPath(crescent)
 
-        # Background stars
-        for sx, sy, phase in ((4.0, 5.0, 0.0), (20.0, 4.0, 1.6), (19.0, 18.0, 2.9)):
+        star_base = QColor(Colors.text_primary)
+        for sx, sy, phase in (
+            (s * 0.16, s * 0.20, 0.0),
+            (s * 0.82, s * 0.16, 1.6),
+            (s * 0.77, s * 0.77, 2.9),
+        ):
             alpha = 0.25 + 0.35 * (math.sin(t * 0.7 + phase) + 1) / 2
-            sc = QColor(self._c_silver)
-            sc.setAlphaF(alpha)
-            p.setBrush(sc)
-            p.drawEllipse(QRectF(sx - 1.0, sy - 1.0, 2.0, 2.0))
+            c = QColor(star_base)
+            c.setAlphaF(alpha)
+            p.setBrush(c)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QRectF(sx - 1.5, sy - 1.5, 3.0, 3.0))
 
-    def _draw_waiting(self, p, cx, cy, w, h):
+    def _draw_waiting(self, p):
         """Three star-dots pulsing in sequence — "· · ·" loading."""
+        s = self.SIZE
+        cy = s / 2.0
         t = self._frame * 0.055
-        for i, sx in enumerate((7.0, 12.0, 17.0)):
+        c_iris = QColor(Colors.accent_text)
+        for i, sx in enumerate((s * 0.30, s * 0.50, s * 0.70)):
             alpha = (math.sin(t - i * math.pi / 2.0) + 1) / 2
-            r = 1.4 + alpha * 1.2
-            self._draw_star4(p, sx, cy, r, self._c_iris, 0.20 + alpha * 0.80)
+            r = 2.5 + alpha * 2.0
+            self._draw_star4(p, sx, cy, r, c_iris, 0.20 + alpha * 0.80)
 
-    def _draw_capturing(self, p, cx, cy, w, h):
+    def _draw_capturing(self, p):
         """Camera aperture iris — 6 blades rotate while the opening pulses."""
+        s = self.SIZE
+        cx = cy = s / 2.0
         t = self._frame * 0.045
-        openness = (math.sin(t * 0.5) + 1) / 2   # 0 = closed, 1 = open
+        openness = (math.sin(t * 0.5) + 1) / 2
 
-        # Outer ring
-        ring_c = QColor(self._c_dim)
+        ring_c = QColor(Colors.border_focus)
         ring_c.setAlphaF(0.6)
-        p.setPen(QPen(ring_c, 1.0))
+        p.setPen(QPen(ring_c, 1.5))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(QRectF(cx - 10, cy - 10, 20, 20))
+        ro = s * 0.41
+        p.drawEllipse(QRectF(cx - ro, cy - ro, ro * 2, ro * 2))
 
-        # Aperture glow
-        inner_r = 2.0 + openness * 7.0
-        glow_c = QColor(self._c_blue)
+        inner_r = s * 0.08 + openness * s * 0.27
+        glow_c = QColor(Colors.accent_default)
         glow_c.setAlphaF(0.25 + openness * 0.50)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(glow_c))
         p.drawEllipse(QRectF(cx - inner_r, cy - inner_r, inner_r * 2, inner_r * 2))
 
-        # 6 rotating blades
-        blade_len = 9.0 * (1.0 - openness * 0.6)
-        pen = QPen(self._c_iris, 1.4)
+        blade_len = s * 0.36 * (1.0 - openness * 0.6)
+        pen = QPen(QColor(Colors.accent_text), 2.0)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
         for i in range(6):
             angle = t + i * (math.pi / 3)
-            ex = cx + blade_len * math.cos(angle)
-            ey = cy + blade_len * math.sin(angle)
-            p.drawLine(QPointF(cx, cy), QPointF(ex, ey))
+            p.drawLine(
+                QPointF(cx, cy),
+                QPointF(cx + blade_len * math.cos(angle),
+                        cy + blade_len * math.sin(angle))
+            )
 
-    def _draw_stretching(self, p, cx, cy, w, h):
+    def _draw_stretching(self, p):
         """Histogram bars stretch wave — visualises tone mapping."""
+        s = self.SIZE
+        cx = s / 2.0
         t = self._frame * 0.045
         num = 7
-        bar_w, gap = 2.2, 0.8
+        bar_w, gap = s * 0.09, s * 0.03
         x0 = cx - (num * bar_w + (num - 1) * gap) / 2
+        c_iris = QColor(Colors.accent_text)
 
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(num):
-            # Bell-curve natural height
             deviation = (i - (num - 1) / 2) / 2.0
             bell = math.exp(-0.5 * deviation * deviation)
-            max_h = bell * (h - 6)
+            max_h = bell * (s - 10)
 
-            # Stretch wave propagates left → right
             stretch = (math.sin(i * 0.42 - t) + 1) / 2
-            bar_h = max(1.5, max_h * (0.18 + stretch * 0.82))
+            bar_h = max(2.0, max_h * (0.18 + stretch * 0.82))
 
-            alpha = 0.30 + stretch * 0.70
-            c = QColor(self._c_iris)
-            c.setAlphaF(alpha)
+            c = QColor(c_iris)
+            c.setAlphaF(0.30 + stretch * 0.70)
             p.setBrush(c)
-
             x = x0 + i * (bar_w + gap)
-            y = h - bar_h - 2          # bottom-aligned, like a real histogram
-            p.drawRoundedRect(QRectF(x, y, bar_w, bar_h), 1.0, 1.0)
+            p.drawRoundedRect(QRectF(x, s - bar_h - 4, bar_w, bar_h), 1.5, 1.5)
 
-    def _draw_processing(self, p, cx, cy, w, h):
+    def _draw_processing(self, p):
         """Star-cluster spinner — 8 dots orbit with a trailing fade."""
+        s = self.SIZE
+        cx = cy = s / 2.0
         t = self._frame * 0.14
-        num = 8
-        r_orbit = 7.5
-        p.setPen(Qt.PenStyle.NoPen)
-        for i in range(num):
-            # Dot 0 leads; higher index = further behind
-            angle = -(i / num) * 2 * math.pi - t
-            alpha = max(0.08, 1.0 - (i / num) * 0.92)
-            dot_r = 1.0 + 0.9 * (1.0 - i / num)
+        r_orbit = s * 0.32
+        c_iris = QColor(Colors.accent_text)
 
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(8):
+            angle = -(i / 8) * 2 * math.pi - t
+            alpha = max(0.08, 1.0 - (i / 8) * 0.92)
+            dot_r = 1.8 + 1.4 * (1.0 - i / 8)
             dx = cx + r_orbit * math.cos(angle)
             dy = cy + r_orbit * math.sin(angle)
-
-            c = QColor(self._c_iris)
+            c = QColor(c_iris)
             c.setAlphaF(alpha)
             p.setBrush(c)
             p.drawEllipse(QRectF(dx - dot_r, dy - dot_r, dot_r * 2, dot_r * 2))
 
-    def _draw_sending(self, p, cx, cy, w, h):
+    def _draw_sending(self, p):
         """Shooting star streaks left to right with a fading tail."""
+        s = self.SIZE
+        cy = s / 2.0
         t = (self._frame * 0.024) % 1.0
-        hx = -4.0 + t * (w + 8.0)
-        hy = cy + math.sin(t * math.pi) * 3.0   # gentle arc
+        hx = -6.0 + t * (s + 12.0)
+        hy = cy + math.sin(t * math.pi) * s * 0.11
+        c_iris = QColor(Colors.accent_text)
 
-        # Tail dots
         p.setPen(Qt.PenStyle.NoPen)
-        for j in range(12, 0, -1):
-            tx = hx - j * 1.3
-            if tx < 0 or tx > w:
+        for j in range(14, 0, -1):
+            tx = hx - j * 2.0
+            if tx < 0 or tx > s:
                 continue
-            frac = 1.0 - j / 12.0
-            tc = QColor(self._c_iris)
+            frac = 1.0 - j / 14.0
+            tc = QColor(c_iris)
             tc.setAlphaF(frac * 0.65)
-            r = 0.7 + frac * 0.6
+            r = 1.2 + frac * 1.0
             p.setBrush(tc)
             p.drawEllipse(QRectF(tx - r, hy - r, r * 2, r * 2))
 
-        # Star head (only when on canvas)
-        if 0 <= hx <= w:
-            self._draw_star4(p, hx, hy, 2.8, self._c_gold, 1.0)
+        if 0 <= hx <= s:
+            self._draw_star4(p, hx, hy, 4.5, QColor("#FFD166"), 1.0)
 
     # ------------------------------------------------------------------
     # Helper
@@ -262,7 +246,7 @@ class StatusSpriteWidget(QWidget):
         """4-pointed cross star at (cx, cy) with arm radius r."""
         c = QColor(color)
         c.setAlphaF(alpha)
-        pen = QPen(c, max(0.8, r * 0.65))
+        pen = QPen(c, max(1.0, r * 0.65))
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
         p.drawLine(QPointF(cx - r, cy), QPointF(cx + r, cy))

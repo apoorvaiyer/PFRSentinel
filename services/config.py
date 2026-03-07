@@ -7,6 +7,9 @@ from utils_paths import resource_path, get_exe_dir
 from app_config import APP_DATA_FOLDER, DEFAULT_OUTPUT_SUBFOLDER
 
 DEFAULT_CONFIG = {
+    # UI appearance
+    "ui_accent": "iris",   # accent theme: iris | nebula | aurora | solar | nova | forest
+
     # Window settings
     "window_geometry": "1280x1700",
     "splitter_sizes": [400, 500],  # Live panel and inspector panel widths
