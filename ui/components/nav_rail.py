@@ -69,7 +69,7 @@ class NavButton(QPushButton):
             y = (self.height() - badge_size) // 2  # Vertically center
             
             # Draw badge circle
-            painter.setBrush(QBrush(QColor(Colors.iris_9)))
+            painter.setBrush(QBrush(QColor(Colors.accent_default)))
             painter.setPen(Qt.NoPen)
             
             if self._badge_text:

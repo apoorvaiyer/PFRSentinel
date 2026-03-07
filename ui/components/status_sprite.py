@@ -6,8 +6,8 @@ Text is omitted; hover the widget to see the state label as a tooltip.
 """
 import math
 
-from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
+from PySide6.QtWidgets import QWidget, QSizePolicy
+from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QSize
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath
 
 from ..theme.tokens import Colors
@@ -23,15 +23,16 @@ class StatusSpriteWidget(QWidget):
     """
 
     STATE_TOOLTIPS = {
-        'idle':        'Idle — session not running',
-        'waiting':     'Waiting for new image',
-        'capturing':   'Capturing exposure',
-        'stretching':  'Applying histogram stretch',
-        'processing':  'Processing image',
-        'sending':     'Sending to outputs',
+        'idle':         'Idle — session not running',
+        'waiting':      'Waiting for new image',
+        'capturing':    'Capturing exposure',
+        'calibrating':  'Calibrating camera',
+        'stretching':   'Applying histogram stretch',
+        'processing':   'Processing image',
+        'sending':      'Sending to outputs',
     }
 
-    SIZE = 44   # widget and canvas side length (px)
+    MIN_SIZE = 44   # minimum widget side length (px)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,9 +43,16 @@ class StatusSpriteWidget(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.setInterval(40)   # 25 fps
 
-        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setMinimumSize(self.MIN_SIZE, self.MIN_SIZE)
+        sp = self.sizePolicy()
+        sp.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+        sp.setVerticalPolicy(QSizePolicy.Policy.Preferred)
+        self.setSizePolicy(sp)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)
+
+    def sizeHint(self):
+        return QSize(self.MIN_SIZE, self.MIN_SIZE)
 
     # ------------------------------------------------------------------
     # Public API
@@ -77,12 +85,13 @@ class StatusSpriteWidget(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         draw = {
-            'idle':       self._draw_idle,
-            'waiting':    self._draw_waiting,
-            'capturing':  self._draw_capturing,
-            'stretching': self._draw_stretching,
-            'processing': self._draw_processing,
-            'sending':    self._draw_sending,
+            'idle':        self._draw_idle,
+            'waiting':     self._draw_waiting,
+            'capturing':   self._draw_capturing,
+            'calibrating': self._draw_calibrating,
+            'stretching':  self._draw_stretching,
+            'processing':  self._draw_processing,
+            'sending':     self._draw_sending,
         }.get(self._state)
         if draw:
             draw(p)
@@ -95,8 +104,9 @@ class StatusSpriteWidget(QWidget):
 
     def _draw_idle(self, p):
         """Crescent moon + three slowly twinkling background stars."""
-        s = self.SIZE
-        cx = cy = s / 2.0
+        w, h = self.width(), self.height()
+        s = min(w, h)
+        cx, cy = w / 2.0, h / 2.0
         t = self._frame * 0.012
 
         r = s * 0.32
@@ -127,19 +137,21 @@ class StatusSpriteWidget(QWidget):
 
     def _draw_waiting(self, p):
         """Three star-dots pulsing in sequence — "· · ·" loading."""
-        s = self.SIZE
-        cy = s / 2.0
+        w, h = self.width(), self.height()
+        s = min(w, h)
+        cx, cy = w / 2.0, h / 2.0
         t = self._frame * 0.055
         c_iris = QColor(Colors.accent_text)
-        for i, sx in enumerate((s * 0.30, s * 0.50, s * 0.70)):
+        for i, sx in enumerate((cx - s * 0.20, cx, cx + s * 0.20)):
             alpha = (math.sin(t - i * math.pi / 2.0) + 1) / 2
             r = 2.5 + alpha * 2.0
             self._draw_star4(p, sx, cy, r, c_iris, 0.20 + alpha * 0.80)
 
     def _draw_capturing(self, p):
         """Camera aperture iris — 6 blades rotate while the opening pulses."""
-        s = self.SIZE
-        cx = cy = s / 2.0
+        w, h = self.width(), self.height()
+        s = min(w, h)
+        cx, cy = w / 2.0, h / 2.0
         t = self._frame * 0.045
         openness = (math.sin(t * 0.5) + 1) / 2
 
@@ -171,8 +183,9 @@ class StatusSpriteWidget(QWidget):
 
     def _draw_stretching(self, p):
         """Histogram bars stretch wave — visualises tone mapping."""
-        s = self.SIZE
-        cx = s / 2.0
+        w, h = self.width(), self.height()
+        s = min(w, h)
+        cx = w / 2.0
         t = self._frame * 0.045
         num = 7
         bar_w, gap = s * 0.09, s * 0.03
@@ -183,7 +196,7 @@ class StatusSpriteWidget(QWidget):
         for i in range(num):
             deviation = (i - (num - 1) / 2) / 2.0
             bell = math.exp(-0.5 * deviation * deviation)
-            max_h = bell * (s - 10)
+            max_h = bell * (h - 10)
 
             stretch = (math.sin(i * 0.42 - t) + 1) / 2
             bar_h = max(2.0, max_h * (0.18 + stretch * 0.82))
@@ -192,12 +205,13 @@ class StatusSpriteWidget(QWidget):
             c.setAlphaF(0.30 + stretch * 0.70)
             p.setBrush(c)
             x = x0 + i * (bar_w + gap)
-            p.drawRoundedRect(QRectF(x, s - bar_h - 4, bar_w, bar_h), 1.5, 1.5)
+            p.drawRoundedRect(QRectF(x, h - bar_h - 4, bar_w, bar_h), 1.5, 1.5)
 
     def _draw_processing(self, p):
         """Star-cluster spinner — 8 dots orbit with a trailing fade."""
-        s = self.SIZE
-        cx = cy = s / 2.0
+        w, h = self.width(), self.height()
+        s = min(w, h)
+        cx, cy = w / 2.0, h / 2.0
         t = self._frame * 0.14
         r_orbit = s * 0.32
         c_iris = QColor(Colors.accent_text)
@@ -216,11 +230,12 @@ class StatusSpriteWidget(QWidget):
 
     def _draw_sending(self, p):
         """Shooting star streaks left to right with a fading tail."""
-        s = self.SIZE
-        cy = s / 2.0
+        w, h = self.width(), self.height()
+        s = min(w, h)
+        cy = h / 2.0
         t = (self._frame * 0.024) % 1.0
-        hx = -6.0 + t * (s + 12.0)
-        hy = cy + math.sin(t * math.pi) * s * 0.11
+        hx = -6.0 + t * (w + 12.0)
+        hy = cy + math.sin(t * math.pi) * h * 0.11
         c_iris = QColor(Colors.accent_text)
 
         p.setPen(Qt.PenStyle.NoPen)
@@ -237,6 +252,44 @@ class StatusSpriteWidget(QWidget):
 
         if 0 <= hx <= s:
             self._draw_star4(p, hx, hy, 4.5, QColor("#FFD166"), 1.0)
+
+    def _draw_calibrating(self, p):
+        """Pulsing sonar rings + crosshair — camera calibration target."""
+        w, h = self.width(), self.height()
+        s = min(w, h)
+        cx, cy = w / 2.0, h / 2.0
+        t = self._frame * 0.05
+
+        # Three rings expanding outward in sequence
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(3):
+            phase = (t - i * 0.7) % (math.pi * 2)
+            progress = (math.sin(phase * 0.5) + 1) / 2
+            ring_r = s * 0.08 + progress * s * 0.36
+            alpha = max(0.0, 0.65 * (1.0 - progress))
+            ring_c = QColor(Colors.accent_default)
+            ring_c.setAlphaF(alpha)
+            p.setPen(QPen(ring_c, 1.5))
+            p.drawEllipse(QRectF(cx - ring_r, cy - ring_r, ring_r * 2, ring_r * 2))
+
+        # Crosshair (gap in center)
+        ch_c = QColor(Colors.accent_text)
+        ch_c.setAlphaF(0.85)
+        pen = QPen(ch_c, 1.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        gap = s * 0.10
+        arm = s * 0.24
+        p.drawLine(QPointF(cx - arm - gap, cy), QPointF(cx - gap, cy))
+        p.drawLine(QPointF(cx + gap, cy), QPointF(cx + arm + gap, cy))
+        p.drawLine(QPointF(cx, cy - arm - gap), QPointF(cx, cy - gap))
+        p.drawLine(QPointF(cx, cy + gap), QPointF(cx, cy + arm + gap))
+
+        # Center dot
+        p.setPen(Qt.PenStyle.NoPen)
+        dot_c = QColor(Colors.accent_default)
+        p.setBrush(QBrush(dot_c))
+        p.drawEllipse(QRectF(cx - 2.5, cy - 2.5, 5.0, 5.0))
 
     # ------------------------------------------------------------------
     # Helper

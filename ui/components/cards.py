@@ -24,27 +24,6 @@ class ClickSlider(QSlider):
     def __init__(self, orientation=Qt.Horizontal, parent=None):
         super().__init__(orientation, parent)
         self._pressed = False
-        self.setStyleSheet(f"""
-            QSlider::groove:horizontal {{
-                height: 4px;
-                background-color: {Colors.gray_6};
-                border-radius: 2px;
-            }}
-            QSlider::handle:horizontal {{
-                background-color: {Colors.accent_default};
-                width: 16px;
-                height: 16px;
-                margin: -6px 0;
-                border-radius: 8px;
-            }}
-            QSlider::handle:horizontal:hover {{
-                background-color: {Colors.accent_hover};
-            }}
-            QSlider::sub-page:horizontal {{
-                background-color: {Colors.accent_default};
-                border-radius: 2px;
-            }}
-        """)
     
     def mousePressEvent(self, event):
         self._pressed = True

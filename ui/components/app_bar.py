@@ -197,15 +197,15 @@ class AppBar(QFrame):
         self.progress_bar.hide()
         progress_layout.addWidget(self.progress_bar)
         
-        # Animated status sprite (replaces plain text processing label)
+        right_layout.addLayout(progress_layout)
+
+        # Animated status sprite — expands to fill space between count and button
         self.status_sprite = StatusSpriteWidget()
         sp = self.status_sprite.sizePolicy()
         sp.setRetainSizeWhenHidden(True)
         self.status_sprite.setSizePolicy(sp)
         self.status_sprite.hide()
-        progress_layout.addWidget(self.status_sprite)
-        
-        right_layout.addLayout(progress_layout)
+        right_layout.addWidget(self.status_sprite, 1, Qt.AlignmentFlag.AlignVCenter)
         
         # Start/Stop buttons
         self.start_btn = PrimaryPushButton("Start Capture")
@@ -341,7 +341,7 @@ class AppBar(QFrame):
         """Update status indicator with specific states
         
         Args:
-            status: One of 'idle', 'waiting', 'capturing', 'stretching', 'processing', 'sending'
+            status: One of 'idle', 'waiting', 'capturing', 'calibrating', 'stretching', 'processing', 'sending'
                     or None to hide status
         """
         if status:
