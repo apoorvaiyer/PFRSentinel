@@ -5,6 +5,7 @@ Night sky / astrophotography themed — no external assets required.
 Text is omitted; hover the widget to see the state label as a tooltip.
 """
 import math
+import random
 
 from PySide6.QtWidgets import QWidget, QSizePolicy
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QSize
@@ -56,6 +57,9 @@ class StatusSpriteWidget(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.setInterval(40)   # 25 fps
+
+        self._waiting_cycle = -1   # tracks which 750-frame cycle we're in
+        self._waiting_word = ""    # current word shown in speech bubble
 
         self.setMinimumSize(self.MIN_SIZE, self.MIN_SIZE)
         sp = self.sizePolicy()
@@ -182,8 +186,11 @@ class StatusSpriteWidget(QWidget):
         else:
             fade = 1.0
 
-        word_idx = (self._frame // CYCLE) % len(self.WAITING_WORDS)
-        word = self.WAITING_WORDS[word_idx]
+        current_cycle = self._frame // CYCLE
+        if current_cycle != self._waiting_cycle:
+            self._waiting_cycle = current_cycle
+            self._waiting_word = random.choice(self.WAITING_WORDS)
+        word = self._waiting_word
 
         # Bubble geometry: sits above the dots, tail points down to the center dot
         margin = 5
@@ -272,31 +279,32 @@ class StatusSpriteWidget(QWidget):
             )
 
     def _draw_stretching(self, p):
-        """Histogram bars collapse from wide/flat to narrow/tall — represents histogram stretch."""
+        """Histogram bars stretch upward in a left-to-right wave — visualises tone mapping."""
         w, h = self.width(), self.height()
         s = min(w, h)
         cx = w / 2.0
-        t = self._frame * 0.055  # ~4-second full cycle
-
-        # stretch_t: 0 = wide & flat (pre-stretch), 1 = narrow & tall (post-stretch)
-        stretch_t = (math.sin(t) + 1) / 2
+        t = self._frame * 0.07
 
         num = 9
         bar_w = s * 0.07
         gap = s * 0.02
         x0 = cx - (num * bar_w + (num - 1) * gap) / 2
         c_iris = QColor(Colors.accent_text)
+        stub_h = 3.0  # resting height before each bar stretches up
 
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(num):
             norm = (i - (num - 1) / 2) / ((num - 1) / 2)  # -1 to +1
-            sigma = 1.8 - stretch_t * 1.65   # very wide (1.8) → very narrow (0.15)
-            peak  = 0.12 + stretch_t * 0.88  # nearly flat (0.12) → full height (1.0)
-            bell = math.exp(-0.5 * (norm / sigma) ** 2) * peak
-            bar_h = max(2.0, bell * (h - 6))
+
+            # Bell curve caps how tall each bar can grow (centre tallest)
+            max_h = math.exp(-0.5 * (norm * 1.1) ** 2) * (h - 8)
+
+            # Left-to-right wave phase offset per bar
+            stretch = max(0.0, math.sin(t - i * 0.42))
+            bar_h = stub_h + stretch * (max_h - stub_h)
 
             c = QColor(c_iris)
-            c.setAlphaF(0.30 + bell * 0.70)
+            c.setAlphaF(0.30 + stretch * 0.70)
             p.setBrush(c)
             x = x0 + i * (bar_w + gap)
             p.drawRoundedRect(QRectF(x, h - bar_h - 4, bar_w, bar_h), 1.5, 1.5)
