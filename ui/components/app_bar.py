@@ -71,6 +71,7 @@ class AppBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._is_capturing = False
+        self._status_generation = 0  # guards against stale delayed set_status calls
         self._setup_ui()
     
     def _setup_ui(self):
@@ -338,12 +339,31 @@ class AppBar(QFrame):
             self.discord_chip.set_label('Discord')
     
     def set_status(self, status: str = None):
-        """Update status indicator with specific states
-        
+        """Update status indicator with specific states.
+
+        Transitions away from 'stretching' or 'processing' are held for a minimum
+        of 500 ms so the animation is always visible even when processing is fast.
+
         Args:
-            status: One of 'idle', 'waiting', 'capturing', 'calibrating', 'stretching', 'processing', 'sending'
-                    or None to hide status
+            status: One of 'idle', 'waiting', 'capturing', 'calibrating', 'stretching',
+                    'processing', 'sending' — or None to hide the sprite.
         """
+        self._status_generation += 1
+        gen = self._status_generation
+
+        current = self.status_sprite._state
+        # Hold stretching/processing animations for at least 500 ms so they're visible
+        # Only delay "end-of-pipeline" transitions; urgent state changes apply immediately
+        if current in ('stretching', 'processing') and status in ('sending', 'waiting', None):
+            from PySide6.QtCore import QTimer as _QTimer
+            _QTimer.singleShot(500, lambda: self._apply_status(status, gen))
+        else:
+            self._apply_status(status, gen)
+
+    def _apply_status(self, status: str, generation: int):
+        """Internal: apply status change, ignoring if superseded by a newer call."""
+        if generation != self._status_generation:
+            return
         if status:
             self.status_sprite.set_state(status)
             self.status_sprite.show()
