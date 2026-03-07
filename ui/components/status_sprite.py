@@ -163,8 +163,8 @@ class StatusSpriteWidget(QWidget):
         frame_in_cycle = self._frame % CYCLE
         bubble_visible = frame_in_cycle < SHOW_FRAMES
 
-        # Shift dots down slightly when bubble is showing to give it room
-        dot_cy = cy + (s * 0.12 if bubble_visible else 0.0)
+        # Shift dots into lower third when bubble is showing
+        dot_cy = cy + (h * 0.22 if bubble_visible else 0.0)
 
         for i, sx in enumerate((cx - s * 0.20, cx, cx + s * 0.20)):
             alpha = (math.sin(t - i * math.pi / 2.0) + 1) / 2
@@ -276,9 +276,9 @@ class StatusSpriteWidget(QWidget):
         w, h = self.width(), self.height()
         s = min(w, h)
         cx = w / 2.0
-        t = self._frame * 0.022
+        t = self._frame * 0.055  # ~4-second full cycle
 
-        # stretch_t: 0 = wide & flat, 1 = narrow & tall, cycles smoothly
+        # stretch_t: 0 = wide & flat (pre-stretch), 1 = narrow & tall (post-stretch)
         stretch_t = (math.sin(t) + 1) / 2
 
         num = 9
@@ -290,10 +290,10 @@ class StatusSpriteWidget(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(num):
             norm = (i - (num - 1) / 2) / ((num - 1) / 2)  # -1 to +1
-            sigma = 1.0 - stretch_t * 0.75   # wide (1.0) → narrow (0.25)
-            peak  = 0.25 + stretch_t * 0.75  # low  (0.25) → tall  (1.0)
+            sigma = 1.8 - stretch_t * 1.65   # very wide (1.8) → very narrow (0.15)
+            peak  = 0.12 + stretch_t * 0.88  # nearly flat (0.12) → full height (1.0)
             bell = math.exp(-0.5 * (norm / sigma) ** 2) * peak
-            bar_h = max(2.0, bell * (h - 8))
+            bar_h = max(2.0, bell * (h - 6))
 
             c = QColor(c_iris)
             c.setAlphaF(0.30 + bell * 0.70)

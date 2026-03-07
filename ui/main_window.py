@@ -920,6 +920,18 @@ class MainWindow(QMainWindow):
             if self.is_capturing and self.camera_controller:
                 self.live_panel.update_from_camera(self.camera_controller)
 
+            # Sync sprite with actual camera exposure state
+            if self.is_capturing and self.camera_controller:
+                zwo = getattr(self.camera_controller, 'zwo_camera', None)
+                sprite_state = self.app_bar.status_sprite._state
+                if zwo and zwo.exposure_start_time is not None:
+                    # Shutter is open — show capturing only if we're in a passive state
+                    if sprite_state == 'waiting':
+                        self.app_bar.set_status('capturing')
+                elif sprite_state == 'capturing':
+                    # Exposure just finished, image hasn't arrived yet — keep showing capturing
+                    pass
+
             # Timelapse recording badge
             if self.timelapse_controller:
                 recording = self.timelapse_controller.get_status().get('recording', False)
