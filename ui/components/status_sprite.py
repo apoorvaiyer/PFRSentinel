@@ -182,27 +182,31 @@ class StatusSpriteWidget(QWidget):
             )
 
     def _draw_stretching(self, p):
-        """Histogram bars stretch wave — visualises tone mapping."""
+        """Histogram bars collapse from wide/flat to narrow/tall — represents histogram stretch."""
         w, h = self.width(), self.height()
         s = min(w, h)
         cx = w / 2.0
-        t = self._frame * 0.045
-        num = 7
-        bar_w, gap = s * 0.09, s * 0.03
+        t = self._frame * 0.022
+
+        # stretch_t: 0 = wide & flat, 1 = narrow & tall, cycles smoothly
+        stretch_t = (math.sin(t) + 1) / 2
+
+        num = 9
+        bar_w = s * 0.07
+        gap = s * 0.02
         x0 = cx - (num * bar_w + (num - 1) * gap) / 2
         c_iris = QColor(Colors.accent_text)
 
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(num):
-            deviation = (i - (num - 1) / 2) / 2.0
-            bell = math.exp(-0.5 * deviation * deviation)
-            max_h = bell * (h - 10)
-
-            stretch = (math.sin(i * 0.42 - t) + 1) / 2
-            bar_h = max(2.0, max_h * (0.18 + stretch * 0.82))
+            norm = (i - (num - 1) / 2) / ((num - 1) / 2)  # -1 to +1
+            sigma = 1.0 - stretch_t * 0.75   # wide (1.0) → narrow (0.25)
+            peak  = 0.25 + stretch_t * 0.75  # low  (0.25) → tall  (1.0)
+            bell = math.exp(-0.5 * (norm / sigma) ** 2) * peak
+            bar_h = max(2.0, bell * (h - 8))
 
             c = QColor(c_iris)
-            c.setAlphaF(0.30 + stretch * 0.70)
+            c.setAlphaF(0.30 + bell * 0.70)
             p.setBrush(c)
             x = x0 + i * (bar_w + gap)
             p.drawRoundedRect(QRectF(x, h - bar_h - 4, bar_w, bar_h), 1.5, 1.5)
