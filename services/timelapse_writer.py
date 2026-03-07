@@ -335,7 +335,12 @@ class TimelapseWriter:
     # ------------------------------------------------------------------ #
 
     def _build_output_path(self, now: datetime) -> str:
-        """Build output path: {output_dir}/timelapse_YYYYMMDD.mp4"""
+        """
+        Build output path: {output_dir}/timelapse_YYYYMMDD.mp4
+
+        If a file for that date already exists (e.g. roof closed and reopened),
+        appends _2, _3, … to avoid overwriting the previous session's video.
+        """
         output_dir = self._config.get('output_dir', '')
         if not output_dir:
             from app_config import APP_DATA_FOLDER
@@ -343,7 +348,15 @@ class TimelapseWriter:
                 os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER, 'timelapse'
             )
         date_str = now.strftime('%Y%m%d')
-        return os.path.join(output_dir, f'timelapse_{date_str}.mp4')
+        base = os.path.join(output_dir, f'timelapse_{date_str}.mp4')
+        if not os.path.exists(base):
+            return base
+        n = 2
+        while True:
+            path = os.path.join(output_dir, f'timelapse_{date_str}_{n}.mp4')
+            if not os.path.exists(path):
+                return path
+            n += 1
 
     def _build_ffmpeg_cmd(self, frame_size: Tuple[int, int], output_path: str) -> list:
         """Build the ffmpeg subprocess command."""

@@ -1,6 +1,7 @@
 """
 Camera calibration and auto-exposure algorithms for ZWO ASI cameras
 """
+import threading
 import numpy as np
 from .camera_utils import calculate_brightness, check_clipping
 
@@ -39,7 +40,14 @@ class CameraCalibration:
         self.exposure_percentile = 75  # Use 75th percentile
         self.clipping_threshold = 245
         self.clipping_prevention = True
+
+        # Abort flag: set this to interrupt a running run_calibration() loop
+        self._abort = threading.Event()
         
+    def abort(self):
+        """Signal any running run_calibration() to stop at the next iteration."""
+        self._abort.set()
+
     def log(self, message):
         """Log message via callback"""
         if self.logger_callback:
@@ -59,16 +67,24 @@ class CameraCalibration:
             True if calibration successful, False otherwise
         """
         self.log("Starting rapid calibration...")
-        
+
+        # Clear any prior abort signal so a fresh run can proceed
+        self._abort.clear()
+
         # Reset baseline - will be set by first frame after calibration
         self.baseline_brightness = None
-        
+
         # Track exposure/brightness pairs for interpolation
         calibration_history = []
         previous_brightness = None
         stalled_count = 0  # Track consecutive attempts with no brightness change
-        
+
         for attempt in range(max_attempts):
+            # Allow external abort (e.g. camera disconnect / error recovery)
+            if self._abort.is_set():
+                self.log("Calibration aborted by external signal")
+                return False
+
             try:
                 # REL-003: Use snapshot mode (consistent with capture_loop)
                 # Start exposure
@@ -80,13 +96,15 @@ class CameraCalibration:
                 start_time = time.time()
                 
                 while time.time() - start_time < timeout:
+                    if self._abort.is_set():
+                        raise Exception("Calibration aborted during exposure wait")
                     status = self.camera.get_exposure_status()
                     if status == self.asi.ASI_EXP_SUCCESS:
                         break
                     elif status == self.asi.ASI_EXP_FAILED:
                         raise Exception("Calibration exposure failed")
                     time.sleep(0.05)
-                
+
                 # Check for timeout
                 if time.time() - start_time >= timeout:
                     raise Exception(f"Calibration exposure timeout ({timeout}s)")
@@ -167,6 +185,14 @@ class CameraCalibration:
                     at_max_exposure = abs(self.exposure_seconds - self.max_exposure_sec) < 0.001
                     if at_max_exposure and brightness < self.target_brightness:
                         self.log(f"  At maximum exposure ({self.max_exposure_sec*1000:.0f}ms) - accepting brightness {brightness:.1f} (target was {self.target_brightness})")
+                        if brightness < 1.0:
+                            # Completely dark scene (e.g. roof closed) - don't lock in max exposure.
+                            # A moderate fallback avoids hammering the USB with long useless exposures
+                            # and lets auto-exposure ramp up naturally when the scene brightens.
+                            fallback_sec = min(5.0, self.max_exposure_sec)
+                            self.log(f"  ⚠ All-black frames - using dark-scene fallback exposure: {fallback_sec*1000:.0f}ms")
+                            self.exposure_seconds = fallback_sec
+                            self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(fallback_sec * 1000000))
                         self.log(f"Calibration complete at max exposure. Final brightness: {brightness:.1f}")
                         return True
                     
@@ -203,9 +229,16 @@ class CameraCalibration:
                     # Check if we want to go higher but are at max
                     if new_exposure > self.max_exposure_sec and brightness < self.target_brightness:
                         self.log(f"  Reached maximum exposure limit ({self.max_exposure_sec*1000:.0f}ms)")
-                        # Actually SET the exposure to max before completing
-                        self.exposure_seconds = self.max_exposure_sec
-                        self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(self.max_exposure_sec * 1000000))
+                        if brightness < 1.0:
+                            # Completely dark scene - fall back to a moderate exposure rather than
+                            # locking in the hard maximum, which wastes USB bandwidth for no output.
+                            fallback_sec = min(5.0, self.max_exposure_sec)
+                            self.log(f"  ⚠ All-black frames - using dark-scene fallback exposure: {fallback_sec*1000:.0f}ms")
+                            self.exposure_seconds = fallback_sec
+                            self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(fallback_sec * 1000000))
+                        else:
+                            self.exposure_seconds = self.max_exposure_sec
+                            self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(self.max_exposure_sec * 1000000))
                         self.log(f"Calibration complete at max exposure. Brightness: {brightness:.1f} (target was {self.target_brightness})")
                         return True
                     

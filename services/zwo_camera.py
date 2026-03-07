@@ -696,6 +696,11 @@ class ZWOCamera:
                     if consecutive_errors <= max_reconnect_attempts:
                         self.log(f"Initiating reconnection attempt {consecutive_errors}/{max_reconnect_attempts}...")
                         try:
+                            # Abort any running calibration before disconnecting so it
+                            # doesn't keep calling SDK methods on a dying camera handle.
+                            if self.calibration_manager:
+                                self.calibration_manager.abort()
+
                             # Clean up existing camera using connection manager
                             # This ensures proper cleanup via the thread-safe disconnect method
                             if self.camera:
@@ -710,8 +715,14 @@ class ZWOCamera:
                             if self.reconnect_camera_safe():
                                 self.log("✓ Camera reconnected successfully")
                                 consecutive_errors = 0  # Reset counter on successful reconnection
-                                self.log("Waiting 1s before resuming capture...")
-                                time.sleep(1.0)
+                                # With multiple USB cameras the bus needs time to settle.
+                                # Also probe the camera before resuming to confirm it's live.
+                                self.log("Waiting 3s for USB bus to stabilise...")
+                                time.sleep(3.0)
+                                try:
+                                    self.camera.get_camera_property()
+                                except Exception as probe_err:
+                                    raise Exception(f"Camera not responding after reconnect: {probe_err}")
                                 continue
                             else:
                                 raise Exception("Failed to reconnect camera")
@@ -776,9 +787,13 @@ class ZWOCamera:
         """Stop continuous capture and wait for thread to finish"""
         if not self.is_capturing:
             return
-        
+
         self.log("Stopping capture...")
         self.is_capturing = False
+
+        # Abort any running calibration so its loop exits quickly
+        if self.calibration_manager:
+            self.calibration_manager.abort()
         
         # Wait briefly for capture thread to finish
         if self.capture_thread and self.capture_thread.is_alive():

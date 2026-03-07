@@ -173,7 +173,10 @@ def reset_zwo_camera_usb(camera_name: Optional[str] = None, logger=None) -> bool
         if success_count > 0:
             log(f"✓ USB reset completed for {success_count}/{len(devices_to_reset)} device(s)")
             log("Waiting 3 seconds for device re-enumeration...")
-            time.sleep(3)
+            try:
+                time.sleep(3)
+            except OSError:
+                pass  # WinError 6: handle invalid during interpreter shutdown
             return True
         else:
             log("✗ All reset attempts failed")

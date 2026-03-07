@@ -18,7 +18,7 @@ from qfluentwidgets import (
 )
 
 from ..theme.tokens import Colors, Typography, Spacing
-from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard
+from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard, ClickSlider
 from services.ffmpeg_utils import is_ffmpeg_available, is_winget_available
 
 
@@ -381,6 +381,91 @@ class TimelapsePanel(QScrollArea):
 
         layout.addWidget(quality_card)
 
+        # === FPS CALCULATOR ===
+        fps_calc_card = CollapsibleCard("Playback Speed Calculator", FluentIcon.PLAY)
+
+        calc_note = CaptionLabel(
+            "How long should a typical session's video be? "
+            "Drag the slider and the FPS will update automatically."
+        )
+        calc_note.setWordWrap(True)
+        calc_note.setStyleSheet(f"color: {Colors.text_muted};")
+        fps_calc_card.add_widget(calc_note)
+
+        self._calc_hours_spin = SpinBox()
+        self._calc_hours_spin.setRange(1, 24)
+        self._calc_hours_spin.setValue(6)
+        self._calc_hours_spin.setSuffix(" hr")
+        self._calc_hours_spin.valueChanged.connect(self._update_calculator)
+        fps_calc_card.add_row("Session duration", self._calc_hours_spin,
+                              "Length of a typical imaging session")
+
+        self._calc_interval_sec = 300
+        self._calc_interval_label = BodyLabel("300 s")
+        self._calc_interval_label.setStyleSheet(f"color: {Colors.text_secondary};")
+        fps_calc_card.add_row("Capture interval", self._calc_interval_label,
+                              "Read from Capture settings — change it there")
+
+        # Slider: track row + min/max legend row stacked vertically
+        slider_widget = QWidget()
+        slider_vbox = QVBoxLayout(slider_widget)
+        slider_vbox.setContentsMargins(0, 0, 0, 0)
+        slider_vbox.setSpacing(2)
+
+        # Track row: [slider] [live value]
+        track_row = QWidget()
+        slider_layout = QHBoxLayout(track_row)
+        slider_layout.setContentsMargins(0, 0, 0, 0)
+        slider_layout.setSpacing(Spacing.sm)
+
+        self._calc_slider = ClickSlider()
+        self._calc_slider.setRange(5, 180)
+        self._calc_slider.setValue(30)
+        self._calc_slider.valueChanged.connect(self._update_calculator)
+        slider_layout.addWidget(self._calc_slider, 1)
+
+        self._calc_length_label = BodyLabel("30 s")
+        self._calc_length_label.setFixedWidth(44)
+        self._calc_length_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        slider_layout.addWidget(self._calc_length_label)
+
+        slider_vbox.addWidget(track_row)
+
+        # Legend row: "5 s" flush-left, "3 min" flush with right end of slider track
+        legend_row = QWidget()
+        legend_layout = QHBoxLayout(legend_row)
+        legend_layout.setContentsMargins(0, 0, 0, 0)
+        legend_layout.setSpacing(0)
+
+        min_lbl = CaptionLabel("5 s")
+        min_lbl.setStyleSheet(f"color: {Colors.text_muted};")
+        legend_layout.addWidget(min_lbl)
+
+        legend_layout.addStretch()
+
+        max_lbl = CaptionLabel("3 min")
+        max_lbl.setStyleSheet(f"color: {Colors.text_muted};")
+        legend_layout.addWidget(max_lbl)
+
+        # Right-pad to align "3 min" with the slider track end, not the value label
+        legend_layout.addSpacing(44 + Spacing.sm)
+
+        slider_vbox.addWidget(legend_row)
+
+        fps_calc_card.add_row("Target video length", slider_widget)
+
+        self._calc_result_label = BodyLabel("")
+        self._calc_result_label.setWordWrap(True)
+        self._calc_result_label.setStyleSheet(f"color: {Colors.text_secondary};")
+        fps_calc_card.add_widget(self._calc_result_label)
+
+        self._calc_apply_btn = PrimaryPushButton("Set FPS to …")
+        self._calc_apply_btn.setEnabled(False)
+        self._calc_apply_btn.clicked.connect(self._apply_calculated_fps)
+        fps_calc_card.add_widget(self._calc_apply_btn)
+
+        layout.addWidget(fps_calc_card)
+
         # === OUTPUT ===
         output_card = CollapsibleCard("Output", FluentIcon.FOLDER)
 
@@ -448,6 +533,46 @@ class TimelapsePanel(QScrollArea):
         if path:
             self._output_dir_input.setText(path)
 
+    def _update_calculator(self, *_):
+        """Recompute playback FPS from session parameters and update the result label."""
+        if not hasattr(self, '_calc_slider'):
+            return
+
+        session_hours = self._calc_hours_spin.value()
+        capture_interval = self._calc_interval_sec
+        target_seconds = self._calc_slider.value()
+
+        # Update live slider value label (mm:ss for values ≥ 60)
+        if target_seconds >= 60:
+            m, s = divmod(target_seconds, 60)
+            length_str = f"{m}m {s}s" if s else f"{m}m"
+        else:
+            length_str = f"{target_seconds}s"
+        self._calc_length_label.setText(length_str)
+
+        # Compute required FPS
+        total_frames = (session_hours * 3600) / max(1, capture_interval)
+        fps_exact = total_frames / max(1, target_seconds)
+        fps_int = max(1, min(60, round(fps_exact)))
+        self._calc_fps_int = fps_int
+
+        self._calc_result_label.setText(
+            f"{session_hours}h · {capture_interval}s interval "
+            f"→ {total_frames:.0f} frames ÷ {target_seconds}s "
+            f"= {fps_exact:.1f} fps"
+        )
+        self._calc_apply_btn.setText(f"Set FPS to {fps_int}")
+        self._calc_apply_btn.setEnabled(True)
+
+        if not self._loading_config:
+            self._save_config()
+
+    def _apply_calculated_fps(self):
+        """Apply the calculator's computed FPS to the Playback FPS spinbox."""
+        fps_int = getattr(self, '_calc_fps_int', None)
+        if fps_int is not None:
+            self._fps_spin.setValue(fps_int)   # triggers _on_settings_changed → _save_config
+
     # ------------------------------------------------------------------ #
     #  Config persistence                                                  #
     # ------------------------------------------------------------------ #
@@ -480,6 +605,8 @@ class TimelapsePanel(QScrollArea):
         tl['include_overlays'] = self._overlays_switch.is_checked()
         tl['output_dir'] = self._output_dir_input.text()
         tl['max_videos_to_keep'] = self._keep_spin.value()
+        tl['calc_session_hours'] = self._calc_hours_spin.value()
+        tl['calc_target_seconds'] = self._calc_slider.value()
 
         # Inherit coordinates from weather config (always override None with weather values)
         weather = self.main_window.config.get('weather', {})
@@ -521,8 +648,16 @@ class TimelapsePanel(QScrollArea):
             self._overlays_switch.set_checked(tl.get('include_overlays', False))
             self._output_dir_input.setText(tl.get('output_dir', ''))
             self._keep_spin.setValue(tl.get('max_videos_to_keep', 30))
+            self._calc_hours_spin.setValue(tl.get('calc_session_hours', 6))
+            zwo_interval = config.get('zwo_interval', 300.0)
+            self._calc_interval_sec = max(1, int(round(zwo_interval)))
+            self._calc_interval_label.setText(f"{self._calc_interval_sec} s")
+            self._calc_slider.setValue(tl.get('calc_target_seconds', 30))
         finally:
             self._loading_config = False
+
+        # Refresh calculator display to match the loaded values
+        self._update_calculator()
 
         # Show watch mode notice if applicable
         capture_mode = config.get('capture_mode', 'camera')

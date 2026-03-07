@@ -10,6 +10,7 @@ import time
 import numpy as np
 from PIL import Image
 from .logger import app_logger
+from .ffmpeg_utils import is_ffmpeg_available, get_ffmpeg_path
 
 
 class RTSPStreamServer:
@@ -44,7 +45,7 @@ class RTSPStreamServer:
         
         try:
             # Check if ffmpeg is available
-            if not self._check_ffmpeg():
+            if not is_ffmpeg_available():
                 app_logger.warning("ffmpeg not found in PATH. RTSP streaming requires ffmpeg.")
                 app_logger.info("To enable RTSP: Download ffmpeg from https://ffmpeg.org/download.html")
                 app_logger.info("After installing, add ffmpeg.exe to your system PATH and restart the app.")
@@ -84,18 +85,6 @@ class RTSPStreamServer:
             app_logger.error(f"Failed to start RTSP server: {e}")
             return False
     
-    def _check_ffmpeg(self):
-        """Check if ffmpeg is available."""
-        try:
-            result = subprocess.run(
-                ['ffmpeg', '-version'],
-                capture_output=True,
-                timeout=5
-            )
-            return result.returncode == 0
-        except:
-            return False
-    
     def _build_ffmpeg_command(self):
         """Build the ffmpeg command for RTSP streaming."""
         width, height = self.frame_size
@@ -105,7 +94,7 @@ class RTSPStreamServer:
         # - Encode to H.264
         # - Stream via RTSP
         cmd = [
-            'ffmpeg',
+            get_ffmpeg_path(),
             '-f', 'rawvideo',
             '-pixel_format', 'bgr24',
             '-video_size', f'{width}x{height}',
