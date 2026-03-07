@@ -228,6 +228,10 @@ class TimelapseWriter:
         """Return True if now falls within the configured recording window."""
         mode = self._config.get('window_mode', 'sun')
 
+        if mode == 'always':
+            # No time gate — start capturing from the very next frame received.
+            return True
+
         if mode == 'roof':
             # [Beta] Record only while the ML roof model reports the roof is open.
             # roof_open is injected by TimelapseController on every frame.

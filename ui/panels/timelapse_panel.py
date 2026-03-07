@@ -10,10 +10,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
     QFileDialog
 )
-from PySide6.QtCore import Qt, Signal, QThread, QTimer
+from PySide6.QtCore import Qt, Signal, QThread, QTimer, QTime
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
-    PushButton, PrimaryPushButton, ComboBox, LineEdit,
+    PushButton, PrimaryPushButton, ComboBox, LineEdit, TimePicker,
     SpinBox, SwitchButton, FluentIcon, IndeterminateProgressBar
 )
 
@@ -303,15 +303,15 @@ class TimelapsePanel(QScrollArea):
 
         times_row = QHBoxLayout()
         times_row.setSpacing(Spacing.sm)
-        self._start_time_input = LineEdit()
-        self._start_time_input.setPlaceholderText("18:00")
-        self._start_time_input.setFixedWidth(80)
-        self._start_time_input.textChanged.connect(self._on_settings_changed)
+        self._start_time_input = TimePicker()
+        self._start_time_input.setTime(QTime(18, 0))
+        self._start_time_input.setToolTip("Recording start time (24hr)")
+        self._start_time_input.timeChanged.connect(self._on_settings_changed)
         end_label = BodyLabel("→")
-        self._end_time_input = LineEdit()
-        self._end_time_input.setPlaceholderText("06:00")
-        self._end_time_input.setFixedWidth(80)
-        self._end_time_input.textChanged.connect(self._on_settings_changed)
+        self._end_time_input = TimePicker()
+        self._end_time_input.setTime(QTime(6, 0))
+        self._end_time_input.setToolTip("Recording end time (24hr, can span midnight)")
+        self._end_time_input.timeChanged.connect(self._on_settings_changed)
         times_row.addWidget(self._start_time_input)
         times_row.addWidget(end_label)
         times_row.addWidget(self._end_time_input)
@@ -597,8 +597,8 @@ class TimelapsePanel(QScrollArea):
         tl['enabled'] = self._enable_switch.is_checked()
         tl['window_mode'] = self._WINDOW_MODE_MAP.get(self._window_mode_combo.currentIndex(), 'sun')
         tl['sun_mode'] = self._SUN_MODE_MAP.get(self._sun_mode_combo.currentIndex(), 'astronomical')
-        tl['fixed_start'] = self._start_time_input.text() or '18:00'
-        tl['fixed_end'] = self._end_time_input.text() or '06:00'
+        tl['fixed_start'] = self._start_time_input.getTime().toString('HH:mm')
+        tl['fixed_end'] = self._end_time_input.getTime().toString('HH:mm')
         tl['playback_fps'] = self._fps_spin.value()
         _res_map = {0: 0, 1: 1920, 2: 1440, 3: 1280, 4: 720}
         tl['output_max_dim'] = _res_map.get(self._resolution_combo.currentIndex(), 0)
@@ -636,8 +636,15 @@ class TimelapsePanel(QScrollArea):
             sun_idx = self._SUN_MODE_REVERSE.get(tl.get('sun_mode', 'astronomical'), 0)
             self._sun_mode_combo.setCurrentIndex(sun_idx)
 
-            self._start_time_input.setText(tl.get('fixed_start', '18:00'))
-            self._end_time_input.setText(tl.get('fixed_end', '06:00'))
+            def _parse_time(s: str, fallback: QTime) -> QTime:
+                try:
+                    h, m = map(int, s.split(':'))
+                    return QTime(h, m)
+                except Exception:
+                    return fallback
+
+            self._start_time_input.setTime(_parse_time(tl.get('fixed_start', '18:00'), QTime(18, 0)))
+            self._end_time_input.setTime(_parse_time(tl.get('fixed_end', '06:00'), QTime(6, 0)))
             self._fps_spin.setValue(tl.get('playback_fps', 24))
             _res_reverse = {0: 0, 1920: 1, 1440: 2, 1280: 3, 720: 4}
             self._resolution_combo.setCurrentIndex(
