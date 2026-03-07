@@ -185,7 +185,7 @@ class UpdateDialog(MessageBoxBase):
             self._downloaded_path = result
             self.progress_bar.setValue(100)
             self.status_label.setText(f"✅ Downloaded to: {result}")
-            self.status_label.setStyleSheet(f"color: {Colors.status_ok};")
+            self.status_label.setStyleSheet(f"color: {Colors.status_success};")
             app_logger.info(f"Update ready to install: {result}")
 
             # Disconnect old handler first
