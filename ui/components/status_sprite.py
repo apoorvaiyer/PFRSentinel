@@ -302,9 +302,6 @@ class StatusSpriteWidget(QWidget):
 
         # Wall-clock elapsed time — always advances regardless of _frame or GIL state
         elapsed = time.monotonic() - self._state_start
-        # 2.5 rad/s → one compress-stretch cycle ≈ 1.25 s; start on the falling edge
-        t = elapsed * 2.5 + math.pi * 0.75
-        stretch_factor = abs(math.sin(t))
 
         num = 9
         bar_w = s * 0.07
@@ -315,6 +312,12 @@ class StatusSpriteWidget(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(num):
             norm = (i - (num - 1) / 2) / ((num - 1) / 2)  # -1 to +1
+
+            # Centre bar leads; edge bars lag — creates "spreading outward" histogram look
+            # Edge bars are delayed by up to 0.5 s, so the bell curve grows from the middle out
+            phase_delay = abs(norm) * 0.5
+            t = max(0.0, elapsed - phase_delay) * 1.5 + math.pi * 0.75
+            stretch_factor = abs(math.sin(t))
 
             # Compressed: all bars ~15 % of available height
             # Stretched: bell-curve peak (centre tallest, edges shortest)
