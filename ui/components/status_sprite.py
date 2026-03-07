@@ -79,9 +79,12 @@ class StatusSpriteWidget(QWidget):
 
     def set_state(self, state):
         """Set animation state.  Pass None to stop."""
-        self._state = state.lower() if state else None
-        self._frame = 0
-        self._waiting_cycle = -1  # force fresh word pick on next waiting paint
+        new_state = state.lower() if state else None
+        if new_state != self._state:
+            # Only reset frame counter on genuine state transitions
+            self._frame = 0
+            self._waiting_cycle = -1  # force fresh word pick on next waiting paint
+        self._state = new_state
         self.setToolTip(self.STATE_TOOLTIPS.get(self._state, '') if self._state else '')
         if self._state is not None:
             self._timer.start()
@@ -289,7 +292,8 @@ class StatusSpriteWidget(QWidget):
         w, h = self.width(), self.height()
         s = min(w, h)
         cx = w / 2.0
-        t = self._frame * 0.12  # half-cycle (compress→stretch) ≈ 1 s
+        # Start at π/2 so bars are at full height on frame 0 — immediately visible
+        t = self._frame * 0.12 + math.pi / 2
 
         num = 9
         bar_w = s * 0.07
