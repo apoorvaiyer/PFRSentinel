@@ -432,7 +432,7 @@ class TimelapseWriter:
 
         # Optional downscale — scale longest side to max_dim, keep aspect ratio
         if max_dim > 0 and (width > max_dim or height > max_dim):
-            cmd += ['-vf', f'scale=min(iw,{max_dim}):min(ih,{max_dim})']
+            cmd += ['-vf', f'scale={max_dim}:{max_dim}:force_original_aspect_ratio=decrease']
 
         cmd += [
             '-movflags', '+faststart',   # correct duration metadata; moov moved to front after encode
