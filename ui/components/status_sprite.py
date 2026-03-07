@@ -292,8 +292,9 @@ class StatusSpriteWidget(QWidget):
         w, h = self.width(), self.height()
         s = min(w, h)
         cx = w / 2.0
-        # Start at π/2 so bars are at full height on frame 0 — immediately visible
-        t = self._frame * 0.12 + math.pi / 2
+        # Start 3/4 into the cycle (steep falling edge) so motion is visible in the
+        # first 2-3 frames even if the state only lasts ~100 ms
+        t = self._frame * 0.25 + math.pi * 0.75
 
         num = 9
         bar_w = s * 0.07
