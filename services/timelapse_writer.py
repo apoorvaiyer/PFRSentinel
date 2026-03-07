@@ -39,6 +39,7 @@ class TimelapseWriter:
         self._config: dict = {}
         self._last_in_window: Optional[bool] = None   # for transition logging
         self._last_enabled: bool = False               # for configure change logging
+        self._stderr_thread: Optional[threading.Thread] = None
         # Optional callback(path, frame_count, elapsed_seconds) called after
         # each session finalizes. Set by TimelapseController for Discord posts.
         self.on_session_finished = None
@@ -76,6 +77,14 @@ class TimelapseWriter:
                 return False
 
             frame_size = (image.width, image.height)
+
+            # Detect unexpected ffmpeg exit and restart
+            if self._process is not None and self._process.poll() is not None:
+                exit_code = self._process.poll()
+                app_logger.error(
+                    f"Timelapse: ffmpeg exited unexpectedly (code {exit_code}) — restarting session"
+                )
+                self._process = None
 
             # Start or restart session if needed
             if self._process is None or self._session_date != now.date():
@@ -158,13 +167,27 @@ class TimelapseWriter:
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
             self._frame_size = frame_size
             self._session_date = now.date()
             self._session_start = now
             self._session_path = output_path
             self._frame_count = 0
+
+            # Drain stderr in a background thread so it never blocks ffmpeg
+            proc = self._process
+            def _drain_stderr(p):
+                try:
+                    for line in p.stderr:
+                        text = line.decode(errors='replace').rstrip()
+                        if text:
+                            app_logger.debug(f"Timelapse [ffmpeg]: {text}")
+                except Exception:
+                    pass
+            self._stderr_thread = threading.Thread(target=_drain_stderr, args=(proc,), daemon=True)
+            self._stderr_thread.start()
+
         except FileNotFoundError:
             app_logger.error("Timelapse: ffmpeg executable not found")
             self._process = None
