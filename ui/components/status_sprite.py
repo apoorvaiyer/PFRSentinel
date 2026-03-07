@@ -81,6 +81,7 @@ class StatusSpriteWidget(QWidget):
         """Set animation state.  Pass None to stop."""
         self._state = state.lower() if state else None
         self._frame = 0
+        self._waiting_cycle = -1  # force fresh word pick on next waiting paint
         self.setToolTip(self.STATE_TOOLTIPS.get(self._state, '') if self._state else '')
         if self._state is not None:
             self._timer.start()
@@ -284,33 +285,33 @@ class StatusSpriteWidget(QWidget):
             )
 
     def _draw_stretching(self, p):
-        """Histogram bars stretch upward in a left-to-right wave — visualises tone mapping."""
+        """Histogram bars compress then stretch into a bell curve — visualises tone mapping."""
         w, h = self.width(), self.height()
         s = min(w, h)
         cx = w / 2.0
-        t = self._frame * 0.07
+        t = self._frame * 0.10  # ~2.5 s per full compress → stretch → compress cycle
 
         num = 9
         bar_w = s * 0.07
         gap = s * 0.02
         x0 = cx - (num * bar_w + (num - 1) * gap) / 2
         c_iris = QColor(Colors.accent_text)
-        stub_h = 3.0  # resting height before each bar stretches up
+
+        # Global factor: 0 = all bars short/compressed, 1 = full bell-curve stretch
+        stretch_factor = (math.sin(t) + 1) / 2
 
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(num):
             norm = (i - (num - 1) / 2) / ((num - 1) / 2)  # -1 to +1
 
-            # Bell curve caps how tall each bar can grow (centre tallest)
-            max_h = math.exp(-0.5 * (norm * 1.1) ** 2) * (h - 8)
-
-            # Evenly spread bars across a full 2π cycle — always moving, no dead periods
-            phase = t - i * (2 * math.pi / num)
-            stretch = (math.sin(phase) + 1) / 2   # 0.0 → 1.0, never clamps flat
-            bar_h = stub_h + stretch * (max_h - stub_h)
+            # Compressed: all bars ~15 % of available height
+            # Stretched: bell-curve peak (centre tallest, edges shortest)
+            compressed_h = (h - 8) * 0.15
+            peak_h = math.exp(-0.5 * (norm * 1.5) ** 2) * (h - 8)
+            bar_h = max(3.0, compressed_h + stretch_factor * (peak_h - compressed_h))
 
             c = QColor(c_iris)
-            c.setAlphaF(0.30 + stretch * 0.70)
+            c.setAlphaF(0.35 + stretch_factor * 0.65)
             p.setBrush(c)
             x = x0 + i * (bar_w + gap)
             p.drawRoundedRect(QRectF(x, h - bar_h - 4, bar_w, bar_h), 1.5, 1.5)
