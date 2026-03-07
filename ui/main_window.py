@@ -465,6 +465,7 @@ class MainWindow(QMainWindow):
         saved_accent = self.config.get('ui_accent', 'iris')
         apply_accent_theme(saved_accent)
         self.setStyleSheet(get_stylesheet())
+        self.nav_rail.refresh_styles()
 
     def set_accent_theme(self, name: str) -> None:
         """Switch accent colour at runtime and refresh all styled widgets."""
