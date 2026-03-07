@@ -529,7 +529,9 @@ class TimelapsePanel(QScrollArea):
         self._save_config()
 
     def _browse_output_dir(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Timelapse Output Folder")
+        current = self._output_dir_input.text()
+        start_dir = current if current and os.path.isdir(current) else ""
+        path = QFileDialog.getExistingDirectory(self, "Select Timelapse Output Folder", start_dir)
         if path:
             self._output_dir_input.setText(path)
 
