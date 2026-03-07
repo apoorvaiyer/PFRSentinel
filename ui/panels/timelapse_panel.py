@@ -353,6 +353,13 @@ class TimelapsePanel(QScrollArea):
         self._fps_spin.valueChanged.connect(self._on_settings_changed)
         quality_card.add_row("Playback speed", self._fps_spin, "Output video frame rate")
 
+        self._resolution_combo = ComboBox()
+        self._resolution_combo.addItems(["Original", "1920 px", "1440 px", "1280 px", "720 px"])
+        self._resolution_combo.setCurrentIndex(1)  # default 1920px
+        self._resolution_combo.currentIndexChanged.connect(self._on_settings_changed)
+        quality_card.add_row("Output resolution", self._resolution_combo,
+                              "Downscale longest side — reduces file size significantly")
+
         self._crf_spin = SpinBox()
         self._crf_spin.setRange(0, 51)
         self._crf_spin.setValue(23)
@@ -461,6 +468,8 @@ class TimelapsePanel(QScrollArea):
         tl['fixed_start'] = self._start_time_input.text() or '18:00'
         tl['fixed_end'] = self._end_time_input.text() or '06:00'
         tl['playback_fps'] = self._fps_spin.value()
+        _res_map = {0: 0, 1: 1920, 2: 1440, 3: 1280, 4: 720}
+        tl['output_max_dim'] = _res_map.get(self._resolution_combo.currentIndex(), 0)
         tl['video_crf'] = self._crf_spin.value()
         tl['include_overlays'] = self._overlays_switch.is_checked()
         tl['output_dir'] = self._output_dir_input.text()
@@ -495,6 +504,10 @@ class TimelapsePanel(QScrollArea):
             self._start_time_input.setText(tl.get('fixed_start', '18:00'))
             self._end_time_input.setText(tl.get('fixed_end', '06:00'))
             self._fps_spin.setValue(tl.get('playback_fps', 24))
+            _res_reverse = {0: 0, 1920: 1, 1440: 2, 1280: 3, 720: 4}
+            self._resolution_combo.setCurrentIndex(
+                _res_reverse.get(tl.get('output_max_dim', 1920), 1)
+            )
             self._crf_spin.setValue(tl.get('video_crf', 23))
             self._overlays_switch.set_checked(tl.get('include_overlays', False))
             self._output_dir_input.setText(tl.get('output_dir', ''))

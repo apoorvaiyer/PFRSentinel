@@ -351,8 +351,9 @@ class TimelapseWriter:
         crf = self._config.get('video_crf', 23)
         preset = self._config.get('video_preset', 'fast')
         fps = self._config.get('playback_fps', 24)
+        max_dim = int(self._config.get('output_max_dim', 0))
 
-        return [
+        cmd = [
             get_ffmpeg_path(),
             '-f', 'rawvideo',
             '-pixel_format', 'rgb24',
@@ -364,7 +365,15 @@ class TimelapseWriter:
             '-preset', str(preset),
             '-r', str(fps),
             '-pix_fmt', 'yuv420p',
+        ]
+
+        # Optional downscale — scale longest side to max_dim, keep aspect ratio
+        if max_dim > 0 and (width > max_dim or height > max_dim):
+            cmd += ['-vf', f'scale=min(iw,{max_dim}):min(ih,{max_dim})']
+
+        cmd += [
             '-movflags', '+faststart',   # correct duration metadata; moov moved to front after encode
             '-y',
             output_path,
         ]
+        return cmd
