@@ -9,9 +9,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QPixmap, QIcon
 from qfluentwidgets import (
-    PushButton, ToolButton, PrimaryPushButton, 
+    PushButton, ToolButton, PrimaryPushButton,
     FluentIcon, ProgressBar, InfoBadge, CaptionLabel
 )
+from .status_sprite import StatusSpriteWidget
 
 import os
 from datetime import datetime
@@ -196,17 +197,13 @@ class AppBar(QFrame):
         self.progress_bar.hide()
         progress_layout.addWidget(self.progress_bar)
         
-        # Add a label showing "Processing..." or similar
-        self.processing_label = CaptionLabel("Processing...")
-        self.processing_label.setStyleSheet(f"color: {Colors.accent_default};")
-        self.processing_label.setAlignment(Qt.AlignCenter)
-        self.processing_label.setFixedWidth(100)
-        # Retain space when hidden to prevent layout shift
-        sp = self.processing_label.sizePolicy()
+        # Animated status sprite (replaces plain text processing label)
+        self.status_sprite = StatusSpriteWidget()
+        sp = self.status_sprite.sizePolicy()
         sp.setRetainSizeWhenHidden(True)
-        self.processing_label.setSizePolicy(sp)
-        self.processing_label.hide()
-        progress_layout.addWidget(self.processing_label)
+        self.status_sprite.setSizePolicy(sp)
+        self.status_sprite.hide()
+        progress_layout.addWidget(self.status_sprite)
         
         right_layout.addLayout(progress_layout)
         
@@ -255,13 +252,15 @@ class AppBar(QFrame):
         if capturing:
             self.start_btn.hide()
             self.stop_btn.show()
-            self.processing_label.hide()
+            self.status_sprite.hide()
+            self.status_sprite.set_state(None)
             self.camera_chip.set_status('capturing')
             self.camera_chip.set_label('Capturing')
         else:
             self.start_btn.show()
             self.stop_btn.hide()
-            self.processing_label.hide()
+            self.status_sprite.hide()
+            self.status_sprite.set_state(None)
             self.camera_chip.set_status('idle')
             self.camera_chip.set_label('Camera')
     
@@ -346,20 +345,12 @@ class AppBar(QFrame):
                     or None to hide status
         """
         if status:
-            status_text = {
-                'idle': 'Idle',
-                'waiting': 'Waiting...',
-                'capturing': 'Capturing...',
-                'stretching': 'Stretching...',
-                'processing': 'Processing...',
-                'sending': 'Sending...'
-            }.get(status.lower(), status.title())
-            
-            self.processing_label.setText(status_text)
-            self.processing_label.show()
+            self.status_sprite.set_state(status)
+            self.status_sprite.show()
             self.countdown_label.hide()
         else:
-            self.processing_label.hide()
+            self.status_sprite.set_state(None)
+            self.status_sprite.hide()
     
     def set_processing(self, is_processing: bool):
         """Legacy method for backward compatibility"""
