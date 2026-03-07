@@ -289,7 +289,7 @@ class StatusSpriteWidget(QWidget):
         w, h = self.width(), self.height()
         s = min(w, h)
         cx = w / 2.0
-        t = self._frame * 0.10  # ~2.5 s per full compress → stretch → compress cycle
+        t = self._frame * 0.12  # half-cycle (compress→stretch) ≈ 1 s
 
         num = 9
         bar_w = s * 0.07
@@ -297,8 +297,9 @@ class StatusSpriteWidget(QWidget):
         x0 = cx - (num * bar_w + (num - 1) * gap) / 2
         c_iris = QColor(Colors.accent_text)
 
-        # Global factor: 0 = all bars short/compressed, 1 = full bell-curve stretch
-        stretch_factor = (math.sin(t) + 1) / 2
+        # abs(sin) starts at 0 on frame 0 — bars immediately rise from flat,
+        # visible even if state only lasts 1-2 seconds
+        stretch_factor = abs(math.sin(t))
 
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(num):
