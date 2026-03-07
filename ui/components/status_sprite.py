@@ -8,7 +8,7 @@ import math
 
 from PySide6.QtWidgets import QWidget, QSizePolicy
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QSize
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QPainterPath, QFont, QFontMetrics
 
 from ..theme.tokens import Colors
 
@@ -21,6 +21,20 @@ class StatusSpriteWidget(QWidget):
     States: idle, waiting, capturing, stretching, processing, sending
     Call set_state(state_str | None) to switch / stop.
     """
+
+    # Fun astrophotography words shown periodically in the waiting speech bubble
+    WAITING_WORDS = [
+        "Photons!", "Dark skies...", "Seeing: poor", "Collimated!", "No clouds!",
+        "PHD2 locked", "Focus!", "Drift aligned", "Sky clear!", "Plate solved",
+        "Flip time!", "Dew heater on", "Cold night!", "Tracking...", "Bias frames",
+        "Flat frames", "Dark frames", "SNR rising", "Stars sharp!", "Galaxy time!",
+        "Nebula mode", "Slewing...", "Polar aligned", "Cosmic rays!", "Orion rising",
+        "Milky Way!", "Andromeda!", "Horsehead!", "Crab Nebula", "Ring Nebula",
+        "Pleiades up!", "Globular!", "Double star!", "Red dwarf!", "Black holes!",
+        "Quasar!", "Exoplanet?", "Perihelion!", "Zenith!", "RA drift: 0",
+        "Dec: stable", "Seeing: 2\"", "Lucky imaging", "Airy disk!", "Sub-arcsec!",
+        "Clear skies!", "Nebula time!", "Scope cooling", "No dew yet!", "On target!",
+    ]
 
     STATE_TOOLTIPS = {
         'idle':         'Idle — session not running',
@@ -136,16 +150,92 @@ class StatusSpriteWidget(QWidget):
             p.drawEllipse(QRectF(sx - 1.5, sy - 1.5, 3.0, 3.0))
 
     def _draw_waiting(self, p):
-        """Three star-dots pulsing in sequence — "· · ·" loading."""
+        """Three star-dots pulsing in sequence, with periodic astrophotography speech bubble."""
         w, h = self.width(), self.height()
         s = min(w, h)
         cx, cy = w / 2.0, h / 2.0
         t = self._frame * 0.055
         c_iris = QColor(Colors.accent_text)
+
+        # Speech bubble: visible for first 100 frames of every 750-frame cycle (~4s on, ~26s off)
+        SHOW_FRAMES = 100
+        CYCLE = 750
+        frame_in_cycle = self._frame % CYCLE
+        bubble_visible = frame_in_cycle < SHOW_FRAMES
+
+        # Shift dots down slightly when bubble is showing to give it room
+        dot_cy = cy + (s * 0.12 if bubble_visible else 0.0)
+
         for i, sx in enumerate((cx - s * 0.20, cx, cx + s * 0.20)):
             alpha = (math.sin(t - i * math.pi / 2.0) + 1) / 2
             r = 2.5 + alpha * 2.0
-            self._draw_star4(p, sx, cy, r, c_iris, 0.20 + alpha * 0.80)
+            self._draw_star4(p, sx, dot_cy, r, c_iris, 0.20 + alpha * 0.80)
+
+        if not bubble_visible:
+            return
+
+        # Fade in (0-15) / hold (15-85) / fade out (85-100)
+        if frame_in_cycle < 15:
+            fade = frame_in_cycle / 15.0
+        elif frame_in_cycle > 85:
+            fade = (SHOW_FRAMES - frame_in_cycle) / 15.0
+        else:
+            fade = 1.0
+
+        word_idx = (self._frame // CYCLE) % len(self.WAITING_WORDS)
+        word = self.WAITING_WORDS[word_idx]
+
+        # Bubble geometry: sits above the dots, tail points down to the center dot
+        margin = 5
+        bubble_h = h * 0.44
+        bubble_w = w - margin * 2
+        bx, by = float(margin), 1.0
+        br = 5.0
+        tail_half = 5.0
+        tail_tip_y = dot_cy - 2.0   # just above center dot
+
+        # Bubble fill
+        bg = QColor(Colors.bg_card)
+        bg.setAlphaF(0.93 * fade)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(bg))
+        p.drawRoundedRect(QRectF(bx, by, bubble_w, bubble_h), br, br)
+
+        # Tail triangle (pointing down from bottom-center of bubble)
+        tail_root_y = by + bubble_h
+        tail_path = QPainterPath()
+        tail_path.moveTo(cx - tail_half, tail_root_y)
+        tail_path.lineTo(cx + tail_half, tail_root_y)
+        tail_path.lineTo(cx, tail_tip_y)
+        tail_path.closeSubpath()
+        p.setBrush(QBrush(bg))
+        p.drawPath(tail_path)
+
+        # Bubble border
+        border_c = QColor(Colors.accent_default)
+        border_c.setAlphaF(0.45 * fade)
+        p.setPen(QPen(border_c, 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(QRectF(bx, by, bubble_w, bubble_h), br, br)
+
+        # Word text — scale font down if the word is wider than the bubble
+        max_text_w = bubble_w - 10
+        font_px = max(7, int(bubble_h * 0.46))
+        font = QFont()
+        font.setPixelSize(font_px)
+        text_w = QFontMetrics(font).horizontalAdvance(word)
+        if text_w > max_text_w:
+            font_px = max(7, int(font_px * max_text_w / text_w))
+            font.setPixelSize(font_px)
+        p.setFont(font)
+        text_c = QColor(Colors.accent_text)
+        text_c.setAlphaF(fade)
+        p.setPen(text_c)
+        p.drawText(
+            QRectF(bx + 4, by, bubble_w - 8, bubble_h),
+            Qt.AlignmentFlag.AlignCenter,
+            word,
+        )
 
     def _draw_capturing(self, p):
         """Camera aperture iris — 6 blades rotate while the opening pulses."""
@@ -289,11 +379,14 @@ class StatusSpriteWidget(QWidget):
         p.drawLine(QPointF(cx, cy - arm - gap), QPointF(cx, cy - gap))
         p.drawLine(QPointF(cx, cy + gap), QPointF(cx, cy + arm + gap))
 
-        # Center dot
+        # Wandering dot — drifts around the center as if hunting for calibration lock
+        wander = s * 0.10
+        dx = cx + math.sin(t * 2.3 + math.cos(t * 0.7)) * wander
+        dy = cy + math.cos(t * 1.7 + math.sin(t * 0.4)) * wander
         p.setPen(Qt.PenStyle.NoPen)
         dot_c = QColor(Colors.accent_default)
         p.setBrush(QBrush(dot_c))
-        p.drawEllipse(QRectF(cx - 2.5, cy - 2.5, 5.0, 5.0))
+        p.drawEllipse(QRectF(dx - 2.5, dy - 2.5, 5.0, 5.0))
 
     # ------------------------------------------------------------------
     # Helper
