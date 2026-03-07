@@ -6,6 +6,7 @@ Text is omitted; hover the widget to see the state label as a tooltip.
 """
 import math
 import random
+import time
 
 from PySide6.QtWidgets import QWidget, QSizePolicy
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QSize
@@ -61,6 +62,7 @@ class StatusSpriteWidget(QWidget):
         self._waiting_cycle = -1      # tracks which 750-frame cycle we're in
         self._waiting_word = ""       # current word shown in speech bubble
         self._waiting_word_pool = []  # shuffled queue — drains before reshuffling
+        self._state_start = 0.0       # wall-clock time when current state began
 
         self.setMinimumSize(self.MIN_SIZE, self.MIN_SIZE)
         sp = self.sizePolicy()
@@ -83,6 +85,7 @@ class StatusSpriteWidget(QWidget):
         if new_state != self._state:
             # Only reset frame counter on genuine state transitions
             self._frame = 0
+            self._state_start = time.monotonic()
             self._waiting_cycle = -1  # force fresh word pick on next waiting paint
         self._state = new_state
         self.setToolTip(self.STATE_TOOLTIPS.get(self._state, '') if self._state else '')
@@ -288,23 +291,26 @@ class StatusSpriteWidget(QWidget):
             )
 
     def _draw_stretching(self, p):
-        """Histogram bars compress then stretch into a bell curve — visualises tone mapping."""
+        """Histogram bars compress then stretch into a bell curve — visualises tone mapping.
+
+        Uses wall-clock time so animation is immune to GIL contention or timer delays.
+        Self-schedules repaints so it runs even if the main QTimer tick is blocked.
+        """
         w, h = self.width(), self.height()
         s = min(w, h)
         cx = w / 2.0
-        # Start 3/4 into the cycle (steep falling edge) so motion is visible in the
-        # first 2-3 frames even if the state only lasts ~100 ms
-        t = self._frame * 0.25 + math.pi * 0.75
+
+        # Wall-clock elapsed time — always advances regardless of _frame or GIL state
+        elapsed = time.monotonic() - self._state_start
+        # 2.5 rad/s → one compress-stretch cycle ≈ 1.25 s; start on the falling edge
+        t = elapsed * 2.5 + math.pi * 0.75
+        stretch_factor = abs(math.sin(t))
 
         num = 9
         bar_w = s * 0.07
         gap = s * 0.02
         x0 = cx - (num * bar_w + (num - 1) * gap) / 2
         c_iris = QColor(Colors.accent_text)
-
-        # abs(sin) starts at 0 on frame 0 — bars immediately rise from flat,
-        # visible even if state only lasts 1-2 seconds
-        stretch_factor = abs(math.sin(t))
 
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(num):
@@ -321,6 +327,9 @@ class StatusSpriteWidget(QWidget):
             p.setBrush(c)
             x = x0 + i * (bar_w + gap)
             p.drawRoundedRect(QRectF(x, h - bar_h - 4, bar_w, bar_h), 1.5, 1.5)
+
+        # Self-schedule next repaint — guarantees animation even if main timer is delayed
+        QTimer.singleShot(30, self.update)
 
     def _draw_processing(self, p):
         """Star-cluster spinner — 8 dots orbit with a trailing fade."""
