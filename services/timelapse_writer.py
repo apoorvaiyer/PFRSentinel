@@ -86,8 +86,16 @@ class TimelapseWriter:
                 )
                 self._process = None
 
-            # Start or restart session if needed
-            if self._process is None or self._session_date != now.date():
+            # Start or restart session if needed.
+            # 'always' mode rolls over at midnight (one video per calendar day).
+            # All other modes are window-driven: only start when not already recording —
+            # midnight does NOT split an overnight session.
+            mode = self._config.get('window_mode', 'sun')
+            needs_new_session = (
+                self._process is None or
+                (mode == 'always' and self._session_date != now.date())
+            )
+            if needs_new_session:
                 self._start_session(frame_size, now)
             elif frame_size != self._frame_size:
                 # Resolution changed — restart with new size
@@ -268,8 +276,17 @@ class TimelapseWriter:
             return is_open
 
         try:
+            # Check today's window first
             window_start, window_end = self._get_window_for_day(now.date())
             in_window = window_start <= now <= window_end
+
+            # For overnight windows that cross midnight, also check yesterday's window
+            # (e.g. at 02:00 on Mar 12, the Mar 11 window 18:00→06:00 still applies)
+            if not in_window:
+                yesterday = now.date() - timedelta(days=1)
+                window_start, window_end = self._get_window_for_day(yesterday)
+                in_window = window_start <= now <= window_end
+
             if in_window != self._last_in_window:
                 self._last_in_window = in_window
                 w_str = (f"{window_start.strftime('%H:%M')} → "
