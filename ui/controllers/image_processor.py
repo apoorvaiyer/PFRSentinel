@@ -279,7 +279,7 @@ class ImageProcessorWorker(QThread):
             else:
                 img.save(output_path, 'JPEG', quality=jpg_quality)
             
-            app_logger.info(f"Saved: {os.path.basename(output_path)}")
+            app_logger.debug(f"Saved: {os.path.basename(output_path)}")
             
             # Clean up large arrays from metadata before emitting (avoid memory leaks)
             metadata.pop('RAW_RGB_16BIT', None)

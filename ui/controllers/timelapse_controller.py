@@ -106,10 +106,23 @@ class TimelapseController(QObject):
 
         def _post():
             try:
+                import time
                 from services.discord_alerts import DiscordAlerts
                 alerts = DiscordAlerts(self._main_window.config)
-                alerts.send_timelapse_completed(path, frame_count, elapsed_seconds)
-                app_logger.info("Timelapse: Discord post sent")
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    success = alerts.send_timelapse_completed(path, frame_count, elapsed_seconds)
+                    if success:
+                        app_logger.info("Timelapse: Discord post sent")
+                        return
+                    if attempt < max_retries:
+                        wait = attempt * 10  # 10s, 20s backoff
+                        app_logger.warning(
+                            f"Timelapse: Discord post failed (attempt {attempt}/{max_retries}), "
+                            f"retrying in {wait}s"
+                        )
+                        time.sleep(wait)
+                app_logger.error("Timelapse: Discord post failed after all retries")
             except Exception as e:
                 app_logger.error(f"Timelapse: Discord post failed: {e}")
 
