@@ -4,6 +4,7 @@ Camera calibration and auto-exposure algorithms for ZWO ASI cameras
 import threading
 import numpy as np
 from .camera_utils import calculate_brightness, check_clipping
+from .logger import app_logger
 
 
 class CameraCalibration:
@@ -355,7 +356,7 @@ class CameraCalibration:
                 # Image too dark - increase exposure
                 # But respect clipping prevention
                 if self.clipping_prevention and is_clipping:
-                    self.log(f"Image dark but clipping detected ({clipped_percent:.1f}%) - not increasing exposure")
+                    app_logger.debug(f"Image dark but clipping detected ({clipped_percent:.1f}%) - not increasing exposure")
                     return result
                 
                 if needs_aggressive_adjustment:
@@ -375,12 +376,12 @@ class CameraCalibration:
                     new_exposure = self.exposure_seconds * adjustment_factor
                     new_exposure = min(new_exposure, self.max_exposure_sec)
                     
-                    self.log(f"Auto-exposure AGGRESSIVE: {self.exposure_seconds*1000:.2f}ms -> {new_exposure*1000:.2f}ms (x{adjustment_factor:.2f}) brightness={brightness:.1f}, target={self.target_brightness}")
+                    app_logger.debug(f"Auto-exposure AGGRESSIVE: {self.exposure_seconds*1000:.2f}ms -> {new_exposure*1000:.2f}ms (x{adjustment_factor:.2f}) brightness={brightness:.1f}, target={self.target_brightness}")
                 else:
                     # Minor deviation - conservative adjustment
                     new_exposure = self.exposure_seconds * 1.3
                     new_exposure = min(new_exposure, self.max_exposure_sec)
-                    self.log(f"Auto-exposure: increased to {new_exposure*1000:.2f}ms (brightness={brightness:.1f}, target={self.target_brightness})")
+                    app_logger.debug(f"Auto-exposure: increased to {new_exposure*1000:.2f}ms (brightness={brightness:.1f}, target={self.target_brightness})")
                 
                 if new_exposure != self.exposure_seconds:
                     self.exposure_seconds = new_exposure
@@ -406,22 +407,22 @@ class CameraCalibration:
                     new_exposure = self.exposure_seconds * adjustment_factor
                     new_exposure = max(new_exposure, 0.000032)
                     
-                    self.log(f"Auto-exposure AGGRESSIVE: {self.exposure_seconds*1000:.2f}ms -> {new_exposure*1000:.2f}ms (x{adjustment_factor:.2f}) brightness={brightness:.1f}, target={self.target_brightness}")
+                    app_logger.debug(f"Auto-exposure AGGRESSIVE: {self.exposure_seconds*1000:.2f}ms -> {new_exposure*1000:.2f}ms (x{adjustment_factor:.2f}) brightness={brightness:.1f}, target={self.target_brightness}")
                 else:
                     # Minor deviation - conservative adjustment
                     new_exposure = self.exposure_seconds * 0.7
                     new_exposure = max(new_exposure, 0.000032)
-                    self.log(f"Auto-exposure: decreased to {new_exposure*1000:.2f}ms (brightness={brightness:.1f}, target={self.target_brightness})")
-                
+                    app_logger.debug(f"Auto-exposure: decreased to {new_exposure*1000:.2f}ms (brightness={brightness:.1f}, target={self.target_brightness})")
+
                 if new_exposure != self.exposure_seconds:
                     self.exposure_seconds = new_exposure
                     self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(new_exposure * 1000000))
-                    
+
                     if is_clipping:
-                        self.log(f"  Clipping detected: {clipped_percent:.1f}% of pixels above {self.clipping_threshold}")
+                        app_logger.debug(f"  Clipping detected: {clipped_percent:.1f}% of pixels above {self.clipping_threshold}")
             else:
                 # Within acceptable range - no adjustment needed
-                self.log(f"Auto-exposure: maintaining {self.exposure_seconds*1000:.2f}ms (brightness={brightness:.1f} within target range)")
+                app_logger.debug(f"Auto-exposure: maintaining {self.exposure_seconds*1000:.2f}ms (brightness={brightness:.1f} within target range)")
             
             return result
             

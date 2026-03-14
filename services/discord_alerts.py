@@ -184,7 +184,7 @@ class DiscordAlerts:
             return False
             
         except Exception as e:
-            self.last_send_status = f"Failed: {str(e)[:50]}"
+            self.last_send_status = f"Failed: {str(e)[:200]}"
             app_logger.error(f"Discord webhook error: {e}")
             return False
     
@@ -384,7 +384,7 @@ Latest sky capture from {APP_DISPLAY_NAME}."""
                         webhook_url,
                         data={"payload_json": json.dumps(payload)},
                         files=files,
-                        timeout=30,  # Video upload may take longer
+                        timeout=120,  # Video upload needs generous timeout
                     )
             else:
                 response = requests.post(webhook_url, json=payload, timeout=10)
@@ -409,7 +409,7 @@ Latest sky capture from {APP_DISPLAY_NAME}."""
             app_logger.error("Discord webhook timeout (video upload)")
             return False
         except Exception as e:
-            self.last_send_status = f"Failed: {str(e)[:50]}"
+            self.last_send_status = f"Failed: {str(e)[:200]}"
             app_logger.error(f"Discord webhook error: {e}")
             return False
 

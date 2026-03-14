@@ -6,6 +6,7 @@ producing a standard MP4 with correct duration metadata.
 import os
 import subprocess
 import threading
+import time
 from datetime import datetime, date, timedelta
 from typing import Optional, Tuple
 
@@ -183,13 +184,15 @@ class TimelapseWriter:
             self._session_path = output_path
             self._frame_count = 0
 
-            # Drain stderr in a background thread so it never blocks ffmpeg
+            # Drain stderr in a background thread so it never blocks ffmpeg.
+            # Filter out per-frame progress lines (frame=...) which ffmpeg emits
+            # every ~0.5s — over an 11-hour session that's ~80k lines of log bloat.
             proc = self._process
             def _drain_stderr(p):
                 try:
                     for line in p.stderr:
                         text = line.decode(errors='replace').rstrip()
-                        if text:
+                        if text and not text.lstrip('\r ').startswith('frame='):
                             app_logger.debug(f"Timelapse [ffmpeg]: {text}")
                 except Exception:
                     pass
@@ -243,6 +246,20 @@ class TimelapseWriter:
 
         self._session_date = None
         self._session_start = None
+
+        # Wait for OS to finish flushing the file to disk — ffmpeg's +faststart
+        # rewrites the MP4 atom table after encoding, and on Windows the file
+        # may not be fully available immediately after proc.wait() returns.
+        if clean_exit and finished_path:
+            time.sleep(2)  # Initial delay for +faststart rewrite to begin
+            for _ in range(10):
+                try:
+                    size = os.path.getsize(finished_path)
+                    time.sleep(1)
+                    if os.path.getsize(finished_path) == size:
+                        break  # File size stable
+                except OSError:
+                    time.sleep(1)
 
         # Notify listener (e.g. Discord) only when ffmpeg exited cleanly
         if clean_exit and finished_path and finished_frames > 0 and self.on_session_finished:

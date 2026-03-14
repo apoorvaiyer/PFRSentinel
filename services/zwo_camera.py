@@ -512,6 +512,7 @@ class ZWOCamera:
         consecutive_errors = 0
         max_reconnect_attempts = 5
         last_schedule_log = None  # Track last schedule status to avoid log spam
+        frames_captured = 0  # Counter for periodic logging
         
         # Recalibration rate limiting to prevent infinite loops
         # (e.g., someone turning lights on/off repeatedly)
@@ -665,7 +666,10 @@ class ZWOCamera:
                     if self.on_frame_callback:
                         self.on_frame_callback(img, metadata)
                     
-                    self.log(f"Captured frame: {metadata['FILENAME']}")
+                    frames_captured += 1
+                    # Log every 100th frame to avoid log bloat (was per-frame)
+                    if frames_captured == 1 or frames_captured % 100 == 0:
+                        self.log(f"Captured {frames_captured} frames (latest: {metadata['FILENAME']})")
                     
                     # Check for dropped frames (helps diagnose USB bandwidth issues)
                     try:

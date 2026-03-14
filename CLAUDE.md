@@ -109,9 +109,33 @@ def add_overlays(image_input, overlays, metadata):
 python main.py
 ```
 
-- **No automated tests** — manual testing required
-- Test both modes: Directory Watch and ZWO Camera
 - PyInstaller build: `build_sentinel.bat` (Python 3.13 requires email module workaround)
+- Manual testing: verify both modes (Directory Watch and ZWO Camera)
+
+### Testing
+
+```powershell
+# Run all unit tests (no hardware required)
+pytest
+
+# Skip tests that need network or camera hardware
+pytest -m "not requires_camera and not requires_network"
+```
+
+**Test suite** (`tests/`, configured via `pytest.ini`):
+
+| Test file | Tests | Covers | Notes |
+|-----------|-------|--------|-------|
+| `test_auto_exposure.py` | 21 | `camera_utils` — brightness, clipping, exposure logic | Pure unit tests |
+| `test_camera.py` | 14 | `zwo_camera` — SDK integration, config, debayering | 3 tests need physical camera (`requires_camera`) |
+| `test_discord.py` | 32 | `discord_alerts` — webhooks, embeds, error handling | All requests mocked |
+| `test_image_output.py` | 18 | `processor` — overlays, stretch, format output | Uses Pillow/numpy |
+| `test_settings.py` | 11 | `config` — JSON save/load, merge, defaults | Temp files only |
+| `test_webserver.py` | 13 | `web_output` — HTTP server, ETag, status JSON | Starts real server (`requires_network`) |
+
+**Standalone scripts** (not part of pytest suite):
+- `ml/test_classifier.py` — validates roof classifier accuracy against labelled FITS data
+- `test_usb_reset.py` — interactive USB reset test, requires physical ZWO camera
 
 ## Common Pitfalls
 
