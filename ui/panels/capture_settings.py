@@ -828,11 +828,13 @@ class CaptureSettingsPanel(QScrollArea):
     def set_detection_error(self, error: str):
         """Display camera detection error"""
         from qfluentwidgets import InfoBar, InfoBarPosition
+        # Use main window as parent so the bar isn't clipped by the panel width
+        parent = self.main_window if self.main_window else self
         bar = InfoBar.error(
             title="Camera Detection Failed",
             content=error,
-            parent=self,
-            position=InfoBarPosition.TOP,
+            parent=parent,
+            position=InfoBarPosition.TOP_RIGHT,
             duration=5000
         )
         bar.raise_()
