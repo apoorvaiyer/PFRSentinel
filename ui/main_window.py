@@ -547,13 +547,14 @@ class MainWindow(QMainWindow):
             if result is None:
                 # No update available - show info bar
                 from qfluentwidgets import InfoBar, InfoBarPosition
-                InfoBar.success(
+                bar = InfoBar.success(
                     title="Up to Date",
                     content=f"You're running the latest version (v{__version__})",
                     parent=self,
                     position=InfoBarPosition.TOP_RIGHT,
                     duration=3000
                 )
+                bar.raise_()
             else:
                 # Update found - badge is set in _handle_update_available via callback
                 # but also set it here in case callback didn't fire
