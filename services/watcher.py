@@ -57,7 +57,7 @@ class ImageFileHandler(FileSystemEventHandler):
                 elapsed += check_interval
             
             except Exception as e:
-                print(f"Error checking file stability: {e}")
+                app_logger.error(f"Error checking file stability: {e}")
                 return False
         
         return False

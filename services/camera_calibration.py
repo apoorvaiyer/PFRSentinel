@@ -54,7 +54,8 @@ class CameraCalibration:
         if self.logger_callback:
             self.logger_callback(message)
         else:
-            print(message)
+            from .logger import app_logger
+            app_logger.debug(message)
     
     def run_calibration(self, max_attempts=15):
         """

@@ -4,6 +4,7 @@ Cleanup module for managing watch directory size
 import os
 import shutil
 from pathlib import Path
+from .logger import app_logger
 
 
 def get_directory_size(directory):
@@ -18,7 +19,7 @@ def get_directory_size(directory):
                 if os.path.exists(filepath):
                     total_size += os.path.getsize(filepath)
     except Exception as e:
-        print(f"Error calculating directory size: {e}")
+        app_logger.error(f"Error calculating directory size: {e}")
     
     return total_size
 
@@ -38,7 +39,7 @@ def get_all_files_with_mtime(directory):
                     size = os.path.getsize(filepath)
                     files.append((filepath, mtime, size))
     except Exception as e:
-        print(f"Error getting files: {e}")
+        app_logger.error(f"Error getting files: {e}")
     
     return files
 
@@ -57,7 +58,7 @@ def get_session_folders(directory):
                 size = get_directory_size(item_path)
                 folders.append((item_path, mtime, size))
     except Exception as e:
-        print(f"Error getting session folders: {e}")
+        app_logger.error(f"Error getting session folders: {e}")
     
     return folders
 
@@ -79,11 +80,11 @@ def remove_empty_directories(directory):
                 try:
                     os.rmdir(dirpath)
                     deleted_count += 1
-                    print(f"Removed empty directory: {dirpath}")
+                    app_logger.debug(f"Removed empty directory: {dirpath}")
                 except Exception as e:
-                    print(f"Error removing empty directory {dirpath}: {e}")
+                    app_logger.error(f"Error removing empty directory {dirpath}: {e}")
     except Exception as e:
-        print(f"Error scanning for empty directories: {e}")
+        app_logger.error(f"Error scanning for empty directories: {e}")
     
     return deleted_count
 
@@ -112,9 +113,9 @@ def delete_oldest_files(directory, max_size_bytes):
             os.remove(filepath)
             current_size -= size
             deleted_count += 1
-            print(f"Deleted file: {filepath}")
+            app_logger.debug(f"Deleted file: {filepath}")
         except Exception as e:
-            print(f"Error deleting {filepath}: {e}")
+            app_logger.error(f"Error deleting {filepath}: {e}")
     
     return deleted_count
 
@@ -160,11 +161,11 @@ def delete_oldest_sessions(directory, max_size_bytes):
                         os.remove(filepath)
                         current_size -= file_size
                         deleted_count += 1
-                        print(f"Deleted file in old session: {filepath}")
+                        app_logger.debug(f"Deleted file in old session: {filepath}")
                     except Exception as e:
-                        print(f"Error deleting {filepath}: {e}")
+                        app_logger.error(f"Error deleting {filepath}: {e}")
         except Exception as e:
-            print(f"Error processing folder {folder_path}: {e}")
+            app_logger.error(f"Error processing folder {folder_path}: {e}")
     
     return deleted_count
 
@@ -194,7 +195,7 @@ def run_cleanup(config):
         if current_size <= max_size_bytes:
             return True, f"Current size ({current_size_gb:.2f} GB) is under limit ({max_size_gb} GB)"
         
-        print(f"Running cleanup: current size {current_size_gb:.2f} GB exceeds {max_size_gb} GB")
+        app_logger.info(f"Running cleanup: current size {current_size_gb:.2f} GB exceeds {max_size_gb} GB")
         
         if strategy == "Delete oldest files in watch directory":
             deleted = delete_oldest_files(watch_dir, max_size_bytes)

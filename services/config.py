@@ -3,6 +3,7 @@ Configuration management for AllSky Overlay App
 """
 import json
 import os
+import threading
 from utils_paths import resource_path, get_exe_dir
 from app_config import APP_DATA_FOLDER, DEFAULT_OUTPUT_SUBFOLDER
 
@@ -230,8 +231,9 @@ DEFAULT_CONFIG = {
 class Config:
     # Class-level flag to track if cleanup has been attempted this session
     _cleanup_attempted = False
-    
+
     def __init__(self, config_path=None):
+        self._lock = threading.RLock()
         # Store config in user data directory for persistence across upgrades
         if config_path is None:
             user_data_dir = os.path.join(os.getenv('LOCALAPPDATA'), APP_DATA_FOLDER)
@@ -422,52 +424,66 @@ class Config:
     
     def load(self):
         """Load configuration from JSON file or return defaults"""
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, 'r') as f:
-                    loaded = json.load(f)
-                    # Merge with defaults to ensure new keys exist
-                    config = DEFAULT_CONFIG.copy()
-                    
-                    # Deep merge for nested configs like discord, white_balance
-                    for key, value in loaded.items():
-                        if isinstance(value, dict) and key in config and isinstance(config[key], dict):
-                            # Merge nested dict
-                            config[key].update(value)
-                        else:
-                            config[key] = value
-                    
-                    return config
-            except Exception as e:
-                print(f"Error loading config: {e}")
-                return DEFAULT_CONFIG.copy()
-        return DEFAULT_CONFIG.copy()
+        with self._lock:
+            if os.path.exists(self.config_path):
+                try:
+                    with open(self.config_path, 'r') as f:
+                        loaded = json.load(f)
+                        # Merge with defaults to ensure new keys exist
+                        config = DEFAULT_CONFIG.copy()
+
+                        # Deep merge for nested configs like discord, white_balance
+                        for key, value in loaded.items():
+                            if isinstance(value, dict) and key in config and isinstance(config[key], dict):
+                                # Merge nested dict
+                                config[key].update(value)
+                            else:
+                                config[key] = value
+
+                        return config
+                except Exception as e:
+                    try:
+                        from .logger import app_logger
+                        app_logger.error(f"Error loading config: {e}")
+                    except Exception:
+                        pass
+                    return DEFAULT_CONFIG.copy()
+            return DEFAULT_CONFIG.copy()
     
     def save(self):
         """Save current configuration to JSON file"""
-        try:
-            with open(self.config_path, 'w') as f:
-                json.dump(self.data, f, indent=2)
-            return True
-        except Exception as e:
-            print(f"Error saving config: {e}")
-            return False
+        with self._lock:
+            try:
+                with open(self.config_path, 'w') as f:
+                    json.dump(self.data, f, indent=2)
+                return True
+            except Exception as e:
+                try:
+                    from .logger import app_logger
+                    app_logger.error(f"Error saving config: {e}")
+                except Exception:
+                    pass
+                return False
     
     def get(self, key, default=None):
         """Get configuration value"""
-        return self.data.get(key, default)
-    
+        with self._lock:
+            return self.data.get(key, default)
+
     def set(self, key, value):
         """Set configuration value"""
-        self.data[key] = value
+        with self._lock:
+            self.data[key] = value
     
     def get_overlays(self):
         """Get overlay configurations"""
-        return self.data.get("overlays", [])
-    
+        with self._lock:
+            return self.data.get("overlays", [])
+
     def set_overlays(self, overlays):
         """Set overlay configurations"""
-        self.data["overlays"] = overlays
+        with self._lock:
+            self.data["overlays"] = overlays
     
     def get_camera_profile(self, camera_name):
         """Get settings profile for a specific camera (by name).
@@ -504,7 +520,8 @@ class Config:
             }
             self.data['camera_profiles'] = profiles
             self.save()
-            print(f"Created new camera profile for: {camera_name}")
+            from .logger import app_logger
+            app_logger.info(f"Created new camera profile for: {camera_name}")
         
         return profiles[camera_name]
     
@@ -522,7 +539,8 @@ class Config:
         profiles[camera_name] = profile_data
         self.data['camera_profiles'] = profiles
         self.save()
-        print(f"Saved camera profile for: {camera_name}")
+        from .logger import app_logger
+        app_logger.debug(f"Saved camera profile for: {camera_name}")
     
     def update_camera_profile(self, camera_name, **kwargs):
         """Update specific settings in a camera profile.
@@ -555,4 +573,5 @@ class Config:
             del profiles[camera_name]
             self.data['camera_profiles'] = profiles
             self.save()
-            print(f"Deleted camera profile for: {camera_name}")
+            from .logger import app_logger
+            app_logger.info(f"Deleted camera profile for: {camera_name}")

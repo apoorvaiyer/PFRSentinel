@@ -3,6 +3,7 @@ Discord webhook integration for alerts and notifications
 """
 import os
 import json
+import time
 import requests
 from datetime import datetime
 from .logger import app_logger
@@ -42,6 +43,55 @@ class DiscordAlerts:
         self.last_send_status = ""
         self.last_send_time = None
     
+    # Retry configuration
+    MAX_RETRIES = 3
+    BACKOFF_DELAYS = [1, 4, 16]  # seconds between attempts
+
+    def _post_with_retry(self, *args, **kwargs):
+        """POST with exponential backoff and rate-limit handling.
+
+        Returns the response on success, or raises the last exception
+        after all retries are exhausted.
+        """
+        last_exception = None
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                response = requests.post(*args, **kwargs)
+
+                # Handle Discord rate limiting
+                if response.status_code == 429:
+                    retry_after = None
+                    try:
+                        retry_after = response.json().get('retry_after', None)
+                    except Exception:
+                        pass
+                    wait = float(retry_after) if retry_after else self.BACKOFF_DELAYS[attempt]
+                    app_logger.warning(
+                        f"Discord rate limited (429), retrying in {wait:.1f}s "
+                        f"(attempt {attempt + 1}/{self.MAX_RETRIES})"
+                    )
+                    time.sleep(wait)
+                    continue
+
+                return response
+
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError) as e:
+                last_exception = e
+                if attempt < self.MAX_RETRIES - 1:
+                    wait = self.BACKOFF_DELAYS[attempt]
+                    app_logger.warning(
+                        f"Discord request failed ({type(e).__name__}), "
+                        f"retrying in {wait}s (attempt {attempt + 1}/{self.MAX_RETRIES})"
+                    )
+                    time.sleep(wait)
+
+        # All retries exhausted
+        if last_exception:
+            raise last_exception
+        # Rate-limited on all attempts — return last response
+        return response
+
     def is_enabled(self):
         """Check if Discord alerts are enabled"""
         discord_config = self.config.get('discord', {})
@@ -133,13 +183,13 @@ class DiscordAlerts:
                 # Add image reference to embed
                 embed["image"] = {"url": f"attachment://{os.path.basename(image_path)}"}
                 
-                response = requests.post(
+                response = self._post_with_retry(
                     webhook_url,
                     data={"payload_json": json.dumps(payload)},
                     files=files,
                     timeout=10
                 )
-                
+
                 files["file"][1].close()  # Close file handle
             else:
                 # Send text-only message
@@ -149,7 +199,7 @@ class DiscordAlerts:
                     elif not os.path.exists(image_path):
                         app_logger.warning(f"Discord image path doesn't exist: {image_path}")
                 app_logger.debug("Sending text-only Discord message")
-                response = requests.post(
+                response = self._post_with_retry(
                     webhook_url,
                     json=payload,
                     timeout=10
@@ -166,7 +216,7 @@ class DiscordAlerts:
                 try:
                     error_detail = response.json()
                     error_msg += f" - {error_detail}"
-                except:
+                except Exception:
                     error_msg += f" - {response.text[:100]}"
                 
                 self.last_send_status = f"Failed: {error_msg}"
@@ -380,14 +430,14 @@ Latest sky capture from {APP_DISPLAY_NAME}."""
                 app_logger.debug(f"Attaching video to Discord: {video_path}")
                 with open(video_path, "rb") as fh:
                     files = {"file": (os.path.basename(video_path), fh, "video/mp4")}
-                    response = requests.post(
+                    response = self._post_with_retry(
                         webhook_url,
                         data={"payload_json": json.dumps(payload)},
                         files=files,
                         timeout=120,  # Video upload needs generous timeout
                     )
             else:
-                response = requests.post(webhook_url, json=payload, timeout=10)
+                response = self._post_with_retry(webhook_url, json=payload, timeout=10)
 
             if response.status_code in [200, 204]:
                 self.last_send_time = datetime.now()

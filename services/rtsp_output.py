@@ -154,7 +154,7 @@ class RTSPStreamServer:
             if self.process:
                 try:
                     self.process.stdin.close()
-                except:
+                except Exception:
                     pass
                 self.process.terminate()
                 try:

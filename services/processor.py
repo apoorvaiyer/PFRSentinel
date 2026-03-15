@@ -114,7 +114,7 @@ def parse_sidecar_file(sidecar_path):
                     metadata[key.upper()] = value
     
     except Exception as e:
-        print(f"Error parsing sidecar file {sidecar_path}: {e}")
+        app_logger.error(f"Error parsing sidecar file {sidecar_path}: {e}")
     
     return metadata
 
@@ -236,7 +236,7 @@ def parse_color(color_str):
             g = int(color_str[3:5], 16)
             b = int(color_str[5:7], 16)
             return (r, g, b)
-        except:
+        except (ValueError, IndexError):
             pass
     
     # Default to white
@@ -264,7 +264,7 @@ def add_overlays(image_input, overlays, metadata, image_cache=None, weather_serv
                 if weather_tokens:
                     metadata.update(weather_tokens)
             except Exception as e:
-                print(f"Warning: Failed to fetch weather data: {e}")
+                app_logger.warning(f"Failed to fetch weather data: {e}")
         
         # Load image if it's a path, otherwise use the Image object directly
         if isinstance(image_input, str):
@@ -303,7 +303,7 @@ def add_overlays(image_input, overlays, metadata, image_cache=None, weather_serv
     
     except Exception as e:
         error_msg = f"Error adding overlays: {e}"
-        print(error_msg)
+        app_logger.error(error_msg)
         raise Exception(error_msg)
 
 
@@ -325,7 +325,7 @@ def add_image_overlay(base_img, overlay, image_cache=None, weather_service=None)
         
         image_path = overlay.get('image_path', '')
         if not image_path:
-            print(f"Image overlay has no image_path: {overlay}")
+            app_logger.warning(f"Image overlay has no image_path: {overlay}")
             return base_img
         
         # SEC-003: Validate path before loading (prevent directory traversal)
@@ -348,17 +348,17 @@ def add_image_overlay(base_img, overlay, image_cache=None, weather_service=None)
                 return base_img
         
         if not os.path.exists(image_path):
-            print(f"Image overlay path does not exist: {image_path}")
+            app_logger.warning(f"Image overlay path does not exist: {image_path}")
             return base_img
         
         # Use cache if available
         if image_cache is not None and image_path in image_cache:
             overlay_img = image_cache[image_path].copy()
         else:
-            print(f"Loading image overlay from: {image_path}")
+            app_logger.debug(f"Loading image overlay from: {image_path}")
             # Load overlay image
             overlay_img = Image.open(image_path)
-            print(f"Loaded image: {overlay_img.size}, mode: {overlay_img.mode}")
+            app_logger.debug(f"Loaded image: {overlay_img.size}, mode: {overlay_img.mode}")
             
             # Cache the loaded image if cache is provided
             if image_cache is not None:
@@ -415,7 +415,7 @@ def add_image_overlay(base_img, overlay, image_cache=None, weather_service=None)
         return base_img
         
     except Exception as e:
-        print(f"Error adding image overlay: {e}")
+        app_logger.error(f"Error adding image overlay: {e}")
         return base_img
 
 
@@ -457,10 +457,10 @@ def add_text_overlay(img, draw, overlay, metadata):
         # Load font (use default if custom font loading fails)
         try:
             font = ImageFont.truetype("arial.ttf", font_size)
-        except:
+        except (OSError, IOError):
             try:
                 font = ImageFont.truetype("Arial.ttf", font_size)
-            except:
+            except (OSError, IOError):
                 # Fall back to default font
                 font = ImageFont.load_default()
         
@@ -523,7 +523,7 @@ def add_text_overlay(img, draw, overlay, metadata):
         return img
         
     except Exception as e:
-        print(f"Error adding text overlay: {e}")
+        app_logger.error(f"Error adding text overlay: {e}")
         return img
 
 

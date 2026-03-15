@@ -87,7 +87,8 @@ def is_within_scheduled_window(scheduled_capture_enabled, scheduled_start_time, 
             return start_time <= current_time < end_time
             
     except Exception as e:
-        print(f"Error checking scheduled window: {e}")
+        from .logger import app_logger
+        app_logger.error(f"Error checking scheduled window: {e}")
         return True  # Default to allowing capture on error
 
 

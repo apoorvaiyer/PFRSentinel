@@ -300,6 +300,107 @@ class TestDiscordAlerts:
         assert "Success" in status
 
 
+class TestDiscordRetry:
+    """Test Discord retry with exponential backoff"""
+
+    @pytest.fixture
+    def discord_config(self):
+        return {
+            'discord': {
+                'enabled': True,
+                'webhook_url': 'https://discord.com/api/webhooks/test/test',
+                'username_override': 'TestBot',
+                'avatar_url': '',
+                'embed_color_hex': '#0EA5E9',
+                'include_latest_image': True,
+                'post_startup_shutdown': True,
+                'post_errors': True,
+            },
+            'capture_mode': 'camera',
+            'output_directory': '/test/output'
+        }
+
+    @pytest.fixture
+    def discord_alerts(self, discord_config):
+        from services.discord_alerts import DiscordAlerts
+        config = Mock()
+        config.get = lambda key, default=None: discord_config.get(key, default)
+        return DiscordAlerts(config)
+
+    @patch('services.discord_alerts.time.sleep')
+    @patch('services.discord_alerts.requests.post')
+    def test_retry_on_transient_failure(self, mock_post, mock_sleep, discord_alerts):
+        """Test retry succeeds on second attempt after transient failure"""
+        import requests as req
+        mock_post.side_effect = [
+            req.exceptions.ConnectionError("transient"),
+            Mock(status_code=204)
+        ]
+
+        result = discord_alerts.send_discord_message("Test", "Test")
+
+        assert result is True
+        assert mock_post.call_count == 2
+        mock_sleep.assert_called_once_with(1)  # First backoff delay
+
+    @patch('services.discord_alerts.time.sleep')
+    @patch('services.discord_alerts.requests.post')
+    def test_all_retries_exhausted(self, mock_post, mock_sleep, discord_alerts):
+        """Test all 3 attempts fail returns False"""
+        import requests as req
+        mock_post.side_effect = req.exceptions.Timeout()
+
+        result = discord_alerts.send_discord_message("Test", "Test")
+
+        assert result is False
+        assert mock_post.call_count == 3
+        assert mock_sleep.call_count == 2  # Sleep between retries only
+
+    @patch('services.discord_alerts.time.sleep')
+    @patch('services.discord_alerts.requests.post')
+    def test_rate_limit_honors_retry_after(self, mock_post, mock_sleep, discord_alerts):
+        """Test 429 response honors Retry-After header"""
+        rate_limit_response = Mock()
+        rate_limit_response.status_code = 429
+        rate_limit_response.json.return_value = {'retry_after': 2.5}
+
+        success_response = Mock()
+        success_response.status_code = 204
+
+        mock_post.side_effect = [rate_limit_response, success_response]
+
+        result = discord_alerts.send_discord_message("Test", "Test")
+
+        assert result is True
+        mock_sleep.assert_called_once_with(2.5)
+
+    @patch('services.discord_alerts.time.sleep')
+    @patch('services.discord_alerts.requests.post')
+    def test_no_retry_on_success(self, mock_post, mock_sleep, discord_alerts):
+        """Test successful first attempt doesn't retry"""
+        mock_post.return_value = Mock(status_code=204)
+
+        result = discord_alerts.send_discord_message("Test", "Test")
+
+        assert result is True
+        assert mock_post.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch('services.discord_alerts.time.sleep')
+    @patch('services.discord_alerts.requests.post')
+    def test_backoff_timing(self, mock_post, mock_sleep, discord_alerts):
+        """Test exponential backoff delay values"""
+        import requests as req
+        mock_post.side_effect = req.exceptions.Timeout()
+
+        discord_alerts.send_discord_message("Test", "Test")
+
+        # Should sleep with delays [1, 4] (not after last attempt)
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_any_call(1)
+        mock_sleep.assert_any_call(4)
+
+
 class TestDiscordEmbed:
     """Test Discord embed structure"""
     

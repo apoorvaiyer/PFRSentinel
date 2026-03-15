@@ -223,7 +223,7 @@ class ImageProcessorWorker(QThread):
                 timestamp_text = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 try:
                     font = ImageFont.truetype("arial.ttf", 20)
-                except:
+                except (OSError, IOError):
                     font = ImageFont.load_default()
                 draw.text((img.width - 200, 10), timestamp_text, fill='white', font=font)
             

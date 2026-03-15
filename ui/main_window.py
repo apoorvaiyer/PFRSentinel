@@ -131,7 +131,7 @@ class MainWindow(QMainWindow):
         try:
             w, h = map(int, geometry.lower().split('x')[:2])
             self.resize(w, h)
-        except:
+        except (ValueError, IndexError):
             self.resize(1400, 900)
         
         self.setMinimumSize(900, 600)
@@ -348,7 +348,7 @@ class MainWindow(QMainWindow):
                         name = asi.list_cameras()[i]
                         cameras.append(f"{name} (Index: {i})")
                         app_logger.info(f"Camera {i}: {name}")
-                    except:
+                    except Exception:
                         cameras.append(f"Camera {i}")
                 
                 app_logger.info(f"Detection complete: {len(cameras)} camera(s)")
@@ -533,7 +533,7 @@ class MainWindow(QMainWindow):
                         QSystemTrayIcon.Information,
                         5000
                     )
-            except:
+            except Exception:
                 pass
         
         # Show the dialog (will also make window visible if needed)
@@ -1433,19 +1433,19 @@ class MainWindow(QMainWindow):
         if self.web_server:
             try:
                 self.web_server.stop()
-            except:
+            except Exception:
                 pass
-        
+
         if self.rtsp_server:
             try:
                 self.rtsp_server.stop()
-            except:
+            except Exception:
                 pass
 
         if self.timelapse_controller:
             try:
                 self.timelapse_controller.shutdown()
-            except:
+            except Exception:
                 pass
 
         # Save config
@@ -1463,7 +1463,7 @@ class MainWindow(QMainWindow):
         if self.system_tray and hasattr(self.system_tray, 'tray_icon') and self.system_tray.tray_icon:
             try:
                 self.system_tray.tray_icon.stop()
-            except:
+            except Exception:
                 pass
         
         # Disable tray mode to allow normal close

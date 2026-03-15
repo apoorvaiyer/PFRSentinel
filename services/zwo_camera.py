@@ -11,7 +11,7 @@ import numpy as np
 from datetime import datetime
 from PIL import Image
 from .camera_utils import (
-    simple_debayer_rggb, 
+    simple_debayer_rggb,
     is_within_scheduled_window as check_scheduled_window,
     debayer_raw_image,
     apply_white_balance,
@@ -19,6 +19,7 @@ from .camera_utils import (
 )
 from .camera_calibration import CameraCalibration
 from .camera_connection import CameraConnection
+from .logger import app_logger
 
 
 class ZWOCamera:
@@ -163,7 +164,7 @@ class ZWOCamera:
         """Send log message via callback"""
         if self.on_log_callback:
             self.on_log_callback(message)
-        print(message)
+        app_logger.debug(message)
     
     def is_within_scheduled_window(self):
         """
@@ -498,7 +499,7 @@ class ZWOCamera:
                 'celsius_str': f"{temp_celsius:.1f}°C",
                 'fahrenheit_str': f"{temp_fahrenheit:.1f}°F"
             }
-        except:
+        except Exception:
             return {'display': "N/A", 'celsius_str': "N/A", 'fahrenheit_str': "N/A"}
     
     def capture_loop(self):

@@ -5,6 +5,7 @@ import pytest
 import json
 import os
 import sys
+import threading
 
 # Ensure project root is in path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -136,6 +137,82 @@ class TestConfigPersistence:
         assert output['mode'] == 'webserver'
         assert output['webserver_host'] == '0.0.0.0'
         assert output['webserver_port'] == 9090
+
+
+class TestConfigThreadSafety:
+    """Test configuration thread safety"""
+
+    def test_concurrent_get_set_no_corruption(self, temp_config):
+        """Test concurrent get/set from multiple threads don't corrupt state"""
+        config = Config(temp_config)
+        errors = []
+
+        def writer(key_suffix, count):
+            try:
+                for i in range(count):
+                    config.set(f'thread_key_{key_suffix}', i)
+            except Exception as e:
+                errors.append(e)
+
+        def reader(count):
+            try:
+                for _ in range(count):
+                    config.get('capture_mode', 'default')
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for t_id in range(4):
+            threads.append(threading.Thread(target=writer, args=(t_id, 100)))
+            threads.append(threading.Thread(target=reader, args=(100,)))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Thread errors: {errors}"
+
+    def test_concurrent_save_produces_valid_json(self, temp_config):
+        """Test concurrent save calls produce valid JSON (not truncated)"""
+        config = Config(temp_config)
+        errors = []
+
+        def saver(count):
+            try:
+                for i in range(count):
+                    config.set('counter', i)
+                    config.save()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=saver, args=(50,)) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Thread errors: {errors}"
+
+        # Verify final file is valid JSON
+        with open(temp_config, 'r') as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+        assert 'counter' in data
+
+    def test_rlock_reentrance(self, temp_config):
+        """Test RLock reentrance (save() calls get() internally via self.data)"""
+        config = Config(temp_config)
+        config.set('test_key', 'test_value')
+
+        # save() acquires lock, and internally accesses self.data
+        # This should not deadlock thanks to RLock
+        result = config.save()
+        assert result is True
+
+        # Verify via reload
+        config2 = Config(temp_config)
+        assert config2.get('test_key') == 'test_value'
 
 
 class TestConfigValidation:

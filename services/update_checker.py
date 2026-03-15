@@ -349,7 +349,7 @@ class UpdateChecker:
             if output_path.exists():
                 try:
                     output_path.unlink()
-                except:
+                except OSError:
                     pass
             return None
     

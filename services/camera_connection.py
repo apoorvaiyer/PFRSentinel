@@ -65,11 +65,12 @@ class CameraConnection:
         self._init_usb_reset()
     
     def log(self, message: str) -> None:
-        """Log message via callback or print"""
+        """Log message via callback or app_logger"""
         if self._logger:
             self._logger(message)
         else:
-            print(message)
+            from .logger import app_logger
+            app_logger.debug(message)
     
     def _init_usb_reset(self) -> None:
         """Initialize USB reset capability (Windows only)"""
@@ -652,12 +653,12 @@ class CameraConnection:
             try:
                 self.camera.set_control_value(self.asi.ASI_AUTO_MAX_BRIGHTNESS, 1)
                 self.log("  White balance: ASI Auto")
-            except:
+            except Exception:
                 pass
         else:
             try:
                 self.camera.set_control_value(self.asi.ASI_AUTO_MAX_BRIGHTNESS, 0)
-            except:
+            except Exception:
                 pass
             
             if wb_mode == 'manual':
