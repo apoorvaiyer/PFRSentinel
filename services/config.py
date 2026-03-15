@@ -465,6 +465,53 @@ class Config:
                     pass
                 return False
     
+    def validate(self):
+        """Validate configuration and return a list of warnings.
+
+        Checks critical paths, port ranges, and required keys.
+        Returns a list of warning strings (empty list = all OK).
+        Does not block startup — warnings only.
+        """
+        warnings = []
+
+        # Check output directory exists and is writable
+        output_dir = self.data.get('output_directory', '')
+        if output_dir:
+            if not os.path.isdir(output_dir):
+                warnings.append(f"Output directory does not exist: {output_dir}")
+            elif not os.access(output_dir, os.W_OK):
+                warnings.append(f"Output directory is not writable: {output_dir}")
+
+        # Check watch directory if in watch mode
+        if self.data.get('capture_mode') == 'watch':
+            watch_dir = self.data.get('watch_directory', '')
+            if not watch_dir:
+                warnings.append("Watch mode selected but no watch directory configured")
+            elif not os.path.isdir(watch_dir):
+                warnings.append(f"Watch directory does not exist: {watch_dir}")
+
+        # Validate port ranges
+        output = self.data.get('output', {})
+        for port_key in ['webserver_port', 'rtsp_port']:
+            port = output.get(port_key)
+            if port is not None and not (1 <= port <= 65535):
+                warnings.append(f"Invalid {port_key}: {port} (must be 1-65535)")
+
+        # Check required top-level keys exist
+        required_keys = ['capture_mode', 'output_directory', 'output', 'overlays']
+        for key in required_keys:
+            if key not in self.data:
+                warnings.append(f"Missing required config key: {key}")
+
+        # Check Discord webhook URL format if enabled
+        discord = self.data.get('discord', {})
+        if discord.get('enabled'):
+            url = discord.get('webhook_url', '')
+            if not url:
+                warnings.append("Discord enabled but webhook URL is empty")
+
+        return warnings
+
     def get(self, key, default=None):
         """Get configuration value"""
         with self._lock:

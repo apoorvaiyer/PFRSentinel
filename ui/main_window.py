@@ -274,9 +274,6 @@ class MainWindow(QMainWindow):
         # RAW16 mode toggle - update camera on the fly if capturing
         self.capture_panel.raw16_mode_changed.connect(self._on_raw16_mode_changed)
         
-        # Settings panel actions
-        self.settings_panel.test_discord_requested.connect(self._on_test_discord)
-        
         # Camera panel actions
         self.capture_panel.detect_cameras_clicked.connect(self._on_detect_cameras)
         

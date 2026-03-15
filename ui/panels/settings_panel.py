@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit,
-    SpinBox, DoubleSpinBox, SwitchButton, FluentIcon, HyperlinkLabel
+    SpinBox, DoubleSpinBox, SwitchButton, FluentIcon
 )
 from ..theme.accent_themes import ACCENT_PRESETS
 
@@ -32,7 +32,6 @@ class SettingsPanel(QScrollArea):
     """
     
     settings_changed = Signal()
-    test_discord_requested = Signal()
     accent_changed = Signal(str)   # emits preset name
     
     def __init__(self, parent=None):
@@ -111,72 +110,19 @@ class SettingsPanel(QScrollArea):
         
         layout.addWidget(system_card)
         
-        # === DISCORD ALERTS ===
-        discord_card = SettingsCard(
+        # === DISCORD ALERTS (cross-reference) ===
+        discord_ref_card = SettingsCard(
             "Discord Alerts",
-            "Send notifications to Discord webhook"
+            "Webhook, notifications, and periodic updates"
         )
-        
-        # Enable Discord
-        discord_enable_row = SwitchRow(
-            "Enable Discord Alerts",
-            "Send notifications to Discord via webhook"
+        discord_ref_label = CaptionLabel(
+            "Discord settings have moved to the Output Settings panel "
+            "where all output channels are configured together."
         )
-        self.discord_enabled_switch = discord_enable_row.switch
-        self.discord_enabled_switch.checkedChanged.connect(self._on_discord_changed)
-        discord_card.add_widget(discord_enable_row)
-        
-        # Webhook URL
-        webhook_row = QHBoxLayout()
-        webhook_row.setSpacing(Spacing.sm)
-        
-        self.webhook_input = LineEdit()
-        self.webhook_input.setPlaceholderText("https://discord.com/api/webhooks/...")
-        self.webhook_input.textChanged.connect(self._on_discord_changed)
-        webhook_row.addWidget(self.webhook_input)
-        
-        test_btn = PrimaryPushButton("Test")
-        test_btn.setIcon(FluentIcon.SEND)
-        test_btn.clicked.connect(lambda: self.test_discord_requested.emit())
-        webhook_row.addWidget(test_btn)
-        
-        webhook_widget = QWidget()
-        webhook_widget.setLayout(webhook_row)
-        discord_card.add_row("Webhook URL", webhook_widget)
-        
-        # Notification types
-        startup_row = SwitchRow(
-            "Startup / Shutdown / Capture Started",
-            "Notify when app starts, stops, or capture begins"
-        )
-        self.discord_startup_switch = startup_row.switch
-        self.discord_startup_switch.checkedChanged.connect(self._on_discord_changed)
-        discord_card.add_widget(startup_row)
-        
-        error_row = SwitchRow(
-            "Error Alerts",
-            "Notify when errors occur"
-        )
-        self.discord_error_switch = error_row.switch
-        self.discord_error_switch.checkedChanged.connect(self._on_discord_changed)
-        discord_card.add_widget(error_row)
-        
-        periodic_row = SwitchRow(
-            "Periodic Updates",
-            "Post periodic status updates with latest image"
-        )
-        self.discord_periodic_switch = periodic_row.switch
-        self.discord_periodic_switch.checkedChanged.connect(self._on_discord_changed)
-        discord_card.add_widget(periodic_row)
-        
-        # Periodic interval
-        self.periodic_interval_spin = SpinBox()
-        self.periodic_interval_spin.setRange(1, 120)
-        self.periodic_interval_spin.setSuffix(" min")
-        self.periodic_interval_spin.valueChanged.connect(self._on_discord_changed)
-        discord_card.add_row("Update Interval", self.periodic_interval_spin)
-        
-        layout.addWidget(discord_card)
+        discord_ref_label.setWordWrap(True)
+        discord_ref_label.setStyleSheet(f"color: {Colors.text_muted}; padding: 4px;")
+        discord_ref_card.add_widget(discord_ref_label)
+        layout.addWidget(discord_ref_card)
         
         # === WEATHER API ===
         weather_card = SettingsCard(
@@ -263,32 +209,19 @@ class SettingsPanel(QScrollArea):
         
         layout.addWidget(weather_card)
         
-        # === STORAGE CLEANUP ===
-        cleanup_card = SettingsCard(
+        # === STORAGE CLEANUP (cross-reference) ===
+        cleanup_ref_card = SettingsCard(
             "Storage Cleanup",
             "Automatic cleanup of old images"
         )
-        
-        # Enable cleanup
-        cleanup_enable_row = SwitchRow(
-            "Enable Auto-Cleanup",
-            "Automatically delete old images when storage limit is reached"
+        cleanup_ref_label = CaptionLabel(
+            "Storage cleanup settings have moved to the Output Settings panel "
+            "alongside file output configuration."
         )
-        self.cleanup_enabled_switch = cleanup_enable_row.switch
-        self.cleanup_enabled_switch.checkedChanged.connect(self._on_cleanup_changed)
-        cleanup_card.add_widget(cleanup_enable_row)
-        
-        # Storage limit (use DoubleSpinBox for decimal values like 0.1 GB)
-        self.cleanup_size_spin = DoubleSpinBox()
-        self.cleanup_size_spin.setRange(0.1, 1000.0)
-        self.cleanup_size_spin.setDecimals(1)
-        self.cleanup_size_spin.setSingleStep(0.1)
-        self.cleanup_size_spin.setValue(10.0)
-        self.cleanup_size_spin.setSuffix(" GB")
-        self.cleanup_size_spin.valueChanged.connect(self._on_cleanup_changed)
-        cleanup_card.add_row("Storage Limit", self.cleanup_size_spin, "Maximum storage before cleanup")
-        
-        layout.addWidget(cleanup_card)
+        cleanup_ref_label.setWordWrap(True)
+        cleanup_ref_label.setStyleSheet(f"color: {Colors.text_muted}; padding: 4px;")
+        cleanup_ref_card.add_widget(cleanup_ref_label)
+        layout.addWidget(cleanup_ref_card)
         
         # === ABOUT & UPDATES ===
         about_card = SettingsCard(
@@ -363,21 +296,6 @@ class SettingsPanel(QScrollArea):
             
             self.settings_changed.emit()
     
-    def _on_discord_changed(self):
-        """Handle Discord settings change"""
-        if self._loading_config:
-            return
-        if self.main_window and hasattr(self.main_window, 'config'):
-            discord = self.main_window.config.get('discord', {})
-            discord['enabled'] = self.discord_enabled_switch.isChecked()
-            discord['webhook_url'] = self.webhook_input.text()
-            discord['post_startup_shutdown'] = self.discord_startup_switch.isChecked()
-            discord['post_errors'] = self.discord_error_switch.isChecked()
-            discord['periodic_enabled'] = self.discord_periodic_switch.isChecked()
-            discord['periodic_interval_minutes'] = self.periodic_interval_spin.value()
-            self.main_window.config.set('discord', discord)
-            self.settings_changed.emit()
-    
     def _on_weather_changed(self):
         """Handle weather settings change"""
         if self._loading_config:
@@ -440,15 +358,6 @@ class SettingsPanel(QScrollArea):
             self.weather_status_label.setText(f"❌ {str(e)[:30]}")
             self.weather_status_label.setStyleSheet(f"color: {Colors.status_error};")
     
-    def _on_cleanup_changed(self):
-        """Handle cleanup settings change"""
-        if self._loading_config:
-            return
-        if self.main_window and hasattr(self.main_window, 'config'):
-            self.main_window.config.set('cleanup_enabled', self.cleanup_enabled_switch.isChecked())
-            self.main_window.config.set('cleanup_max_size_gb', self.cleanup_size_spin.value())
-            self.settings_changed.emit()
-    
     def _check_for_updates(self):
         """Manually check for updates"""
         if self.main_window and hasattr(self.main_window, 'check_for_updates_now'):
@@ -480,15 +389,6 @@ class SettingsPanel(QScrollArea):
             # System
             self.tray_enabled_switch.setChecked(config.get('tray_mode_enabled', False))
             
-            # Discord
-            discord = config.get('discord', {})
-            self.discord_enabled_switch.setChecked(discord.get('enabled', False))
-            self.webhook_input.setText(discord.get('webhook_url', ''))
-            self.discord_startup_switch.setChecked(discord.get('post_startup_shutdown', True))
-            self.discord_error_switch.setChecked(discord.get('post_errors', False))
-            self.discord_periodic_switch.setChecked(discord.get('periodic_enabled', False))
-            self.periodic_interval_spin.setValue(discord.get('periodic_interval_minutes', 15))
-            
             # Weather
             weather = config.get('weather', {})
             self.api_key_input.setText(weather.get('api_key', ''))
@@ -499,10 +399,6 @@ class SettingsPanel(QScrollArea):
             units = weather.get('units', 'metric')
             idx = 1 if units == 'imperial' else 0
             self.units_combo.setCurrentIndex(idx)
-            
-            # Cleanup
-            self.cleanup_enabled_switch.setChecked(config.get('cleanup_enabled', False))
-            self.cleanup_size_spin.setValue(config.get('cleanup_max_size_gb', 10))
             
         finally:
             self._loading_config = False

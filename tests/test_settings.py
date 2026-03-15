@@ -236,9 +236,78 @@ class TestConfigValidation:
     def test_output_config_structure(self):
         """Verify output config has correct structure"""
         output = DEFAULT_CONFIG.get('output', {})
-        
+
         assert 'mode' in output
         assert 'webserver_host' in output
         assert 'webserver_port' in output
         assert 'rtsp_host' in output
         assert 'rtsp_port' in output
+
+
+class TestConfigValidateMethod:
+    """Test Config.validate() method"""
+
+    def test_valid_config_no_warnings(self, temp_config, temp_dir):
+        """Test valid config passes validation with no warnings"""
+        config = Config(temp_config)
+        # Point output_directory to an existing writable dir
+        config.set('output_directory', temp_dir)
+        config.set('capture_mode', 'camera')
+
+        warnings = config.validate()
+        assert len(warnings) == 0
+
+    def test_invalid_output_directory(self, temp_config):
+        """Test invalid output directory produces warning"""
+        config = Config(temp_config)
+        config.set('output_directory', '/nonexistent/path/that/does/not/exist')
+
+        warnings = config.validate()
+        assert any('Output directory' in w for w in warnings)
+
+    def test_invalid_port_range(self, temp_config, temp_dir):
+        """Test out-of-range port number produces warning"""
+        config = Config(temp_config)
+        config.set('output_directory', temp_dir)
+        config.data['output']['webserver_port'] = 99999
+
+        warnings = config.validate()
+        assert any('webserver_port' in w for w in warnings)
+
+    def test_missing_required_key(self, temp_config, temp_dir):
+        """Test missing required key produces warning"""
+        config = Config(temp_config)
+        config.set('output_directory', temp_dir)
+        # Remove a required key
+        del config.data['overlays']
+
+        warnings = config.validate()
+        assert any('overlays' in w for w in warnings)
+
+    def test_validation_returns_list(self, temp_config):
+        """Test validation returns structured list of warnings"""
+        config = Config(temp_config)
+        warnings = config.validate()
+        assert isinstance(warnings, list)
+
+    def test_validation_does_not_block(self, temp_config):
+        """Test validation doesn't block app startup (warnings only, not errors)"""
+        config = Config(temp_config)
+        # Even with bad config, validate should not raise
+        config.set('output_directory', '/bad/path')
+        config.data['output']['webserver_port'] = -1
+        del config.data['overlays']
+
+        warnings = config.validate()
+        # Should return warnings, not raise
+        assert len(warnings) >= 2
+
+    def test_discord_enabled_no_webhook_warns(self, temp_config, temp_dir):
+        """Test Discord enabled with empty webhook URL produces warning"""
+        config = Config(temp_config)
+        config.set('output_directory', temp_dir)
+        config.data['discord']['enabled'] = True
+        config.data['discord']['webhook_url'] = ''
+
+        warnings = config.validate()
+        assert any('Discord' in w and 'webhook' in w.lower() for w in warnings)
