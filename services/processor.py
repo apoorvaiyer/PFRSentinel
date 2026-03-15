@@ -1131,6 +1131,15 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
             except Exception as e:
                 app_logger.debug(f"ML prediction skipped: {e}")
 
+        # Star detection tokens
+        try:
+            from .star_detection import analyze_stars
+            src_img = Image.open(image_path) if isinstance(image_path, str) else image_path
+            star_tokens = analyze_stars(np.array(src_img.convert('RGB')))
+            metadata.update(star_tokens)
+        except Exception as e:
+            app_logger.debug(f"Star detection skipped: {e}")
+
         # Apply auto-stretch (MTF) BEFORE overlays for best results
         auto_stretch_config = config.get('auto_stretch', {})
         if auto_stretch_config.get('enabled', False):

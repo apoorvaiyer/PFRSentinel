@@ -65,6 +65,10 @@ TOKENS = [
     ("Sky Condition", "{SKY_CONDITION}"),
     ("Stars Visible", "{STARS_VISIBLE}"),
     ("Star Density", "{STAR_DENSITY}"),
+    ("━━━ Star Detection ━━━", None),
+    ("Star Count", "{STAR_COUNT}"),
+    ("FWHM", "{FWHM}"),
+    ("Seeing", "{SEEING}"),
 ]
 
 ANCHOR_POSITIONS = [

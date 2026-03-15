@@ -256,6 +256,14 @@ class ImageProcessorWorker(QThread):
                 except Exception as e:
                     app_logger.debug(f"ML prediction skipped: {e}")
             
+            # Star detection tokens
+            try:
+                from services.star_detection import analyze_stars
+                star_tokens = analyze_stars(raw_array)
+                metadata.update(star_tokens)
+            except Exception as e:
+                app_logger.debug(f"Star detection skipped: {e}")
+
             # Add overlays using services/processor.py function
             # stretched_for_preview is the clean pre-overlay frame (set at line ~194)
             img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)

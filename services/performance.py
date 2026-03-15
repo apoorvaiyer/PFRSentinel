@@ -1,0 +1,90 @@
+"""
+Performance measurement helpers for PFR Sentinel.
+
+Provides processing time tracking, memory usage, and disk space queries.
+"""
+import os
+import time
+import shutil
+
+
+class ProcessingTimer:
+    """Context manager that measures elapsed processing time."""
+
+    def __init__(self):
+        self.elapsed = 0.0
+
+    def __enter__(self):
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, *args):
+        self.elapsed = time.perf_counter() - self._start
+
+
+def get_memory_usage_mb():
+    """Return current process memory usage in megabytes.
+
+    Returns:
+        float: RSS memory in MB, or -1.0 on failure.
+    """
+    try:
+        import psutil
+        proc = psutil.Process(os.getpid())
+        return proc.memory_info().rss / (1024 * 1024)
+    except Exception:
+        pass
+
+    # Fallback for Windows without psutil
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = PROCESS_MEMORY_COUNTERS()
+        counters.cb = ctypes.sizeof(counters)
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        if ctypes.windll.psapi.GetProcessMemoryInfo(
+            handle, ctypes.byref(counters), counters.cb
+        ):
+            return counters.WorkingSetSize / (1024 * 1024)
+    except Exception:
+        pass
+
+    return -1.0
+
+
+def get_disk_space(path):
+    """Return disk space info for the given path.
+
+    Args:
+        path: Directory or file path to check
+
+    Returns:
+        dict with 'total_gb', 'used_gb', 'free_gb', or None on failure.
+    """
+    try:
+        if not path or not os.path.exists(path):
+            return None
+
+        usage = shutil.disk_usage(path)
+        return {
+            'total_gb': round(usage.total / (1024 ** 3), 2),
+            'used_gb': round(usage.used / (1024 ** 3), 2),
+            'free_gb': round(usage.free / (1024 ** 3), 2),
+        }
+    except (OSError, ValueError):
+        return None
