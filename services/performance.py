@@ -7,6 +7,8 @@ import os
 import time
 import shutil
 
+from .logger import app_logger
+
 
 class ProcessingTimer:
     """Context manager that measures elapsed processing time."""
@@ -32,8 +34,10 @@ def get_memory_usage_mb():
         import psutil
         proc = psutil.Process(os.getpid())
         return proc.memory_info().rss / (1024 * 1024)
-    except Exception:
+    except ImportError:
         pass
+    except OSError as e:
+        app_logger.debug(f"psutil memory query failed: {e}")
 
     # Fallback for Windows without psutil
     try:
@@ -61,8 +65,10 @@ def get_memory_usage_mb():
             handle, ctypes.byref(counters), counters.cb
         ):
             return counters.WorkingSetSize / (1024 * 1024)
-    except Exception:
+    except (ImportError, AttributeError):
         pass
+    except OSError as e:
+        app_logger.debug(f"Win32 memory query failed: {e}")
 
     return -1.0
 

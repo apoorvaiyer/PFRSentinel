@@ -7,7 +7,7 @@ import tempfile
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-from services.logger import app_logger
+from .logger import app_logger
 
 
 def is_safe_path(path: str) -> bool:
@@ -307,7 +307,7 @@ def add_overlays(image_input, overlays, metadata, image_cache=None, weather_serv
     except Exception as e:
         error_msg = f"Error adding overlays: {e}"
         app_logger.error(error_msg)
-        raise Exception(error_msg)
+        raise RuntimeError(error_msg)
 
 
 def _add_compass_overlay(img, overlay):

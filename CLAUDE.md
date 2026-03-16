@@ -84,6 +84,10 @@ def add_overlays(image_input, overlays, metadata):
 - **Target: ≤500 lines per file** (hard cap: 550)
 - Split by responsibility: `models.py`, `service.py`, `handlers.py`, `repo.py`, `errors.py`
 - Avoid catch-all `utils.py` — use clearly named modules
+- **Exceptions** — these legacy files exceed the limit but must NOT grow further. New functionality should be added to new/split files, not appended here:
+  - `ui/main_window.py` (~1565 lines) — Qt FluentWindow orchestration; split planned for Phase 4
+  - `services/processor.py` (~1271 lines) — image overlay engine; split planned for Phase 4
+  - `ui/panels/overlay_settings.py` (~1338 lines) — overlay list/editor/preview; CRUD logic should move to a controller
 
 ### Imports
 - From outside packages: `from services.module import Class`

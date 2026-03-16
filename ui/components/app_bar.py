@@ -104,7 +104,7 @@ class AppBar(QFrame):
                 )
                 self.app_icon.setPixmap(pixmap)
                 self.app_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        except Exception:
+        except (ImportError, FileNotFoundError, OSError):
             pass
         brand_layout.addWidget(self.app_icon)
         
