@@ -1,7 +1,34 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venv/Scripts/python.exe -m pytest tests/ -q)"
+      "Bash(.venv/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(wc -l \"D:/Vibe Coded Projects/PFRSentinel/services/\"*.py)",
+      "Bash(wc -l services/*.py)",
+      "Bash(wc -l ui/panels/*.py ui/controllers/*.py)",
+      "Bash(grep \"\\\\.py$\")",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/ -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_settings.py -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_discord.py -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_heartbeat.py -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_camera_profiles.py -v)",
+      "Bash(./venv/Scripts/python.exe -c \"import qfluentwidgets; import inspect; src = inspect.getsource\\(qfluentwidgets.InfoBar.success\\); print\\(src[:500]\\)\")",
+      "Bash(./venv/Scripts/python.exe -c \":*)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_star_detection.py -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_image_output.py -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_notifications.py -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_compass.py -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_performance.py -v)",
+      "Bash(./venv/Scripts/python -c \"from qfluentwidgets import Flyout, FlyoutViewBase; print\\(''Flyout available''\\)\")",
+      "Bash(./venv/Scripts/python -m pytest tests/ -v --tb=short)",
+      "Bash(./venv/Scripts/python -c \"from qfluentwidgets import Flyout, FlyoutAnimationType; print\\(dir\\(FlyoutAnimationType\\)\\)\")",
+      "Bash(./venv/Scripts/python -c \"from qfluentwidgets import Flyout; help\\(Flyout.make\\)\")",
+      "Bash(./venv/Scripts/python -c \"from qfluentwidgets import InfoBarPosition; print\\([x for x in dir\\(InfoBarPosition\\) if not x.startswith\\(''_''\\)]\\)\")",
+      "Bash(./venv/Scripts/python -m pytest tests/ --tb=short -q)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/test_compass.py tests/test_image_output.py -v)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/ -v --tb=short)",
+      "Bash(./venv/Scripts/python.exe -m pytest tests/ --tb=short)"
     ]
   }
 }
