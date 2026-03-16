@@ -35,6 +35,7 @@ class ImageProcessorWorker(QThread):
     preview_ready = Signal(object, dict)  # PIL Image for preview, histogram data
     error_occurred = Signal(str)
     timelapse_ready = Signal(object, object)  # (clean PIL Image pre-overlay, overlaid PIL Image)
+    processing_time = Signal(float)  # elapsed seconds for last frame
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -93,6 +94,9 @@ class ImageProcessorWorker(QThread):
     
     def _process_task(self, task: ImageProcessingTask):
         """Process a single image task"""
+        from services.performance import ProcessingTimer
+        _timer = ProcessingTimer()
+        _timer.__enter__()
         try:
             img = task.img
             metadata = task.metadata
@@ -298,7 +302,11 @@ class ImageProcessorWorker(QThread):
             
             # Emit completion signal
             self.processing_complete.emit(img, metadata, output_path)
-            
+
+            # Emit processing time
+            _timer.__exit__(None, None, None)
+            self.processing_time.emit(_timer.elapsed)
+
         except Exception as e:
             app_logger.error(f"Image processing failed: {e}")
             app_logger.error(traceback.format_exc())
@@ -318,6 +326,7 @@ class ImageProcessor(QObject):
     preview_ready = Signal(object, dict)  # PIL Image for preview, histogram data
     error_occurred = Signal(str)
     timelapse_ready = Signal(object, object)  # (clean PIL Image, overlaid PIL Image)
+    processing_time = Signal(float)  # elapsed seconds
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -328,6 +337,7 @@ class ImageProcessor(QObject):
         self._worker.preview_ready.connect(self._on_preview_ready)
         self._worker.error_occurred.connect(self._on_error)
         self._worker.timelapse_ready.connect(self.timelapse_ready)
+        self._worker.processing_time.connect(self.processing_time)
         
         # Reference to main window for config access
         self._main_window = None

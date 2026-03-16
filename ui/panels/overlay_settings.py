@@ -101,7 +101,8 @@ class OverlaySettingsPanel(QWidget):
         self._setup_ui()
     
     def _setup_ui(self):
-        self.setStyleSheet(f"background-color: {Colors.bg_app};")
+        self.setObjectName("overlaySettingsPanel")
+        self.setStyleSheet(f"#overlaySettingsPanel {{ background-color: {Colors.bg_app}; }}")
         
         # Main horizontal layout
         main_layout = QHBoxLayout(self)
@@ -113,7 +114,7 @@ class OverlaySettingsPanel(QWidget):
         left_layout = QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(Spacing.card_gap)
-        
+
         # Overlay List Card
         list_card = self._create_list_card()
         left_layout.addWidget(list_card, stretch=1)
@@ -317,9 +318,11 @@ class OverlaySettingsPanel(QWidget):
     def _render_overlay(self, painter: QPainter, overlay: dict, width: int, height: int):
         """Render a single overlay onto the painter"""
         overlay_type = overlay.get('type', 'text')
-        
+
         if overlay_type == 'image':
             self._render_image_overlay(painter, overlay, width, height)
+        elif overlay_type == 'compass':
+            self._render_compass_overlay(painter, overlay, width, height)
         else:
             self._render_text_overlay(painter, overlay, width, height)
     
@@ -407,6 +410,122 @@ class OverlaySettingsPanel(QWidget):
                 line_x = base_x
             painter.drawText(int(line_x), int(y + i * line_height), line)
     
+    def _render_compass_overlay(self, painter: QPainter, overlay: dict, width: int, height: int):
+        """Render 8-point star compass rose in preview (matches PIL renderer)."""
+        import math
+        from PySide6.QtGui import QPolygonF
+        from PySide6.QtCore import QPointF
+
+        rotation = overlay.get('rotation', 0)
+        size = overlay.get('size', 80)
+        anchor = overlay.get('anchor', 'Bottom-Right')
+        offset_x = overlay.get('offset_x', 20)
+        offset_y = overlay.get('offset_y', 20)
+
+        # Scale size relative to preview
+        scale = min(width, height) / 1000.0
+        scaled_size = max(20, int(size * scale * 2))
+        radius = scaled_size // 2
+
+        # Calculate center from anchor + offset
+        cx, cy = self._anchor_to_xy(anchor, offset_x, offset_y, width, height, scaled_size, scaled_size)
+        cx += radius
+        cy += radius
+
+        rot_rad = math.radians(rotation)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        # Colors
+        col_light = QColor(255, 255, 255, 200)
+        col_dark = QColor(85, 85, 85, 200)
+        col_outline = QColor(255, 255, 255, 230)
+
+        # Outer circle
+        circle_r = radius * 0.72
+        painter.setPen(QPen(col_outline, max(1, scaled_size // 50)))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(QPointF(cx, cy), circle_r, circle_r)
+
+        # 8-point star
+        cardinal_len = radius * 0.68
+        ordinal_len = radius * 0.45
+        half_base = radius * 0.12
+
+        for i, angle_deg in enumerate(range(0, 360, 45)):
+            is_cardinal = (i % 2 == 0)
+            tip_r = cardinal_len if is_cardinal else ordinal_len
+            angle = math.radians(angle_deg) + rot_rad
+
+            tip_x = cx + tip_r * math.sin(angle)
+            tip_y = cy - tip_r * math.cos(angle)
+
+            perp = angle + math.pi / 2
+            bx1 = cx + half_base * math.sin(perp)
+            by1 = cy - half_base * math.cos(perp)
+            bx2 = cx - half_base * math.sin(perp)
+            by2 = cy + half_base * math.cos(perp)
+
+            # Light half
+            painter.setPen(QPen(col_outline, 1))
+            painter.setBrush(col_light)
+            painter.drawPolygon(QPolygonF([
+                QPointF(cx, cy), QPointF(bx1, by1), QPointF(tip_x, tip_y)
+            ]))
+            # Dark half
+            painter.setBrush(col_dark)
+            painter.drawPolygon(QPolygonF([
+                QPointF(cx, cy), QPointF(tip_x, tip_y), QPointF(bx2, by2)
+            ]))
+
+        # Center dot
+        inner_r = radius * 0.07
+        painter.setBrush(col_light)
+        painter.setPen(QPen(col_outline, 1))
+        painter.drawEllipse(QPointF(cx, cy), inner_r, inner_r)
+
+        # Cardinal labels
+        font = painter.font()
+        font.setPixelSize(max(8, scaled_size // 6))
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+
+        for label_text, angle_deg in [('N', 0), ('E', 90), ('S', 180), ('W', 270)]:
+            angle = math.radians(angle_deg) + rot_rad
+            label_r = radius * 0.88
+            lx = cx + label_r * math.sin(angle)
+            ly = cy - label_r * math.cos(angle)
+
+            tw = fm.horizontalAdvance(label_text)
+            th = fm.height()
+            tx = int(lx - tw / 2)
+            ty = int(ly + th / 4)
+
+            # Dark outline for readability
+            painter.setPen(QColor(0, 0, 0, 180))
+            for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                painter.drawText(tx + dx, ty + dy, label_text)
+            painter.setPen(QColor(255, 255, 255, 255))
+            painter.drawText(tx, ty, label_text)
+
+    def _anchor_to_xy(self, anchor, offset_x, offset_y, width, height, elem_w, elem_h):
+        """Convert anchor + offset to top-left x, y coordinates."""
+        anchor_lower = anchor.lower().replace('-', ' ').replace('_', ' ')
+        if 'top' in anchor_lower:
+            y = offset_y
+        elif 'bottom' in anchor_lower:
+            y = height - elem_h - offset_y
+        else:
+            y = (height - elem_h) // 2
+
+        if 'left' in anchor_lower:
+            x = offset_x
+        elif 'right' in anchor_lower:
+            x = width - elem_w - offset_x
+        else:
+            x = (width - elem_w) // 2
+
+        return x, y
+
     def _render_image_overlay(self, painter: QPainter, overlay: dict, width: int, height: int):
         """Render image overlay"""
         image_path = overlay.get('image_path', '')
@@ -536,7 +655,7 @@ class OverlaySettingsPanel(QWidget):
         layout.addWidget(FormRow("Name", self.name_edit))
         
         self.type_combo = ComboBox()
-        self.type_combo.addItems(["Text", "Image"])
+        self.type_combo.addItems(["Text", "Image", "Compass"])
         self.type_combo.currentTextChanged.connect(self._on_type_changed)
         layout.addWidget(FormRow("Type", self.type_combo))
         
@@ -553,7 +672,11 @@ class OverlaySettingsPanel(QWidget):
         # Image editor widget
         image_widget = self._create_image_editor()
         self.editor_stack.addWidget(image_widget)
-        
+
+        # Compass editor widget
+        compass_widget = self._create_compass_editor()
+        self.editor_stack.addWidget(compass_widget)
+
         layout.addWidget(self.editor_stack)
         
         # Divider
@@ -772,7 +895,42 @@ class OverlaySettingsPanel(QWidget):
         layout.addWidget(FormRow("Opacity", self.opacity_spin))
         
         return widget
-    
+
+    def _create_compass_editor(self) -> QWidget:
+        """Create compass-specific editor widget"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.md)
+
+        layout.addWidget(self._create_section_header("Compass Settings"))
+
+        self.compass_rotation_spin = SpinBox()
+        self.compass_rotation_spin.setRange(0, 359)
+        self.compass_rotation_spin.setSuffix("°")
+        self.compass_rotation_spin.valueChanged.connect(self._on_compass_field_changed)
+        layout.addWidget(FormRow("Rotation", self.compass_rotation_spin,
+                                 "North direction offset in degrees"))
+
+        self.compass_size_spin = SpinBox()
+        self.compass_size_spin.setRange(40, 200)
+        self.compass_size_spin.setValue(80)
+        self.compass_size_spin.setSuffix(" px")
+        self.compass_size_spin.valueChanged.connect(self._on_compass_field_changed)
+        layout.addWidget(FormRow("Size", self.compass_size_spin,
+                                 "Compass diameter in pixels"))
+
+        compass_info = CaptionLabel(
+            "Draws a compass rose showing N/S/E/W cardinal directions.\n"
+            "Use Rotation to align North with your image orientation.\n"
+            "Position is set via the shared Anchor and Offset fields below."
+        )
+        compass_info.setStyleSheet(f"color: {Colors.text_muted}; padding: 4px;")
+        compass_info.setWordWrap(True)
+        layout.addWidget(compass_info)
+
+        return widget
+
     # === LIST OPERATIONS ===
     
     def _refresh_list(self):
@@ -812,12 +970,13 @@ class OverlaySettingsPanel(QWidget):
         self.overlay_table.blockSignals(False)
     
     def _show_add_menu(self):
-        """Show menu to add text or image overlay"""
+        """Show menu to add text, image, or compass overlay"""
         from qfluentwidgets import RoundMenu, Action
         menu = RoundMenu(parent=self)
         menu.addAction(Action(FluentIcon.FONT, "Add Text Overlay", triggered=self._add_text_overlay))
         menu.addAction(Action(FluentIcon.PHOTO, "Add Image Overlay", triggered=self._add_image_overlay))
-        
+        menu.addAction(Action(FluentIcon.CALORIES, "Add Compass Rose", triggered=self._add_compass_overlay))
+
         # Show below the button
         pos = self.add_btn.mapToGlobal(self.add_btn.rect().bottomLeft())
         menu.exec(pos)
@@ -863,7 +1022,23 @@ class OverlaySettingsPanel(QWidget):
         self._refresh_list()
         self.overlay_table.selectRow(len(self._overlays) - 1)
         self._save_overlays()
-    
+
+    def _add_compass_overlay(self):
+        """Add new compass rose overlay"""
+        new_overlay = {
+            'name': 'Compass Rose',
+            'type': 'compass',
+            'rotation': 0,
+            'size': 80,
+            'anchor': 'Bottom-Right',
+            'offset_x': 20,
+            'offset_y': 20,
+        }
+        self._overlays.append(new_overlay)
+        self._refresh_list()
+        self.overlay_table.selectRow(len(self._overlays) - 1)
+        self._save_overlays()
+
     def _duplicate_overlay(self):
         """Duplicate selected overlay"""
         if self._selected_index >= 0 and self._selected_index < len(self._overlays):
@@ -908,10 +1083,11 @@ class OverlaySettingsPanel(QWidget):
         self.name_edit.setText(overlay.get('name', ''))
         
         overlay_type = overlay.get('type', 'text')
-        type_idx = 0 if overlay_type == 'text' else 1
+        type_map = {'text': 0, 'image': 1, 'compass': 2}
+        type_idx = type_map.get(overlay_type, 0)
         self.type_combo.setCurrentIndex(type_idx)
         self.editor_stack.setCurrentIndex(type_idx)
-        
+
         if overlay_type == 'text':
             self.text_edit.setPlainText(overlay.get('text', ''))
             self.font_size_spin.setValue(overlay.get('font_size', 24))
@@ -940,13 +1116,16 @@ class OverlaySettingsPanel(QWidget):
             idx = self.bg_color_combo.findText(bg_color)
             if idx >= 0:
                 self.bg_color_combo.setCurrentIndex(idx)
-        else:  # image
+        elif overlay_type == 'image':
             self.image_path_edit.setText(overlay.get('image_path', ''))
             self.image_width_spin.setValue(overlay.get('width', 100))
             self.image_height_spin.setValue(overlay.get('height', 100))
             self.opacity_spin.setValue(overlay.get('opacity', 100))
             self.aspect_switch.set_checked(overlay.get('maintain_aspect', True))
-        
+        elif overlay_type == 'compass':
+            self.compass_rotation_spin.setValue(overlay.get('rotation', 0))
+            self.compass_size_spin.setValue(overlay.get('size', 80))
+
         # Position (shared)
         anchor = overlay.get('anchor', 'Bottom-Left')
         idx = self.anchor_combo.findText(anchor)
@@ -966,6 +1145,7 @@ class OverlaySettingsPanel(QWidget):
             self.text_align_combo, self.bg_color_combo,
             self.image_path_edit, self.image_width_spin, self.image_height_spin,
             self.opacity_spin,
+            self.compass_rotation_spin, self.compass_size_spin,
             self.anchor_combo, self.offset_x_spin, self.offset_y_spin
         ]
         for w in widgets:
@@ -1001,8 +1181,9 @@ class OverlaySettingsPanel(QWidget):
         if self._selected_index >= 0 and self._selected_index < len(self._overlays):
             overlay = self._overlays[self._selected_index]
             overlay['name'] = self.name_edit.text()
-            overlay['type'] = 'text' if self.type_combo.currentIndex() == 0 else 'image'
-            
+            type_map = {0: 'text', 1: 'image', 2: 'compass'}
+            overlay['type'] = type_map.get(self.type_combo.currentIndex(), 'text')
+
             if overlay['type'] == 'text':
                 overlay['text'] = self.text_edit.toPlainText()
                 overlay['font_size'] = self.font_size_spin.value()
@@ -1011,12 +1192,15 @@ class OverlaySettingsPanel(QWidget):
                 overlay['alignment'] = self.text_align_combo.currentText()
                 overlay['bg_enabled'] = self.bg_switch.is_checked()
                 overlay['bg_color'] = self.bg_color_combo.currentText()
-            else:
+            elif overlay['type'] == 'image':
                 overlay['image_path'] = self.image_path_edit.text()
                 overlay['width'] = self.image_width_spin.value()
                 overlay['height'] = self.image_height_spin.value()
                 overlay['opacity'] = self.opacity_spin.value()
                 overlay['maintain_aspect'] = self.aspect_switch.is_checked()
+            elif overlay['type'] == 'compass':
+                overlay['rotation'] = self.compass_rotation_spin.value()
+                overlay['size'] = self.compass_size_spin.value()
             
             # Position (shared)
             overlay['anchor'] = self.anchor_combo.currentText()
@@ -1053,7 +1237,8 @@ class OverlaySettingsPanel(QWidget):
     
     def _on_type_changed(self, text):
         """Handle type change"""
-        self.editor_stack.setCurrentIndex(0 if text == "Text" else 1)
+        type_map = {"Text": 0, "Image": 1, "Compass": 2}
+        self.editor_stack.setCurrentIndex(type_map.get(text, 0))
         self._update_current_overlay()
         self._refresh_list()
         self._update_preview()
@@ -1081,6 +1266,12 @@ class OverlaySettingsPanel(QWidget):
         self._update_current_overlay()
         self._update_preview()
     
+    def _on_compass_field_changed(self):
+        """Handle compass rotation/size change"""
+        self._update_current_overlay()
+        self._refresh_list()
+        self._update_preview()
+
     def _on_image_changed(self):
         self._update_current_overlay()
         self._refresh_list()
@@ -1140,7 +1331,6 @@ class OverlaySettingsPanel(QWidget):
         # Refresh token combo in case weather config changed
         if hasattr(self, 'token_combo'):
             self._populate_token_combo()
-    
     def resizeEvent(self, event):
         """Update preview on resize"""
         super().resizeEvent(event)

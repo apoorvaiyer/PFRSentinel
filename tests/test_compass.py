@@ -96,26 +96,50 @@ class TestCompassEdgeCases:
         assert result is not None
 
 
+class TestCompassExplicitCoords:
+    """Test compass with explicit cx/cy coordinates"""
+
+    def test_explicit_coords(self):
+        """Test compass renders at explicit cx/cy coordinates"""
+        img = _make_image(256, 256)
+        result = draw_compass(img, rotation=0, size=60, cx=128, cy=128)
+        assert result is not None
+        assert result.size == (256, 256)
+        # Should have drawn something
+        assert not np.array_equal(np.array(_make_image(256, 256)), np.array(result))
+
+    def test_explicit_coords_override_position(self):
+        """Test cx/cy take precedence over position string"""
+        img1 = draw_compass(_make_image(), cx=50, cy=50, size=40)
+        img2 = draw_compass(_make_image(), position='bottom-right', cx=50, cy=50, size=40)
+        assert np.array_equal(np.array(img1), np.array(img2))
+
+
 class TestCompassConfig:
-    """Test compass configuration round-trip"""
+    """Test compass overlay config round-trip via overlays list"""
 
     def test_config_round_trip(self, temp_config):
-        """Test compass config round-trips through save/load"""
+        """Test compass overlay config round-trips through save/load"""
         from services.config import Config
         config = Config(temp_config)
 
-        compass_settings = {
-            'enabled': True,
+        overlays = config.get('overlays', [])
+        overlays.append({
+            'name': 'Compass Rose',
+            'type': 'compass',
             'rotation': 45,
-            'position': 'top-right',
             'size': 100,
-        }
-        config.set('compass', compass_settings)
+            'anchor': 'Top-Right',
+            'offset_x': 20,
+            'offset_y': 20,
+        })
+        config.set('overlays', overlays)
         config.save()
 
         config2 = Config(temp_config)
-        loaded = config2.get('compass', {})
-        assert loaded['enabled'] is True
-        assert loaded['rotation'] == 45
-        assert loaded['position'] == 'top-right'
-        assert loaded['size'] == 100
+        loaded_overlays = config2.get('overlays', [])
+        compass = [o for o in loaded_overlays if o.get('type') == 'compass']
+        assert len(compass) == 1
+        assert compass[0]['rotation'] == 45
+        assert compass[0]['size'] == 100
+        assert compass[0]['anchor'] == 'Top-Right'

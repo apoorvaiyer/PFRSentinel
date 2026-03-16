@@ -124,7 +124,7 @@ class HistogramWidget(QFrame):
             self.update()  # Trigger repaint
             
         except Exception as e:
-            print(f"Histogram error: {e}")
+            pass  # Histogram rendering is non-critical
     
     def update_from_data(self, hist_data: dict):
         """Update histogram from pre-calculated data
@@ -138,10 +138,9 @@ class HistogramWidget(QFrame):
                 self._hist_data = hist_data
                 self._auto_exposure = hist_data.get('auto_exposure', False)
                 self._target_brightness = hist_data.get('target_brightness', 30)
-                print(f"Histogram update - auto_exposure: {self._auto_exposure}, target: {self._target_brightness}")
                 self.update()  # Trigger repaint
-        except Exception as e:
-            print(f"Histogram update error: {e}")
+        except Exception:
+            pass  # Histogram update is non-critical
     
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -243,8 +242,6 @@ class HistogramWidget(QFrame):
         
         # Draw target brightness and clipping indicators if auto exposure enabled
         if self._auto_exposure:
-            print(f"Drawing auto-exposure markers - target: {self._target_brightness}")
-            
             # Target brightness line (yellow dashed) - vertical line at target brightness X position
             target_x = padding + (self._target_brightness / 255.0) * (width - 2 * padding)
             pen = QPen(QColor('#ffd700'), 2)
@@ -615,7 +612,64 @@ class LiveMonitoringPanel(QScrollArea):
         log_layout.addWidget(self.activity_log, 1)
         
         layout.addWidget(self.log_card, 1)
-    
+
+        # === PERFORMANCE STATUS BAR ===
+        self.perf_label = CaptionLabel("")
+        self.perf_label.setStyleSheet(f"""
+            color: {Colors.text_muted};
+            font-size: {Typography.size_small}px;
+            padding: 2px 4px;
+        """)
+        self.perf_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.perf_label)
+
+        # Periodic performance refresh (every 5 seconds)
+        self._perf_timer = QTimer(self)
+        self._perf_timer.timeout.connect(self._refresh_performance)
+        self._perf_timer.start(5000)
+
+    def _refresh_performance(self):
+        """Update performance status bar."""
+        try:
+            from services.performance import get_memory_usage_mb, get_disk_space
+            parts = []
+
+            mb = get_memory_usage_mb()
+            if mb > 0:
+                parts.append(f"Mem: {mb:.0f} MB")
+
+            # Check disk space for output directory
+            if hasattr(self, '_output_dir') and self._output_dir:
+                disk = get_disk_space(self._output_dir)
+                if disk:
+                    parts.append(f"Disk: {disk['free_gb']:.1f} GB free")
+
+            if parts:
+                self.perf_label.setText("  |  ".join(parts))
+        except Exception:
+            pass
+
+    def set_output_directory(self, path):
+        """Set the output directory for disk space monitoring."""
+        self._output_dir = path
+
+    def update_processing_time(self, elapsed_sec):
+        """Update the performance bar with latest processing time."""
+        try:
+            text = self.perf_label.text()
+            time_str = f"Proc: {elapsed_sec:.2f}s"
+            # Prepend processing time
+            if "|" in text:
+                # Replace existing proc time or prepend
+                parts = [p.strip() for p in text.split("|")]
+                parts = [p for p in parts if not p.startswith("Proc:")]
+                parts.insert(0, time_str)
+                self.perf_label.setText("  |  ".join(parts))
+            else:
+                self.perf_label.setText(time_str)
+        except Exception:
+            pass
+
     def set_preview_only(self, preview_only: bool):
         """Show only preview (hide histogram and activity log)"""
         self.hist_card.setVisible(not preview_only)

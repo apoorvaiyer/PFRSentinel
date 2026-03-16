@@ -283,7 +283,7 @@ class ImageProcessingPanel(QScrollArea):
         stretch_card.add_row("Saturation Boost", boost_widget, "Post-stretch saturation enhancement")
         
         layout.addWidget(stretch_card)
-        
+
         # === ML MODELS (Beta) ===
         ml_card = CollapsibleCard("ML Models (Beta)", FluentIcon.IOT)
         

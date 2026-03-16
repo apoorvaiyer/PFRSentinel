@@ -251,9 +251,11 @@ class Config:
                 try:
                     import shutil
                     shutil.copy2(old_config_path, config_path)
-                    print(f"Migrated config from {old_config_path} to {config_path}")
+                    from services.logger import app_logger
+                    app_logger.info(f"Migrated config from {old_config_path} to {config_path}")
                 except Exception as e:
-                    print(f"Warning: Could not migrate old config: {e}")
+                    from services.logger import app_logger
+                    app_logger.warning(f"Could not migrate old config: {e}")
         
         self.config_path = config_path
         self.data = self.load()
@@ -268,28 +270,29 @@ class Config:
         """Migrate config and data from old ASIOverlayWatchDog location to new PFR\\Sentinel location"""
         import shutil
         
-        print(f"Migrating data from {old_dir} to {new_dir}...")
-        
+        from services.logger import app_logger
+        app_logger.info(f"Migrating data from {old_dir} to {new_dir}...")
+
         try:
             # Migrate config.json
             old_config = os.path.join(old_dir, 'config.json')
             if os.path.exists(old_config):
                 shutil.copy2(old_config, new_config_path)
-                print(f"  ✓ Migrated config.json")
-            
+                app_logger.info("Migrated config.json")
+
             # Migrate overlay_images folder if it exists
             old_overlay_images = os.path.join(old_dir, 'overlay_images')
             new_overlay_images = os.path.join(new_dir, 'overlay_images')
             if os.path.exists(old_overlay_images) and not os.path.exists(new_overlay_images):
                 shutil.copytree(old_overlay_images, new_overlay_images)
-                print(f"  ✓ Migrated overlay_images/")
-            
+                app_logger.info("Migrated overlay_images/")
+
             # Migrate weather_icons folder if it exists
             old_weather_icons = os.path.join(old_dir, 'weather_icons')
             new_weather_icons = os.path.join(new_dir, 'weather_icons')
             if os.path.exists(old_weather_icons) and not os.path.exists(new_weather_icons):
                 shutil.copytree(old_weather_icons, new_weather_icons)
-                print(f"  ✓ Migrated weather_icons/")
+                app_logger.info("Migrated weather_icons/")
             
             # Don't migrate Images/ folder (can be large) or Logs/ (not critical)
             # User can manually copy if needed
@@ -309,25 +312,21 @@ class Config:
                         
                         with open(new_config_path, 'w') as f:
                             json.dump(migrated_config, f, indent=4)
-                        print(f"  ✓ Updated SDK path: {sdk_path} -> {new_sdk_path}")
+                        app_logger.info(f"Updated SDK path: {sdk_path} -> {new_sdk_path}")
                 except Exception as e:
-                    print(f"  ⚠ Could not update SDK path: {e}")
-            
+                    app_logger.warning(f"Could not update SDK path: {e}")
+
             # Remove old directory after successful migration
             try:
                 shutil.rmtree(old_dir)
-                print(f"  ✓ Removed old directory: {old_dir}")
+                app_logger.info(f"Removed old directory: {old_dir}")
             except Exception as e:
-                print(f"  ⚠ Could not remove old directory (may be in use): {e}")
-            
-            print(f"Migration complete! New location: {new_dir}")
-            
+                app_logger.warning(f"Could not remove old directory (may be in use): {e}")
+
+            app_logger.info(f"Migration complete! New location: {new_dir}")
+
         except Exception as e:
-            print(f"Warning: Migration failed: {e}")
-            print("You may need to manually copy config.json from:")
-            print(f"  {old_dir}")
-            print(f"to:")
-            print(f"  {new_dir}")
+            app_logger.error(f"Migration failed: {e}. You may need to manually copy config.json from {old_dir} to {new_dir}")
     
     def _migrate_old_paths(self):
         """Update any config paths that still reference old ASIOverlayWatchDog location"""

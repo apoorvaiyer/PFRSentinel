@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QPixmap, QIcon
 from qfluentwidgets import (
     PushButton, ToolButton, PrimaryPushButton,
-    FluentIcon, ProgressBar, InfoBadge, CaptionLabel
+    FluentIcon, ProgressBar, InfoBadge, CaptionLabel, Flyout
 )
 from .status_sprite import StatusSpriteWidget
 
@@ -138,7 +138,7 @@ class AppBar(QFrame):
         
         # === RIGHT: Session info + Actions ===
         right_layout = QHBoxLayout()
-        right_layout.setSpacing(Spacing.lg)
+        right_layout.setSpacing(Spacing.md)
         
         # Session date
         self.session_label = QLabel("Session")
@@ -171,7 +171,7 @@ class AppBar(QFrame):
         # Exposure progress with countdown
         progress_layout = QVBoxLayout()
         progress_layout.setSpacing(2)
-        
+
         self.countdown_label = CaptionLabel("")
         self.countdown_label.setStyleSheet(f"""
             color: {Colors.text_secondary};
@@ -179,35 +179,38 @@ class AppBar(QFrame):
         """)
         self.countdown_label.setAlignment(Qt.AlignCenter)
         self.countdown_label.setFixedWidth(100)
-        # Retain space when hidden to prevent layout shift
-        sp = self.countdown_label.sizePolicy()
-        sp.setRetainSizeWhenHidden(True)
-        self.countdown_label.setSizePolicy(sp)
         self.countdown_label.hide()
         progress_layout.addWidget(self.countdown_label)
-        
+
         self.progress_bar = ProgressBar()
         self.progress_bar.setFixedWidth(100)
-        self.progress_bar.setFixedHeight(6)  # Slightly taller for visibility
+        self.progress_bar.setFixedHeight(6)
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        # Retain space when hidden to prevent layout shift
-        sp = self.progress_bar.sizePolicy()
-        sp.setRetainSizeWhenHidden(True)
-        self.progress_bar.setSizePolicy(sp)
         self.progress_bar.hide()
         progress_layout.addWidget(self.progress_bar)
-        
+
         right_layout.addLayout(progress_layout)
 
-        # Animated status sprite — expands to fill space between count and button
+        # Animated status sprite — visible during capture pipeline stages
         self.status_sprite = StatusSpriteWidget()
-        sp = self.status_sprite.sizePolicy()
-        sp.setRetainSizeWhenHidden(True)
-        self.status_sprite.setSizePolicy(sp)
         self.status_sprite.hide()
         right_layout.addWidget(self.status_sprite, 1, Qt.AlignmentFlag.AlignVCenter)
         
+        # Notification bell
+        self.notification_btn = ToolButton(FluentIcon.RINGER)
+        self.notification_btn.setFixedSize(36, 36)
+        self.notification_btn.setToolTip("Notifications")
+        self.notification_btn.setCursor(Qt.PointingHandCursor)
+        self.notification_btn.clicked.connect(self._show_notifications)
+        right_layout.addWidget(self.notification_btn)
+
+        # Badge overlay — parented to AppBar (not button) so it can
+        # overflow the button bounds without being clipped.
+        # Positioned absolutely over the button's top-right corner.
+        self._notification_badge = InfoBadge.attension(0, self)
+        self._notification_badge.hide()
+
         # Start/Stop buttons
         self.start_btn = PrimaryPushButton("Start Capture")
         self.start_btn.setIcon(FluentIcon.PLAY)
@@ -378,3 +381,47 @@ class AppBar(QFrame):
             self.set_status('processing')
         else:
             self.set_status(None)
+
+    def _position_badge(self):
+        """Place the badge at the top-right corner of the notification button."""
+        btn_rect = self.notification_btn.geometry()
+        badge_w = self._notification_badge.width()
+        badge_h = self._notification_badge.height()
+        # Center the badge on the button's top-right corner
+        x = btn_rect.right() - badge_w // 2
+        y = btn_rect.top() - badge_h // 2
+        # Clamp so it doesn't go off the AppBar edges
+        x = min(x, self.width() - badge_w)
+        y = max(y, 0)
+        self._notification_badge.move(x, y)
+        self._notification_badge.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._notification_badge.isVisible():
+            self._position_badge()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._notification_badge.isVisible():
+            self._position_badge()
+
+    def update_notification_badge(self):
+        """Update the notification badge count from the store."""
+        from services.notification_store import get_notification_store
+        count = get_notification_store().count()
+        if count > 0:
+            self._notification_badge.setNum(min(count, 99))
+            self._notification_badge.adjustSize()
+            self._notification_badge.show()
+            self._position_badge()
+        else:
+            self._notification_badge.hide()
+
+    def _show_notifications(self):
+        """Open notification flyout anchored to the bell button."""
+        from qfluentwidgets import FlyoutAnimationType
+        from .notification_flyout import NotificationFlyoutView
+        view = NotificationFlyoutView()
+        Flyout.make(view, self.notification_btn, self.window(),
+                    aniType=FlyoutAnimationType.DROP_DOWN)

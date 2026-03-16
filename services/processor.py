@@ -288,6 +288,9 @@ def add_overlays(image_input, overlays, metadata, image_cache=None, weather_serv
             if overlay_type == 'image':
                 # Handle image overlay with cache and weather service
                 img = add_image_overlay(img, overlay, image_cache, weather_service)
+            elif overlay_type == 'compass':
+                # Handle compass rose overlay
+                img = _add_compass_overlay(img, overlay)
             else:
                 # Handle text overlay
                 img = add_text_overlay(img, draw, overlay, metadata)
@@ -305,6 +308,37 @@ def add_overlays(image_input, overlays, metadata, image_cache=None, weather_serv
         error_msg = f"Error adding overlays: {e}"
         app_logger.error(error_msg)
         raise Exception(error_msg)
+
+
+def _add_compass_overlay(img, overlay):
+    """Add a compass rose overlay using anchor/offset positioning.
+
+    Args:
+        img: PIL Image (RGBA)
+        overlay: Overlay config dict with rotation, size, anchor, offset_x, offset_y
+
+    Returns:
+        Modified PIL Image
+    """
+    try:
+        from .compass_overlay import draw_compass
+
+        size = overlay.get('size', 80)
+        rotation = overlay.get('rotation', 0)
+        anchor = overlay.get('anchor', 'Bottom-Right')
+        offset_x = overlay.get('offset_x', 20)
+        offset_y = overlay.get('offset_y', 20)
+
+        # Use calculate_position to get top-left of compass bounding box,
+        # then derive center for draw_compass
+        x, y = calculate_position(img.size, (size, size), anchor, offset_x, offset_y)
+        cx = x + size // 2
+        cy = y + size // 2
+
+        img = draw_compass(img, rotation=rotation, size=size, cx=cx, cy=cy)
+    except Exception as e:
+        app_logger.debug(f"Compass overlay skipped: {e}")
+    return img
 
 
 def add_image_overlay(base_img, overlay, image_cache=None, weather_service=None):
@@ -1161,7 +1195,7 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
         else:
             # Add overlays to image (no stretch)
             processed_img = add_overlays(image_path, overlays_to_apply, metadata, weather_service=weather_service)
-        
+
         # Apply auto brightness if enabled (for saved images)
         if config.get('auto_brightness', False):
             from PIL import ImageEnhance

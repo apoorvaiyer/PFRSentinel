@@ -120,6 +120,9 @@ class MainWindow(QMainWindow):
         # Send Discord startup notification if enabled
         QTimer.singleShot(1000, self._send_discord_startup)
         
+        # Validate config and log any warnings
+        self._validate_config_on_startup()
+
         app_logger.info(f"PFR Sentinel v{__version__} initialized")
     
     def _setup_window(self):
@@ -161,7 +164,9 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.app_bar)
         
         # === CONTENT AREA (Below app bar) ===
-        content_widget = QWidget()
+        # Stored as instance attribute so InfoBars can parent to it (below the app bar)
+        self.content_area = QWidget()
+        content_widget = self.content_area
         content_layout = QHBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
@@ -262,6 +267,11 @@ class MainWindow(QMainWindow):
         self.timelapse_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.accent_changed.connect(self.set_accent_theme)
+
+        # Processing time → live panel performance bar
+        self.image_processor.processing_time.connect(
+            self.live_panel.update_processing_time
+        )
 
         # Timelapse: image processor → controller → panel status
         self.image_processor.timelapse_ready.connect(
@@ -364,12 +374,14 @@ class MainWindow(QMainWindow):
         if error:
             self.capture_panel.set_detection_error(error)
             app_logger.error(f"Camera detection error: {error}")
+            self._notify(f"Camera detection: {error}", "error")
             # Update camera chip to show error/idle
             self.app_bar.camera_chip.set_status('idle')
             self.app_bar.camera_chip.set_label('Camera')
         else:
             self.capture_panel.set_cameras(cameras)
-            
+            self._notify(f"{len(cameras)} camera(s) detected")
+
             # Store detected cameras in config to prevent re-detection in start_capture
             self.config.set('available_cameras', cameras)
             
@@ -508,6 +520,7 @@ class MainWindow(QMainWindow):
     
     def _handle_update_available(self, update_info: UpdateInfo):
         """Handle update available (must be called on main thread)."""
+        self._notify(f"Update available: v{update_info.version}")
         # Show badge on Settings nav button
         if hasattr(self, 'nav_rail'):
             self.nav_rail.set_badge('settings', True, "!")
@@ -550,8 +563,8 @@ class MainWindow(QMainWindow):
                 bar = InfoBar.success(
                     title="Up to Date",
                     content=f"You're running the latest version (v{__version__})",
-                    parent=self,
-                    position=InfoBarPosition.TOP_RIGHT,
+                    parent=self.content_area,
+                    position=InfoBarPosition.TOP,
                     duration=3000
                 )
                 bar.raise_()
@@ -687,6 +700,24 @@ class MainWindow(QMainWindow):
     # CAPTURE CONTROL
     # =========================================================================
     
+    def _notify(self, message, category='info'):
+        """Add a notification to the in-app notification store."""
+        try:
+            from services.notification_store import get_notification_store
+            get_notification_store().add(message, category)
+        except Exception:
+            pass
+
+    def _validate_config_on_startup(self):
+        """Run config validation and log any warnings."""
+        try:
+            warnings = self.config.validate()
+            for w in warnings:
+                app_logger.warning(f"Config: {w}")
+                self._notify(w, "warning")
+        except Exception as e:
+            app_logger.debug(f"Config validation skipped: {e}")
+
     def _send_discord_startup(self):
         """Send Discord startup notification if enabled"""
         try:
@@ -729,12 +760,13 @@ class MainWindow(QMainWindow):
     def _on_camera_error(self, error_msg: str):
         """Handle camera error signal - update UI and send Discord notification"""
         app_logger.error(f"Camera error received: {error_msg}")
-        
+        self._notify(f"Camera error: {error_msg}", "error")
+
         # Update UI status
         if hasattr(self, 'app_bar') and self.app_bar:
             self.app_bar.camera_chip.set_status('error')
             self.app_bar.camera_chip.set_label('Camera Error')
-        
+
         # Send Discord notification
         self._send_discord_error(f"Camera Error: {error_msg}")
     
@@ -797,6 +829,7 @@ class MainWindow(QMainWindow):
             self.app_bar.set_capturing(True)
             self.app_bar.set_status('waiting')  # Show waiting status until first image
             self.capture_started.emit()
+            self._notify(f"Capture started ({mode} mode)")
             
             # Faster status updates while capturing
             self.status_timer.setInterval(200)
@@ -808,7 +841,8 @@ class MainWindow(QMainWindow):
             app_logger.error(f"Failed to start capture: {e}")
             self.is_capturing = False
             self.app_bar.set_capturing(False)
-            
+            self._notify(f"Capture failed: {e}", "error")
+
             # Send Discord error notification
             self._send_discord_error(f"Failed to start capture: {e}")
     
@@ -830,6 +864,7 @@ class MainWindow(QMainWindow):
                 self.watch_controller.stop_watching()
             
             self.capture_stopped.emit()
+            self._notify("Capture stopped")
 
             # Stop timelapse session when capture stops
             if self.timelapse_controller:
@@ -939,6 +974,9 @@ class MainWindow(QMainWindow):
             rtsp_running = bool(self.rtsp_server and self.rtsp_server.running)
             self.nav_rail.set_badge('output', rtsp_running)
 
+            # Notification badge
+            self.app_bar.update_notification_badge()
+
         except Exception as e:
             app_logger.debug(f"Status update error: {e}")
     
@@ -1024,6 +1062,10 @@ class MainWindow(QMainWindow):
             ml_enabled = ml_config.get('enabled', False) and ml_config.get('show_in_preview', True)
             self.live_panel.metadata.set_ml_enabled(ml_enabled)
             
+            # Set output directory for disk space monitoring
+            output_dir = self.config.get('output_directory', '')
+            self.live_panel.set_output_directory(output_dir)
+
             # Update status chips based on config
             self._update_service_status()
             
@@ -1207,11 +1249,13 @@ class MainWindow(QMainWindow):
             status_url = self.web_server.get_status_url()
             app_logger.info(f"Web server started: {url}")
             app_logger.info(f"Status endpoint: {status_url}")
-            
+            self._notify(f"Web server started: {url}")
+
             # Update status chip
             self.app_bar.set_web_status(True, True)
         else:
             app_logger.error("Failed to start web server")
+            self._notify("Web server failed to start", "error")
             self.web_server = None
             self.app_bar.set_web_status(True, False)
     
