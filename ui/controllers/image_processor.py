@@ -407,7 +407,8 @@ class ImageProcessor(QObject):
             'preserve_blacks': True,
             'black_point': 0.0,
             'shadow_aggressiveness': 2.8,
-            'saturation_boost': 1.5
+            'saturation_boost': 1.5,
+            'scnr_amount': 0.0,
         }
         auto_stretch_config = mw.config.get('auto_stretch', {})
         # Merge with defaults - saved config overrides defaults

@@ -401,7 +401,7 @@ class CaptureSettingsPanel(QScrollArea):
         
         self.manual_wb_settings.hide()  # Hidden by default
         wb_card.add_widget(self.manual_wb_settings)
-        
+
         layout.addWidget(wb_card)
         
         # === ADVANCED CAMERA ===
@@ -720,7 +720,7 @@ class CaptureSettingsPanel(QScrollArea):
             wb_settings['gray_world_high_pct'] = self.wb_high_spin.value()
             self.main_window.config.set('white_balance', wb_settings)
             self.settings_changed.emit()
-    
+
     # === CONFIG LOADING ===
     
     def load_from_config(self, config):

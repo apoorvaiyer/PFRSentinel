@@ -226,7 +226,7 @@ def apply_white_balance(img_rgb, wb_config):
     
     except ImportError:
         pass
-    
+
     return img_rgb
 
 

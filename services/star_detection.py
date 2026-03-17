@@ -40,6 +40,13 @@ def detect_stars(image, min_area=4, max_area=500, threshold=30):
     else:
         gray = image.copy()
 
+    # medianBlur with ksize > 5 requires 8-bit input
+    if gray.dtype != np.uint8:
+        if gray.dtype == np.uint16:
+            gray = (gray >> 8).astype(np.uint8)
+        else:
+            gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
     # Noise reduction
     blurred = cv2.GaussianBlur(gray, (3, 3), 0)
 

@@ -83,6 +83,74 @@ class CameraControllerQt(QObject):
             self.error.emit(f"Detection failed: {e}")
             app_logger.error(f"Camera detection failed: {e}")
     
+    def _resolve_camera_index(self, sdk_path: str, camera_name: str, saved_index: int) -> int:
+        """Re-detect cameras and resolve the correct index by name.
+
+        Camera indices shift when other USB cameras (NINA, guide cam, etc.)
+        come online or go offline.  This method always does a fresh SDK
+        enumeration so we never send the wrong camera's config to a device.
+
+        Returns the resolved camera index.
+        Raises Exception if the target camera is not found.
+        """
+        import zwoasi as asi
+
+        if not sdk_path or not os.path.exists(sdk_path):
+            raise Exception("SDK path not configured or not found.")
+
+        try:
+            asi.init(sdk_path)
+        except Exception as e:
+            if "already" not in str(e).lower():
+                raise Exception(f"SDK init failed: {e}")
+
+        num_cameras = asi.get_num_cameras()
+        if num_cameras == 0:
+            raise Exception("No ZWO cameras detected. Check USB connections.")
+
+        # Build fresh camera list
+        fresh_cameras = []
+        for i in range(num_cameras):
+            try:
+                fresh_cameras.append((i, asi.list_cameras()[i]))
+            except Exception:
+                pass
+
+        if not fresh_cameras:
+            raise Exception("No ZWO cameras could be enumerated.")
+
+        # Clean the saved name (strip " (Index: N)" suffix if present)
+        clean_name = camera_name
+        if '(Index:' in camera_name:
+            clean_name = camera_name.split('(Index:')[0].strip()
+
+        # Try exact match by name
+        for idx, name in fresh_cameras:
+            if clean_name in name:
+                if idx != saved_index:
+                    app_logger.warning(
+                        f"Camera index changed: '{clean_name}' moved from "
+                        f"index {saved_index} → {idx}  (other cameras may have come online)"
+                    )
+                    # Persist the corrected index so config stays current
+                    self.config.set('zwo_selected_camera', idx)
+                    self.config.save()
+                else:
+                    app_logger.info(f"Camera '{clean_name}' confirmed at index {idx}")
+
+                # Update the available_cameras list in config to reflect reality
+                camera_list = [f"{n} (Index: {i})" for i, n in fresh_cameras]
+                self.config.set('available_cameras', camera_list)
+                return idx
+
+        # Camera not found at all — list what IS available for diagnostics
+        available = ", ".join(f"[{i}] {n}" for i, n in fresh_cameras)
+        raise Exception(
+            f"Camera '{clean_name}' not found. "
+            f"Available cameras: {available}. "
+            f"Please click 'Detect Cameras' and select the correct camera."
+        )
+
     def start_capture(self):
         """Start camera capture using ZWOCamera's built-in capture loop"""
         if self.is_capturing:
@@ -90,27 +158,15 @@ class CameraControllerQt(QObject):
         
         try:
             sdk_path = self.config.get('zwo_sdk_path', '')
-            camera_index = self.config.get('zwo_selected_camera', 0)
+            saved_camera_index = self.config.get('zwo_selected_camera', 0)
             camera_name = self.config.get('zwo_selected_camera_name', 'Unknown')
-            
-            app_logger.info(f"Starting capture with camera index {camera_index} ({camera_name})")
-            
-            # Verify cameras are available (stored by main_window after detection)
-            # Note: available_cameras is a list of strings like "ZWO ASI676MC (Index: 1)"
-            available_cameras = self.config.get('available_cameras', [])
-            
-            if not available_cameras:
-                # No cameras detected yet - this shouldn't happen normally since
-                # cameras are detected on startup, but handle it gracefully
-                app_logger.warning("No available_cameras in config, detection may not have completed")
-                raise Exception("No cameras available. Please click 'Detect Cameras' first.")
-            
-            # Validate camera_index against available cameras
-            if camera_index >= len(available_cameras):
-                app_logger.warning(f"Saved camera index {camera_index} >= camera count {len(available_cameras)}, using 0")
-                camera_index = 0
-                self.config.set('zwo_selected_camera', camera_index)
-                self.config.save()
+
+            app_logger.info(f"Starting capture — saved camera: '{camera_name}' at index {saved_camera_index}")
+
+            # --- Fresh camera detection to resolve correct index by name ---
+            # Camera indices can change when other cameras (NINA, guide cam, etc.)
+            # come online or go offline. Always re-detect and match by name.
+            camera_index = self._resolve_camera_index(sdk_path, camera_name, saved_camera_index)
             
             # ==================== NEW: Load camera-specific profile ====================
             # Extract clean camera name (remove index suffix like "(Index: 1)")
@@ -123,18 +179,47 @@ class CameraControllerQt(QObject):
             
             if profile:
                 app_logger.info(f"Loading settings from camera profile: {clean_camera_name}")
-                exposure_ms = profile.get('exposure_ms', 100.0)
-                gain = profile.get('gain', 100)
-                max_exposure_ms = profile.get('max_exposure_ms', 30000.0)
-                target_brightness = profile.get('target_brightness', 100)
-                wb_r = profile.get('wb_r', 75)
-                wb_b = profile.get('wb_b', 99)
-                offset = profile.get('offset', 20)
-                flip = profile.get('flip', 0)
-                bayer_pattern = profile.get('bayer_pattern', 'BGGR')
-                
-                # Store profile settings back to global config for UI synchronization
-                # (UI reads from global config keys for now)
+                app_logger.debug(f"Profile contents: {profile}")
+
+                # Merge profile with global config: profile values take priority,
+                # but if a profile value is still at its default and the global
+                # config has a different (user-customized) value, use the global.
+                # This prevents auto-created profiles from overwriting user settings.
+                _defaults = {
+                    'exposure_ms': 100.0, 'gain': 100, 'max_exposure_ms': 30000.0,
+                    'target_brightness': 100, 'wb_r': 75, 'wb_b': 99,
+                    'offset': 20, 'flip': 0, 'bayer_pattern': 'BGGR'
+                }
+                _global_map = {k: f'zwo_{k}' for k in _defaults}
+
+                def _pick(key):
+                    """Pick profile value unless it's at default and global differs."""
+                    pval = profile.get(key, _defaults[key])
+                    gval = self.config.get(_global_map[key], _defaults[key])
+                    if pval == _defaults[key] and gval != _defaults[key]:
+                        app_logger.info(
+                            f"Profile '{key}' is default ({pval}), "
+                            f"using global config value ({gval}) instead"
+                        )
+                        # Also update the profile so it stays in sync
+                        profile[key] = gval
+                        return gval
+                    return pval
+
+                exposure_ms = _pick('exposure_ms')
+                gain = _pick('gain')
+                max_exposure_ms = _pick('max_exposure_ms')
+                target_brightness = _pick('target_brightness')
+                wb_r = _pick('wb_r')
+                wb_b = _pick('wb_b')
+                offset = _pick('offset')
+                flip = _pick('flip')
+                bayer_pattern = _pick('bayer_pattern')
+
+                # Save merged profile back so future loads are correct
+                self.config.save_camera_profile(clean_camera_name, profile)
+
+                # Sync merged values to global config for UI display
                 self.config.set('zwo_exposure_ms', exposure_ms)
                 self.config.set('zwo_gain', gain)
                 self.config.set('zwo_max_exposure_ms', max_exposure_ms)
@@ -163,7 +248,8 @@ class CameraControllerQt(QObject):
             
             exposure_sec = exposure_ms / 1000.0
             
-            app_logger.debug(f"Camera config: exposure_ms={exposure_ms}, gain={gain}, auto_exposure={auto_exposure}")
+            app_logger.info(f"Camera config: exposure_ms={exposure_ms}, gain={gain}, "
+                           f"auto_exposure={auto_exposure}, max_exposure_ms={max_exposure_ms}")
             
             # Clean up any existing camera instance first
             if self.zwo_camera is not None:
@@ -176,6 +262,11 @@ class CameraControllerQt(QObject):
                     app_logger.warning(f"Error cleaning up old camera instance: {e}")
                     self.zwo_camera = None
             
+            # Build full wb_config dict for software white balance
+            wb_settings = self.config.get('white_balance', {})
+            wb_config = dict(wb_settings)  # copy so we don't mutate config
+            wb_config.setdefault('mode', 'asi_auto')
+
             # Initialize camera with all settings (from profile)
             self.zwo_camera = ZWOCamera(
                 sdk_path=sdk_path,
@@ -189,6 +280,7 @@ class CameraControllerQt(QObject):
                 auto_exposure=auto_exposure,
                 max_exposure_sec=max_exposure_ms / 1000.0,
                 bayer_pattern=bayer_pattern,
+                wb_config=wb_config,
                 scheduled_capture_enabled=self.config.get('scheduled_capture_enabled', False),
                 scheduled_start_time=self.config.get('scheduled_start_time', '17:00'),
                 scheduled_end_time=self.config.get('scheduled_end_time', '09:00'),
@@ -302,50 +394,126 @@ class CameraControllerQt(QObject):
     
     def update_settings(self):
         """Update camera settings from config (live update)
-        
-        Updates both ZWOCamera and its calibration_manager so settings
-        take effect on the next exposure without requiring stop/start.
+
+        Pushes ALL mutable settings to the running ZWOCamera so they take
+        effect on the very next captured frame — no stop/restart required.
         """
         if not self.zwo_camera:
             return
-        
+
         try:
             # Get current camera name for profile lookup
             camera_name = self.config.get('zwo_selected_camera_name', '')
             if '(Index:' in camera_name:
                 camera_name = camera_name.split('(Index:')[0].strip()
-            
+
             # Get settings from camera profile (with fallback to global config)
             profile = self.config.get_camera_profile(camera_name) if camera_name else {}
-            
-            # Update exposure
+
+            # --- Exposure & Gain ---
             exposure_ms = profile.get('exposure_ms', self.config.get('zwo_exposure_ms', 100.0))
-            self.zwo_camera.set_exposure(exposure_ms / 1000.0)
-            
-            # Update gain
             gain = profile.get('gain', self.config.get('zwo_gain', 100))
-            self.zwo_camera.set_gain(gain)
-            
-            # Update auto-exposure settings on ZWOCamera
+
+            # --- Auto-exposure ---
             auto_exposure = profile.get('auto_exposure', self.config.get('zwo_auto_exposure', False))
             target_brightness = profile.get('target_brightness', self.config.get('zwo_target_brightness', 100))
             max_exposure_ms = profile.get('max_exposure_ms', self.config.get('zwo_max_exposure_ms', 30000.0))
-            
+
             self.zwo_camera.auto_exposure = auto_exposure
             self.zwo_camera.target_brightness = target_brightness
             self.zwo_camera.max_exposure = max_exposure_ms / 1000.0
-            
-            # CRITICAL: Also update calibration_manager so changes take effect on next exposure
+
+            # Only override exposure when auto-exposure is OFF.
+            # When auto-exposure is driving, it computes its own exposure and
+            # resetting it to the UI spinner value would restart the ramp-up.
+            if not auto_exposure:
+                self.zwo_camera.set_exposure(exposure_ms / 1000.0)
+            else:
+                # If auto-exposure is active but current exposure exceeds the
+                # (possibly lowered) max, clamp it immediately.
+                max_sec = max_exposure_ms / 1000.0
+                if self.zwo_camera.exposure_seconds > max_sec:
+                    app_logger.info(
+                        f"Clamping auto-exposure from "
+                        f"{self.zwo_camera.exposure_seconds*1000:.0f}ms to "
+                        f"new max {max_sec*1000:.0f}ms"
+                    )
+                    self.zwo_camera.set_exposure(max_sec)
+
+            self.zwo_camera.set_gain(gain)
+
             if self.zwo_camera.calibration_manager:
+                # When auto-exposure is active, do NOT override the current
+                # exposure — let the algorithm keep its computed value.
+                # Only push manual exposure when auto-exposure is off.
+                cal_exposure = (
+                    None if auto_exposure
+                    else exposure_ms / 1000.0
+                )
                 self.zwo_camera.calibration_manager.update_settings(
-                    exposure_seconds=exposure_ms / 1000.0,
+                    exposure_seconds=cal_exposure,
                     gain=gain,
                     target_brightness=target_brightness,
                     max_exposure_sec=max_exposure_ms / 1000.0
                 )
-                app_logger.debug(f"Updated calibration_manager: target_brightness={target_brightness}")
-            
-            app_logger.debug(f"Camera settings updated: auto_exposure={auto_exposure}, target_brightness={target_brightness}")
-            
+
+            # --- Capture interval ---
+            self.zwo_camera.set_capture_interval(
+                self.config.get('zwo_interval', 5.0)
+            )
+
+            # --- Offset (black level) — push to SDK ---
+            offset = profile.get('offset', self.config.get('zwo_offset', 20))
+            self.zwo_camera.offset = offset
+            if self.zwo_camera.camera and self.zwo_camera.asi:
+                try:
+                    self.zwo_camera.camera.set_control_value(
+                        self.zwo_camera.asi.ASI_BRIGHTNESS, offset
+                    )
+                except Exception as e:
+                    app_logger.debug(f"Could not set offset live: {e}")
+
+            # --- Flip — push to SDK ---
+            flip = profile.get('flip', self.config.get('zwo_flip', 0))
+            if flip != self.zwo_camera.flip:
+                self.zwo_camera.flip = flip
+                if self.zwo_camera.camera and self.zwo_camera.asi:
+                    try:
+                        self.zwo_camera.camera.set_control_value(
+                            self.zwo_camera.asi.ASI_FLIP, flip
+                        )
+                    except Exception as e:
+                        app_logger.debug(f"Could not set flip live: {e}")
+
+            # --- Bayer pattern (software-side, no SDK call) ---
+            bayer = profile.get('bayer_pattern', self.config.get('zwo_bayer_pattern', 'BGGR'))
+            self.zwo_camera.bayer_pattern = bayer
+
+            # --- Scheduled capture ---
+            self.zwo_camera.scheduled_capture_enabled = self.config.get(
+                'scheduled_capture_enabled', False
+            )
+            self.zwo_camera.scheduled_start_time = self.config.get(
+                'scheduled_start_time', '17:00'
+            )
+            self.zwo_camera.scheduled_end_time = self.config.get(
+                'scheduled_end_time', '09:00'
+            )
+
+            # --- White balance config ---
+            wb_settings = self.config.get('white_balance', {})
+            self.zwo_camera.wb_config = dict(wb_settings)
+            self.zwo_camera.wb_config.setdefault('mode', 'asi_auto')
+
+            # Also update wb_mode for reconnection consistency
+            self.zwo_camera.wb_mode = wb_settings.get('mode', 'asi_auto')
+
+            app_logger.debug(
+                f"Settings updated live: exposure={exposure_ms}ms, gain={gain}, "
+                f"max_exposure={max_exposure_ms}ms, "
+                f"interval={self.zwo_camera.capture_interval}s, offset={offset}, "
+                f"flip={flip}, bayer={bayer}"
+            )
+
         except Exception as e:
             app_logger.error(f"Failed to update camera settings: {e}")

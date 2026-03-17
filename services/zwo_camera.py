@@ -270,7 +270,7 @@ class ZWOCamera:
         if not self.camera:
             return
         
-        self.log("Initializing calibration manager...")
+        self.log(f"Initializing calibration manager (max_exposure={self.max_exposure}s)...")
         self.calibration_manager = CameraCalibration(
             self.camera, self.asi, self.log, 
             bit_depth=self.current_bit_depth  # Pass current RAW mode bit depth
@@ -382,8 +382,18 @@ class ZWOCamera:
         """Capture a single frame and return image + metadata"""
         if not self.camera:
             raise Exception("Camera not connected")
-        
+
         try:
+            # Enforce max exposure limit as a safety net.
+            # The auto-exposure algorithm should already clamp, but this catches
+            # edge cases (stale calibration manager, manual set_exposure, etc.).
+            if self.auto_exposure and self.exposure_seconds > self.max_exposure:
+                self.log(
+                    f"⚠ Exposure {self.exposure_seconds*1000:.0f}ms exceeds "
+                    f"max {self.max_exposure*1000:.0f}ms — clamping"
+                )
+                self.exposure_seconds = self.max_exposure
+
             # Update exposure and gain
             self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(self.exposure_seconds * 1000000))
             self.camera.set_control_value(self.asi.ASI_GAIN, self.gain)
@@ -843,7 +853,9 @@ class ZWOCamera:
         if not self.auto_exposure or not self.camera or not self.calibration_manager:
             return
         
-        self.log("Starting rapid auto-exposure calibration...")
+        self.log(f"Starting rapid auto-exposure calibration... "
+                 f"(max_exposure={self.max_exposure}s, "
+                 f"cal_max={self.calibration_manager.max_exposure_sec}s)")
         self.calibration_mode = True
         
         # Notify UI that calibration is starting

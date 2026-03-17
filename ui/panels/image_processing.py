@@ -281,7 +281,31 @@ class ImageProcessingPanel(QScrollArea):
         boost_widget = QWidget()
         boost_widget.setLayout(boost_row)
         stretch_card.add_row("Saturation Boost", boost_widget, "Post-stretch saturation enhancement")
-        
+
+        # SCNR (green cast removal) — standard astro technique for airglow
+        scnr_row = QHBoxLayout()
+        scnr_row.setContentsMargins(0, 0, 0, 0)
+        scnr_row.setSpacing(8)
+
+        self.scnr_slider = ClickSlider(Qt.Horizontal)
+        self.scnr_slider.setRange(0, 100)
+        self.scnr_slider.setValue(0)
+        self.scnr_slider.setToolTip("SCNR green removal: 0% (off)")
+        self.scnr_slider.valueChanged.connect(self._on_stretch_settings_changed)
+        self.scnr_slider.valueChanged.connect(
+            lambda v: self.scnr_slider.setToolTip(f"SCNR green removal: {v}%")
+        )
+        scnr_row.addWidget(self.scnr_slider, 1)
+
+        self.scnr_label = BodyLabel("Off")
+        self.scnr_label.setFixedWidth(50)
+        self.scnr_label.setStyleSheet(f"color: {Colors.text_primary};")
+        scnr_row.addWidget(self.scnr_label)
+
+        scnr_widget = QWidget()
+        scnr_widget.setLayout(scnr_row)
+        stretch_card.add_row("Green Removal (SCNR)", scnr_widget, "Removes airglow / LP green cast per frame")
+
         layout.addWidget(stretch_card)
 
         # === ML MODELS (Beta) ===
@@ -526,7 +550,9 @@ class ImageProcessingPanel(QScrollArea):
         self.shadow_label.setText(f"{self.shadow_slider.value() / 10:.1f}")
         self.sat_boost_label.setText(f"{self.sat_boost_slider.value() / 10:.1f}x")
         self.dark_threshold_label.setText(f"{self.dark_threshold_slider.value() / 100:.2f}")
-        
+        scnr_val = self.scnr_slider.value()
+        self.scnr_label.setText(f"{scnr_val}%" if scnr_val > 0 else "Off")
+
         if self._loading_config:
             return
         if self.main_window and hasattr(self.main_window, 'config'):
@@ -538,6 +564,7 @@ class ImageProcessingPanel(QScrollArea):
             stretch['dark_scene_threshold'] = self.dark_threshold_slider.value() / 100
             stretch['shadow_aggressiveness'] = self.shadow_slider.value() / 10
             stretch['saturation_boost'] = self.sat_boost_slider.value() / 10
+            stretch['scnr_amount'] = scnr_val / 100.0
             self.main_window.config.set('auto_stretch', stretch)
             self.settings_changed.emit()
     
@@ -811,7 +838,11 @@ class ImageProcessingPanel(QScrollArea):
             boost = int(stretch.get('saturation_boost', 1.5) * 10)
             self.sat_boost_slider.setValue(boost)
             self.sat_boost_label.setText(f"{boost / 10:.1f}x")
-            
+
+            scnr = int(stretch.get('scnr_amount', 0.0) * 100)
+            self.scnr_slider.setValue(scnr)
+            self.scnr_label.setText(f"{scnr}%" if scnr > 0 else "Off")
+
             # Dev mode
             dev_mode = config.get('dev_mode', {})
             if hasattr(self, 'dev_mode_switch'):

@@ -727,17 +727,24 @@ def auto_stretch_image(img, config, raw_16bit=None):
             # Unknown format, return unchanged
             return img
         
+        # Apply SCNR (Subtractive Chromatic Noise Reduction) for green cast
+        # This is the standard astrophotography algorithm for removing airglow /
+        # light-pollution green cast.  Runs post-stretch where the cast is visible.
+        scnr_amount = config.get('scnr_amount', 0.0)
+        if scnr_amount > 0 and len(stretched.shape) == 3 and stretched.shape[2] >= 3:
+            stretched = _apply_scnr(stretched, scnr_amount)
+
         # Convert back to uint8 and PIL Image
         stretched_uint8 = (stretched * 255.0).astype(np.uint8)
         result_img = Image.fromarray(stretched_uint8, mode=img.mode)
-        
+
         # Apply saturation boost to compensate for stretch color desaturation
         if saturation_boost != 1.0 and result_img.mode in ('RGB', 'RGBA'):
             from PIL import ImageEnhance
             enhancer = ImageEnhance.Color(result_img)
             result_img = enhancer.enhance(saturation_boost)
             app_logger.debug(f"Auto-stretch saturation boost: {saturation_boost:.2f}")
-        
+
         return result_img
         
     except Exception as e:
@@ -799,6 +806,54 @@ def _normalize_channel_medians(img_array):
         result[:,:,2] = np.clip(img_array[:,:,2] * b_scale, 0, 1)
         app_logger.debug(f"  B scaled by {b_scale:.3f}")
     
+    return result
+
+
+def _apply_scnr(img_array, amount=0.5):
+    """
+    Subtractive Chromatic Noise Reduction — the standard astrophotography
+    technique for removing green cast from airglow and light pollution.
+
+    For each pixel, the green channel is clamped so it never exceeds the
+    "neutral" value (average of R and B).  The `amount` parameter blends
+    between the original green and the corrected green.
+
+    This is equivalent to PixInsight's SCNR Average Neutral protection.
+
+    Args:
+        img_array: float32 RGB array in 0-1 range, shape (H, W, 3)
+        amount: 0.0 = no correction, 1.0 = full SCNR
+
+    Returns:
+        Corrected float32 RGB array
+    """
+    amount = np.clip(amount, 0.0, 1.0)
+
+    r = img_array[:, :, 0]
+    g = img_array[:, :, 1]
+    b = img_array[:, :, 2]
+
+    # Neutral reference = average of R and B
+    neutral = (r + b) * 0.5
+
+    # Only correct where green exceeds neutral (preserves non-green areas)
+    corrected_g = np.minimum(g, neutral)
+
+    # Blend original ↔ corrected by amount
+    new_g = g * (1.0 - amount) + corrected_g * amount
+
+    # Measure correction for logging
+    green_excess = np.median(np.maximum(g - neutral, 0))
+    correction_pct = (1.0 - np.median(new_g) / (np.median(g) + 1e-10)) * 100
+
+    result = img_array.copy()
+    result[:, :, 1] = new_g
+
+    app_logger.debug(
+        f"SCNR: amount={amount:.0%}, green_excess={green_excess:.4f}, "
+        f"median_reduction={correction_pct:.1f}%"
+    )
+
     return result
 
 
