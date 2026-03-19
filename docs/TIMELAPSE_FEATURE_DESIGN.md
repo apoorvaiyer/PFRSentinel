@@ -13,8 +13,7 @@ from external software and may vary in size, format, and timing.
 
 Daily timelapse video generation built into the ZWO camera capture pipeline. Each captured frame
 is optionally written into a growing video file for the current session window. No intermediate
-frame files are stored — frames are piped directly into a long-running ffmpeg subprocess,
-the same pattern already proven in `services/rtsp_output.py`.
+frame files are stored — frames are piped directly into a long-running ffmpeg subprocess.
 
 At the end of each session window the video is finalized and a new one starts the next session.
 
@@ -87,8 +86,8 @@ panel_map = {
 
 ## ffmpeg — Optional External Tool, With In-App Install
 
-**ffmpeg is optional, the same way it already is for RTSP streaming.**
-Neither feature ships ffmpeg. Both require the user to install it separately.
+**ffmpeg is optional.**
+The application does not ship ffmpeg. The user must install it separately.
 
 ### `is_ffmpeg_available()` Already Exists
 
@@ -176,7 +175,6 @@ The naive approach — save every processed image, encode at the end — has rea
 A long-running `ffmpeg` subprocess reads raw frame bytes from its stdin pipe and writes a
 growing video file. ffmpeg encodes continuously — **no intermediate files at all**.
 
-- Same pattern as `RTSPStreamServer` in `services/rtsp_output.py` — just writing to a file instead of RTSP
 - Output is valid even if the process is killed mid-session (fragmented MP4 survives)
 - Final video: ~10–30 MB for a 12-hour night (H.264 CRF 23, 1080p)
 - No changes to existing cleanup.py — timelapse videos are small and stored separately
@@ -441,7 +439,6 @@ All files within the 500-line limit.
 | Resolution changes mid-session | Stop current ffmpeg (partial video valid), restart with new size |
 | App crashes mid-session | Fragmented MP4 playable up to last written GOP |
 | Location not set for sun mode | Warn in UI, fall back to fixed-time mode |
-| RTSP also running | Independent ffmpeg subprocesses — no conflict |
 | `include_overlays = True` + text cycling | Expected — tooltip in panel explains it |
 
 ---

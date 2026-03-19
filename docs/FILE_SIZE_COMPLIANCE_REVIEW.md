@@ -64,7 +64,7 @@ All other files are under 400 lines and well-structured. ✅
 - Lines 551-700: Directory watch operations
 - Lines 701-850: Overlay management
 - Lines 851-1000: Settings management
-- Lines 1001-1150: Output modes (Web/RTSP/Discord)
+- Lines 1001-1150: Output modes (Web/Discord)
 - Lines 1151-1303: Preview & utility methods
 
 **Root Cause**: Violates Single Responsibility Principle - handles ALL application business logic
@@ -130,7 +130,6 @@ All other files are under 400 lines and well-structured. ✅
 7. **NEW FILE: `gui/output_manager.py`** (~200-250 lines)
    - Extract output mode management:
      - Web server start/stop
-     - RTSP server start/stop
      - Output mode detection
      - `ensure_output_mode_started()` method
 

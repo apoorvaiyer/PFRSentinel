@@ -33,21 +33,14 @@ DEFAULT_CONFIG = {
     
     # Output mode settings
     "output": {
-        "mode": "file",  # "file" | "webserver" | "rtsp"
-        
+        "mode": "file",  # "file" | "webserver"
+
         # Webserver settings
         "webserver_enabled": False,
         "webserver_host": "127.0.0.1",
         "webserver_port": 8080,
         "webserver_path": "/latest",
-        "webserver_status_path": "/status",
-        
-        # RTSP settings
-        "rtsp_enabled": False,
-        "rtsp_host": "127.0.0.1",
-        "rtsp_port": 8554,
-        "rtsp_stream_name": "asiwatchdog",
-        "rtsp_fps": 1.0
+        "webserver_status_path": "/status"
     },
     
     # ZWO Camera settings
@@ -491,7 +484,7 @@ class Config:
 
         # Validate port ranges
         output = self.data.get('output', {})
-        for port_key in ['webserver_port', 'rtsp_port']:
+        for port_key in ['webserver_port']:
             port = output.get(port_key)
             if port is not None and not (1 <= port <= 65535):
                 warnings.append(f"Invalid {port_key}: {port} (must be 1-65535)")

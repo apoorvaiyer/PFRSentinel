@@ -17,7 +17,7 @@
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| **gui/output_manager.py** | 355 | Web/RTSP/Discord output management |
+| **gui/output_manager.py** | 355 | Web/Discord output management |
 | **gui/watch_controller.py** | 104 | Directory watch operations |
 | **gui/settings_manager.py** | 296 | Settings load/save/apply logic |
 | **gui/camera_controller.py** | 507 | Camera control (expanded with new methods) |
@@ -31,7 +31,6 @@
 **Extracted Business Logic:**
 - **Output Management** → `output_manager.py`
   - Web server (HTTP) start/stop/update
-  - RTSP server start/stop/update  
   - Discord webhook integration
   - Periodic Discord updates
   - Output mode UI state management
@@ -85,7 +84,6 @@ def save_config(self):
 **Manages all output modes:**
 - File output (save to directory)
 - Web server output (HTTP stream)
-- RTSP output (ffmpeg streaming)
 - Discord integration (webhooks, embeds, periodic posts)
 
 **Key Methods:**
@@ -162,7 +160,6 @@ main_window.py (1,303 lines)
   ├─ Output mode management
   ├─ Discord integration
   ├─ Web server management
-  ├─ RTSP server management
   └─ Overlay management
 ```
 
@@ -200,7 +197,6 @@ main_window.py (632 lines) - Orchestration only
 - [ ] Overlays apply correctly
 - [ ] Settings save/load correctly
 - [ ] Web server mode works
-- [ ] RTSP server mode works  
 - [ ] Discord webhooks work
 - [ ] Window geometry persists
 - [ ] All tabs accessible

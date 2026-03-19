@@ -1319,7 +1319,7 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
             save_image_atomic(processed_img, output_path, output_format.upper())
         
         # Return processed image and path for output mode handlers
-        # processed_img is returned so webserver/RTSP can use it without reloading
+        # processed_img is returned so webserver can use it without reloading
         return True, output_path, None, processed_img
     
     except Exception as e:

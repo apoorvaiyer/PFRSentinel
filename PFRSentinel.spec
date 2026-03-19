@@ -210,7 +210,7 @@ hiddenimports = [
     'services', 'services.config', 'services.logger', 'services.processor',
     'services.watcher', 'services.zwo_camera', 'services.camera_connection',
     'services.camera_calibration', 'services.camera_utils', 'services.cleanup',
-    'services.color_balance', 'services.web_output', 'services.rtsp_output',
+    'services.color_balance', 'services.web_output',
     'services.discord_alerts', 'services.headless_runner', 'services.weather',
     'services.ml_service', 'services.ascom_safety',
     'ui', 'ui.main_window', 'ui.theme', 'ui.components', 'ui.panels',

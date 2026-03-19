@@ -52,7 +52,6 @@ ASIOverlayWatchDog is a dual-mode astrophotography tool that:
 Processed images can be output via:
 - File system (traditional save)
 - HTTP server (`/latest` endpoint)
-- RTSP streaming (via ffmpeg)
 - Discord webhooks (periodic posts)
 
 ### Main Workflows
@@ -60,7 +59,7 @@ Processed images can be output via:
 - **Startup:** Load config → Initialize services → Create GUI → Start log polling
 - **Camera Capture:** Detect cameras → Connect → Start capture thread → Process frames → Apply overlays → Save/stream
 - **Directory Watch:** Start observer → Detect file creation → Wait for stability → Parse sidecar → Process → Save
-- **Output Distribution:** Process image → Push to file/webserver/RTSP → Optional Discord post
+- **Output Distribution:** Process image → Push to file/webserver → Optional Discord post
 
 ### Architecture Overview
 
@@ -93,15 +92,13 @@ Processed images can be output via:
 ┌───────────────────┐                    ┌──────────────────────────┐
 │services/          │                    │services/                 │
 │camera_calibration │                    │web_output.py (HTTP)      │
-│camera_utils.py    │                    │rtsp_output.py (ffmpeg)   │
-└───────────────────┘                    │discord_alerts.py         │
+│camera_utils.py    │                    │discord_alerts.py         │
                                          └──────────────────────────┘
 ```
 
 ### Assumptions / Unknowns
 
 - **Assumption:** Application runs on Windows 7+ with USB-connected ZWO cameras
-- **Assumption:** Users have ffmpeg installed and in PATH for RTSP mode
 - **Unknown:** Behavior under extended 24/7 operation (no stress test evidence)
 - **Unknown:** Memory behavior with very large images (>50MP sensors)
 - **Unverified:** Whether `zwoasi` package handles all ZWO camera models correctly
@@ -1322,7 +1319,6 @@ Current implementation is good - all long operations run in threads with `root.a
 | Weather API | No explicit TLS verify | Explicit `verify=True` |
 | Discord Webhook | No explicit TLS verify | Explicit `verify=True` |
 | Web Server | Binds to `0.0.0.0` | Add auth option, configurable bind |
-| RTSP | No auth | Document security implications |
 
 ### File I/O Safety
 

@@ -18,7 +18,6 @@ A modern astrophotography application with a Fluent Design UI (PySide6 + qfluent
 - **File Output**: Save processed images to disk
 - **Web Server**: HTTP server with `/latest` (image) and `/status` (JSON) endpoints
 - **Discord Integration**: Periodic image posts with weather data embeds
-- **RTSP Streaming**: Live H.264 stream via ffmpeg
 
 ### Processing
 - Auto-stretch (MAD-based histogram stretching)
@@ -43,7 +42,7 @@ Download `PFRSentinel_Setup.exe` from the `releases/` folder and run it.
 **Self-contained** - includes Python runtime, all dependencies, and ZWO ASI SDK.
 
 **Optional:**
-- **ffmpeg** - Only needed for RTSP streaming mode
+- **ffmpeg** - Needed for timelapse recording
 - **OpenWeatherMap API Key** - For weather data overlays
 
 ### Running from Source
@@ -66,7 +65,7 @@ python main.py
    - **ZWO Camera**: Click "Detect Cameras", configure exposure/gain
 
 2. **Configure Outputs** (Output page):
-   - Enable desired outputs (File, Web, Discord, RTSP)
+   - Enable desired outputs (File, Web, Discord)
    - Configure settings for each
 
 3. **Add Overlays** (Overlays page):
@@ -115,8 +114,7 @@ PFRSentinel/
 │   ├── zwo_camera.py          # ZWO ASI SDK wrapper
 │   ├── discord_alerts.py      # Discord webhook client
 │   ├── weather.py             # OpenWeatherMap integration
-│   ├── web_output.py          # HTTP server
-│   └── rtsp_output.py         # RTSP streaming
+│   └── web_output.py          # HTTP server
 ├── main.py                    # Application entry point
 ├── app_config.py              # App identity configuration
 └── version.py                 # Version info
@@ -150,7 +148,6 @@ Logs in `%APPDATA%\PFRSentinel\logs` (7-day rotation)
 ## Troubleshooting
 
 - **No cameras detected**: Verify USB connection, check SDK path in Capture page
-- **RTSP disabled**: Install ffmpeg and add to PATH
 - **Weather shows N/A**: Configure API key and location in settings
 - **Check logs**: Use Logs page or open `%APPDATA%\PFRSentinel\logs`
 

@@ -1,6 +1,6 @@
 """
 Shared ffmpeg and winget availability checks.
-Used by both timelapse and RTSP features.
+Used by the timelapse feature.
 """
 import glob
 import os

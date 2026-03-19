@@ -42,7 +42,7 @@ self.capture_thread = threading.Thread(target=self.capture_loop, daemon=True)
 thread = threading.Thread(target=self.process_file, args=(filepath,))
 thread.daemon = True
 
-# Web/RTSP server threads
+# Web server threads
 self.server_thread = threading.Thread(target=self._run_server, daemon=True)
 self.frame_thread = threading.Thread(target=self._frame_sender_loop, daemon=True)
 ```
@@ -58,8 +58,8 @@ self.frame_thread = threading.Thread(target=self._frame_sender_loop, daemon=True
 - **Idle**: ~3-5 threads (main + GUI + logger queue consumer)
 - **Camera capture**: +1 thread (capture loop)
 - **Directory watch**: +1-3 threads (watchdog observer + file processing)
-- **Output modes**: +2 threads max (web server + RTSP frame sender)
-- **Total maximum**: ~10-12 threads (very low, well within OS limits)
+- **Output modes**: +1 thread max (web server)
+- **Total maximum**: ~8-10 threads (very low, well within OS limits)
 
 #### No Issues Found ✅
 
@@ -300,17 +300,9 @@ class ImageHandler(FileSystemEventHandler):
 - **CORS enabled**: Cross-origin requests supported
 - **Error handling**: Client disconnects handled gracefully
 
-#### RTSP Server (rtsp_output.py):
-- **Frame throttling** (rtsp_output.py:145): `time.sleep(frame_interval)` prevents overrun
-- **Thread-safe frame buffer**: Lock protects frame writes
-- **Graceful ffmpeg cleanup**: Terminates process properly
-
 #### Bandwidth Usage:
 ```
 Web server: On-demand only (client pulls image)
-RTSP: Continuous at configured FPS (default 1 FPS)
-  - 1920×1080 @ 1 FPS ≈ 500 KB/s (H.264 compressed)
-  - 3856×2764 @ 1 FPS ≈ 2 MB/s (H.264 compressed)
 ```
 
 ✅ **Minimal overhead**: Only runs when explicitly enabled by user
@@ -421,7 +413,6 @@ class ImageHandler(FileSystemEventHandler):
 
 ### Network Usage:
 - **Web server**: 0 bytes/s (on-demand only)
-- **RTSP stream**: 0.5-2 MB/s (when enabled and client connected)
 - **Discord webhooks**: <1 KB per message (minimal)
 
 ### Disk Usage:

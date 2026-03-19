@@ -84,8 +84,7 @@ class FfmpegInstallCard(CardWidget):
         layout.addWidget(title)
 
         desc = BodyLabel(
-            "Timelapse recording requires ffmpeg — a free, open-source video encoder.\n"
-            "It is the same tool used by the RTSP streaming feature."
+            "Timelapse recording requires ffmpeg — a free, open-source video encoder."
         )
         desc.setWordWrap(True)
         desc.setStyleSheet(f"color: {Colors.text_secondary};")

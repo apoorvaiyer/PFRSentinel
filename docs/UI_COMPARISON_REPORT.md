@@ -14,7 +14,6 @@
 | Camera Capture | ✅ Full with callbacks | ⚠️ Basic - missing features | **NEEDS WORK** |
 | Discord Webhook Test | ✅ Full with status feedback | ❌ Not connected | **MISSING** |
 | Web Server Start/Stop | ✅ Full implementation | ❌ Not implemented | **MISSING** |
-| RTSP Server | ✅ Full implementation | ❌ Not implemented | **MISSING** |
 | Directory Watch | ✅ Full with callbacks | ⚠️ Basic | **NEEDS WORK** |
 | Config Loading | ✅ Full load_config() | ✅ load_from_config() | OK |
 | Output Mode Manager | ✅ Full OutputManager class | ❌ Not created | **MISSING** |
@@ -213,8 +212,6 @@ def _test_discord(self):
 |---------|-------------------|---------------|
 | Web Server Start | `_start_web_server()` with status feedback | ❌ Missing |
 | Web Server Stop | `stop_all_servers()` | ❌ Missing |
-| RTSP Server Start | `_start_rtsp_server()` with ffmpeg check | ❌ Missing |
-| RTSP Server Stop | `stop_all_servers()` | ❌ Missing |
 | Push to Servers | `push_to_output_servers(image_path, img)` | ❌ Missing |
 | Discord Periodic Posts | `schedule_discord_periodic()` | ❌ Missing |
 | Output Mode Toggle | `apply_output_mode()` | ❌ Missing |
@@ -225,11 +222,10 @@ def _test_discord(self):
 ```python
 """
 Output Manager for Qt UI
-Handles Web Server, RTSP, and Discord outputs
+Handles Web Server and Discord outputs
 """
 from PySide6.QtCore import QObject, Signal, QTimer
 from services.web_output import WebOutputServer
-from services.rtsp_output import RTSPStreamServer
 from services.discord_alerts import DiscordAlerts
 from services.logger import app_logger
 
@@ -247,7 +243,6 @@ class OutputManagerQt(QObject):
         self.config = main_window.config
         
         self.web_server = None
-        self.rtsp_server = None
         self.discord_alerts = None
         self._periodic_timer = None
     
@@ -272,18 +267,10 @@ class OutputManagerQt(QObject):
             self.web_server = None
             self.server_stopped.emit('web')
     
-    def start_rtsp_server(self):
-        """Start RTSP server (requires ffmpeg)"""
-        # Similar to web server
-        pass
-    
     def push_image(self, image_path, pil_image=None):
         """Push image to active servers"""
         if self.web_server and self.web_server.running:
             # Convert and push
-            pass
-        if self.rtsp_server and self.rtsp_server.running:
-            # Push frame
             pass
     
     def initialize_discord(self):
@@ -306,7 +293,7 @@ class OutputManagerQt(QObject):
 
 ### OLD UI `start_camera_capture()` Does:
 
-1. ✅ `ensure_output_mode_started()` - Start web/RTSP if configured
+1. ✅ `ensure_output_mode_started()` - Start web if configured
 2. ✅ Show "Connecting..." status
 3. ✅ Validate camera selection exists
 4. ✅ Create `CameraSettings` dataclass from all UI vars
@@ -355,10 +342,9 @@ class OutputManagerQt(QObject):
 | Config Key | Description | Used In OLD | Used In NEW |
 |------------|-------------|-------------|-------------|
 | `zwo_selected_camera_name` | Camera name for restore | ✅ | ❌ |
-| `output_mode` | file/webserver/rtsp | ✅ | ❌ |
+| `output_mode` | file/webserver | ✅ | ❌ |
 | `webserver_host` | Direct key | ✅ | Nested in `output` |
 | `webserver_port` | Direct key | ✅ | Nested in `output` |
-| `rtsp_*` | RTSP settings | ✅ | Nested in `output` |
 | `discord_enabled_var` | Tkinter var | ✅ (mapped) | ❌ |
 | `first_image_posted_to_discord` | State flag | ✅ | ❌ |
 
@@ -416,7 +402,6 @@ Note: Output panel has UI but no actual server start/stop logic connected.
 
 1. **`ui/controllers/output_manager.py`** (NEW FILE)
    - Web server start/stop
-   - RTSP server start/stop
    - Discord alerts initialization
    - Periodic Discord scheduling
    - Image push to servers
@@ -472,7 +457,6 @@ Note: Output panel has UI but no actual server start/stop logic connected.
 | `ZWOCamera` | `services/zwo_camera.py` | ✅ Full | ⚠️ Partial |
 | `FileWatcher` | `services/watcher.py` | ✅ Full | ⚠️ Partial |
 | `WebOutputServer` | `services/web_output.py` | ✅ Full | ❌ Not used |
-| `RTSPStreamServer` | `services/rtsp_output.py` | ✅ Full | ❌ Not used |
 | `DiscordAlerts` | `services/discord_alerts.py` | ✅ Full | ⚠️ Wrong usage |
 | `Config` | `services/config.py` | ✅ Full | ✅ Full |
 | `app_logger` | `services/logger.py` | ✅ Full | ✅ Full |

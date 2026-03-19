@@ -20,7 +20,7 @@ PFRSentinel/
 │   ├── panels/            # Main content pages
 │   │   ├── monitoring.py  # Monitoring page (real-time feed)
 │   │   ├── capture.py     # Capture settings page
-│   │   ├── output.py      # Output modes page (File/Web/Discord/RTSP)
+│   │   ├── output.py      # Output modes page (File/Web/Discord)
 │   │   ├── overlays.py    # Overlay editor page
 │   │   └── logs.py        # Log viewer page
 │   ├── controllers/       # Business logic controllers
@@ -42,8 +42,7 @@ PFRSentinel/
 │   ├── cleanup.py         # Disk space management
 │   ├── discord_alerts.py  # Discord webhook integration (NEW v3.1.1)
 │   ├── weather.py         # OpenWeatherMap API client (NEW v3.1.1)
-│   ├── web_output.py      # HTTP server with /latest and /status
-│   └── rtsp_output.py     # RTSP streaming via ffmpeg
+│   └── web_output.py      # HTTP server with /latest and /status
 ├── docs/                  # Documentation
 ├── archive/               # Legacy Tkinter GUI (archived in v3.1.1)
 │   ├── gui_tkinter/       # Old ttkbootstrap implementation
@@ -70,13 +69,12 @@ PFRSentinel/
 - **`services/cleanup.py`**: Disk space management - **NEVER deletes folders**, only files.
 
 ### Critical Data Flow Patterns
-1. **Directory Watch Mode**: `services/watcher.py` → detects file → waits for stability → reads sidecar → `services/processor.py` (file path) → processes with weather data → `_push_to_output_servers()` → outputs (file/web/discord/rtsp)
+1. **Directory Watch Mode**: `services/watcher.py` → detects file → waits for stability → reads sidecar → `services/processor.py` (file path) → processes with weather data → `_push_to_output_servers()` → outputs (file/web/discord)
 2. **Camera Capture Mode**: `services/zwo_camera.py` → captures RAW8 Bayer → debayer with OpenCV (BGGR pattern) → creates PIL Image + metadata dict → `ui/controllers/capture_controller.py` → `services/processor.py` (PIL Image) → processes → output servers
 3. **Output Server Push**: After processing, `_push_to_output_servers()` checks config for enabled outputs:
    - **File**: `processor.save_processed_image()` to output_directory
    - **Web**: `web_output.WebOutputServer.update_image(image_path, image_bytes, metadata, content_type)`
    - **Discord**: `discord_alerts.post_image()` with weather embed (periodic timer-based)
-   - **RTSP**: `rtsp_output.RTSPServer.update_frame()` for live streaming
 4. **Dual Input Pattern in processor.py**: 
    ```python
    def add_overlays(image_input, overlays, metadata):
@@ -96,7 +94,7 @@ PFRSentinel/
 - **Qt thread safety**: All GUI updates via Qt signals/slots or `QMetaObject.invokeMethod()`, never direct from worker threads
 - **Logger design**: Queue-based message passing (`logger.py`) to avoid race conditions
 - **Image counter**: Atomic increments via callback pattern from both watcher and camera threads
-- **Output servers**: Web server, RTSP server, Discord poster run in separate threads with proper shutdown handling
+- **Output servers**: Web server, Discord poster run in separate threads with proper shutdown handling
 
 ### ZWO Camera Integration
 - **Debayering**: RAW8 Bayer BGGR → RGB using `cv2.cvtColor(data, cv2.COLOR_BayerBG2RGB)` with fallback `simple_debayer_rggb()`. **CRITICAL**: ASI676MC uses BGGR pattern, NOT RGGB - using wrong pattern causes red/blue color swap!
@@ -116,7 +114,7 @@ PFRSentinel/
 - **Critical keys**: 
   - `capture_mode` ("watch" or "camera")
   - `window.geometry` (persisted on close)
-  - `output.webserver_enabled`, `output.discord_enabled`, `output.rtsp_enabled` (v3.1.1 nested structure)
+  - `output.webserver_enabled`, `output.discord_enabled` (v3.1.1 nested structure)
   - `discord.webhook_url`, `discord.post_interval` (NEW v3.1.1)
   - `weather.api_key`, `weather.location` (NEW v3.1.1)
   - Overlay token patterns, ZWO camera settings
@@ -217,7 +215,7 @@ python main.py
 4. Add timestamp corner (optional, top-right by default)
 5. Add all configured overlays with token replacement (including weather tokens)
 6. Convert to output format (PNG lossless or JPG with quality setting)
-7. Push to all enabled outputs (file/web/discord/rtsp) via `_push_to_output_servers()`
+7. Push to all enabled outputs (file/web/discord) via `_push_to_output_servers()`
 8. Update monitoring panel with preview and histogram
 
 ### Cleanup Strategy
@@ -235,11 +233,11 @@ python main.py
 - **`components/monitoring_panel.py`**: Live preview QLabel (400x400), RGB histogram QChart, mini-log QPlainTextEdit
 - **`panels/monitoring.py`**: Monitoring page - dedicated real-time feed view
 - **`panels/capture.py`**: Capture settings page - watch/camera mode selection, camera controls
-- **`panels/output.py`**: Output modes page - File/Web/Discord/RTSP cards with enable/disable buttons
+- **`panels/output.py`**: Output modes page - File/Web/Discord cards with enable/disable buttons
 - **`panels/overlays.py`**: Overlay editor page - list + editor split view
 - **`panels/logs.py`**: Log viewer page - searchable log display with filter/save
 - **`controllers/capture_controller.py`**: Business logic for watch/camera mode, starts/stops capture threads
-- **`controllers/output_controller.py`**: Manages output servers (web/discord/rtsp), handles start/stop/status
+- **`controllers/output_controller.py`**: Manages output servers (web/discord), handles start/stop/status
 - **`controllers/overlay_controller.py`**: CRUD operations for overlays, updates preview
 - **`theme/colors.py`**: Fluent Design color palette constants
 - **`theme/styles.py`**: QSS stylesheets for custom widget styling
@@ -251,7 +249,6 @@ python main.py
 - **`discord_alerts.py` (NEW v3.1.1)**: Discord webhook client, `post_image()` with embed, periodic posting thread
 - **`weather.py` (NEW v3.1.1)**: OpenWeatherMap API client, 10-minute caching, provides weather data for tokens
 - **`web_output.py`**: `WebOutputServer` with ImageHTTPHandler, `/latest` (image) and `/status` (JSON metadata) endpoints
-- **`rtsp_output.py`**: `RTSPServer` using ffmpeg for H.264 streaming at rtsp://127.0.0.1:8554/stream
 - **`config.py`**: JSON persistence in `%APPDATA%\PFRSentinel\config.json` with merge pattern
 - **`logger.py`**: Thread-safe queue-based logging singleton, logs in `%APPDATA%\PFRSentinel\logs`
 - **`cleanup.py`**: Disk space management (files only, never folders)
@@ -306,7 +303,7 @@ python main.py
 - **watchdog**: File system monitoring for directory watch mode
 - **numpy**: Array operations for image data
 - **requests**: HTTP client for weather API and Discord webhooks (NEW v3.1.1)
-- **ffmpeg** (optional): External binary for RTSP streaming, auto-detected by application
+- **ffmpeg** (optional): External binary for timelapse recording, auto-detected by application
 - **PyInstaller 6.17.0**: Packaging tool for standalone executable (requires manual email module workaround for Python 3.13)
 
 ## When Modifying Code

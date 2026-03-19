@@ -59,7 +59,7 @@ These remain accessible regardless of dev mode:
 - **RAW16 camera mode** - Full sensor bit depth capture (user feature)
 - **Auto stretch** - MTF-based dynamic range optimization
 - **Color balance** - Manual/auto white balance
-- **All output modes** - File/Web/Discord/RTSP
+- **All output modes** - File/Web/Discord
 - **Overlays** - Full overlay system with tokens
 - **Logging** - Normal application logs (not debug stats)
 

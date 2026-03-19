@@ -240,8 +240,6 @@ class TestConfigValidation:
         assert 'mode' in output
         assert 'webserver_host' in output
         assert 'webserver_port' in output
-        assert 'rtsp_host' in output
-        assert 'rtsp_port' in output
 
 
 class TestConfigValidateMethod:

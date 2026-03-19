@@ -55,25 +55,6 @@
 - [ ] Try /status endpoint (should show JSON)
 - [ ] Stop webserver
 
-#### RTSP Mode (Requires ffmpeg)
-- [ ] Verify ffmpeg installed: `ffmpeg -version` in PowerShell
-- [ ] Settings tab → Output Mode → RTSP Stream
-- [ ] Configure IP: 127.0.0.1, Port: 8554
-- [ ] Click "Apply" then "Start RTSP"
-- [ ] Verify green status: "Server Running"
-- [ ] Click "Copy URL" button
-- [ ] Open VLC Media Player → Media → Open Network Stream
-- [ ] Paste URL and play
-- [ ] Verify live H.264 stream displays
-- [ ] Stop RTSP server
-
-#### RTSP Without ffmpeg
-- [ ] Temporarily rename `ffmpeg.exe` to test detection
-- [ ] Restart application
-- [ ] Settings tab → Output Mode → RTSP Stream
-- [ ] Verify "Start RTSP" button is DISABLED
-- [ ] Hover over button - tooltip should say "ffmpeg not found"
-- [ ] Restore `ffmpeg.exe`
 
 ### 5. Overlay System
 - [ ] Overlay tab → Click "+" to add overlay
@@ -205,7 +186,6 @@
 ### 6. Output Modes (Executable)
 - [ ] Test File mode - verify saves work
 - [ ] Test Webserver mode - verify http://127.0.0.1:8080/latest works
-- [ ] Test RTSP mode (if ffmpeg in PATH) - verify VLC can play stream
 - [ ] Stop all servers
 
 ### 7. Command Line (Executable)
@@ -225,7 +205,6 @@
 ### 9. Resource Cleanup (Executable)
 - [ ] Start camera capture
 - [ ] Start webserver
-- [ ] Start RTSP server (if ffmpeg available)
 - [ ] Close application using window X button
 - [ ] Check Task Manager - no lingering processes
 - [ ] Verify all servers stopped (ports released)
@@ -307,9 +286,7 @@
 ### 3. Simultaneous Operations
 - [ ] Start camera capture
 - [ ] Enable webserver
-- [ ] Enable RTSP server
 - [ ] Open browser to webserver
-- [ ] Open VLC to RTSP stream
 - [ ] Verify all work simultaneously
 - [ ] Stop all
 

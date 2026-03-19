@@ -58,7 +58,6 @@ ASIOverlayWatchDog is now production-ready with comprehensive logging, robust er
 
 - **Added New Modules**
   - `services.web_output` (HTTP server)
-  - `services.rtsp_output` (RTSP streaming)
 
 - **Verified Settings**
   - `console=False` - Windowed application (no console popup)
@@ -111,7 +110,7 @@ ASIOverlayWatchDog is now production-ready with comprehensive logging, robust er
   - Project structure diagram
 
 - **Documented Features**
-  - All Output Modes (File, Webserver, RTSP)
+  - All Output Modes (File, Webserver)
   - Command line automation
   - 7-day rotating logs
   - Discord integration
@@ -131,7 +130,6 @@ ASIOverlayWatchDog is now production-ready with comprehensive logging, robust er
     - Watcher stop
     - Camera stop
     - Web server stop
-    - RTSP server stop
     - Discord job cancellation
     - File handler flush
 
@@ -150,7 +148,7 @@ ASIOverlayWatchDog is now production-ready with comprehensive logging, robust er
   1. Logger functionality
   2. Directory watch mode
   3. Camera capture mode
-  4. Output modes (File, Webserver, RTSP)
+  4. Output modes (File, Webserver)
   5. Overlay system
   6. Command line options
   7. Cleanup system
@@ -183,7 +181,6 @@ ASIOverlayWatchDog is now production-ready with comprehensive logging, robust er
 2025-01-15 14:32:15 - INFO - Camera capture started
 2025-01-15 14:32:16 - DEBUG - Auto exposure: target=100, current=45, adjusting...
 2025-01-15 14:32:17 - INFO - Image saved: output/session_001.jpg
-2025-01-15 14:32:18 - ERROR - Failed to connect to RTSP: ffmpeg not found
 ```
 
 ### Log Directory Structure
@@ -223,7 +220,7 @@ Logs written to: C:\Users\<username>\AppData\Roaming\ASIOverlayWatchDog\logs\
 - ✅ ZWO SDK (`ASICamera2.dll`) bundled automatically
 - ✅ All Python dependencies embedded by PyInstaller
 - ✅ Works on clean Windows machines (7+)
-- ❌ ffmpeg NOT bundled (optional, user installs for RTSP only)
+- ❌ ffmpeg NOT bundled (optional, user installs for timelapse only)
 
 ## Breaking Changes
 None - fully backward compatible. Old `config.json` files will work with merge pattern.
@@ -245,7 +242,6 @@ None - fully backward compatible. Old `config.json` files will work with merge p
 
 ## Known Limitations
 - Headless mode is experimental (requires `--auto-start`)
-- RTSP streaming requires ffmpeg in PATH
 - ZWO cameras only (no generic camera support)
 - Windows only (ZWO SDK limitation)
 

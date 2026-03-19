@@ -25,8 +25,7 @@ PFRSentinel/
 │   ├── cleanup.py              # Disk space management — NEVER deletes folders, only files
 │   ├── discord_alerts.py       # Discord webhook: periodic posts + event notifications
 │   ├── weather.py              # OpenWeatherMap API, 10-min cache
-│   ├── web_output.py           # HTTP server: /latest (image), /status (JSON)
-│   └── rtsp_output.py          # RTSP streaming via ffmpeg
+│   └── web_output.py           # HTTP server: /latest (image), /status (JSON)
 ├── docs/                       # Documentation
 ├── archive/                    # Legacy Tkinter GUI (do not modify)
 ├── installer/                  # Inno Setup packaging
@@ -40,10 +39,10 @@ PFRSentinel/
 ### Data Flow
 1. **Watch mode**: `watcher.py` → file stable → parse sidecar → `processor.py` (file path) → `_push_to_output_servers()`
 2. **Camera mode**: `zwo_camera.py` → RAW8 Bayer → debayer → PIL Image + metadata dict → `capture_controller.py` → `processor.py` (PIL Image) → outputs
-3. **Output push**: Checks config for enabled outputs → File / Web / Discord / RTSP
+3. **Output push**: Checks config for enabled outputs → File / Web / Discord
 
 ### Threading
-- Camera capture, directory watcher, Discord poster, web/RTSP servers all run in **background threads**
+- Camera capture, directory watcher, Discord poster, web server all run in **background threads**
 - **All GUI updates via Qt signals/slots or `QMetaObject.invokeMethod()`** — never direct from worker threads
 - Logger uses queue-based message passing to avoid race conditions
 
@@ -165,5 +164,5 @@ pytest -m "not requires_camera and not requires_network"
 | watchdog | Directory monitoring |
 | zwoasi | ZWO SDK Python wrapper |
 | requests | Weather API + Discord webhooks |
-| ffmpeg (external) | RTSP streaming |
+| ffmpeg (external) | Timelapse recording |
 | PyInstaller 6.17.0 | Standalone executable packaging |
