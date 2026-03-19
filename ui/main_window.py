@@ -525,7 +525,7 @@ class MainWindow(QMainWindow):
     
     def _handle_update_available(self, update_info: UpdateInfo):
         """Handle update available (must be called on main thread)."""
-        self._notify(f"Update available: v{update_info.version}")
+        self._notify(f"Update available: v{update_info.latest_version}")
         # Show badge on Settings nav button
         if hasattr(self, 'nav_rail'):
             self.nav_rail.set_badge('settings', True, "!")
