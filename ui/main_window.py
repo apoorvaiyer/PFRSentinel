@@ -72,6 +72,8 @@ class MainWindow(QMainWindow):
         self.is_capturing = False
         self.image_count = 0
         self.is_loading_config = False  # Prevent saves during load
+        self._cached_raw_image = None      # Last raw frame for instant reprocess
+        self._cached_raw_metadata = None
         
         # Service references (will be initialized later)
         self.camera_controller = None
@@ -266,6 +268,10 @@ class MainWindow(QMainWindow):
         self.overlay_panel.settings_changed.connect(self._on_settings_changed)
         self.timelapse_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
+
+        # Reprocess last frame instantly when image processing or overlay settings change
+        self.processing_panel.settings_changed.connect(self.reprocess_last_frame)
+        self.overlay_panel.settings_changed.connect(self.reprocess_last_frame)
         self.settings_panel.accent_changed.connect(self.set_accent_theme)
 
         # Processing time → live panel performance bar
@@ -1013,9 +1019,16 @@ class MainWindow(QMainWindow):
         self._update_service_status()
         
         # Live update camera settings if capturing (e.g., target brightness, auto-exposure)
-        # This allows changes to take effect on the next exposure without stop/start
+        # Debounced to avoid spamming SDK calls during slider drags
         if self.is_capturing and self.camera_controller:
-            self.camera_controller.update_settings()
+            if not hasattr(self, '_settings_update_timer'):
+                from PySide6.QtCore import QTimer
+                self._settings_update_timer = QTimer(self)
+                self._settings_update_timer.setSingleShot(True)
+                self._settings_update_timer.timeout.connect(
+                    self.camera_controller.update_settings
+                )
+            self._settings_update_timer.start(300)
         
         self.config_changed.emit()
     
@@ -1128,13 +1141,20 @@ class MainWindow(QMainWindow):
     
     def on_image_captured(self, pil_image, metadata: dict):
         """Handle new captured image from camera or watch mode
-        
+
         This receives RAW images and sends them to the image processor
         for auto-stretch, brightness, overlays, and saving.
         """
         self.image_count += 1
         self.app_bar.update_image_count(self.image_count)
-        
+
+        # Cache raw frame so image-processing settings changes can
+        # reprocess without waiting for the next exposure.
+        # The metadata dict is shallow-copied so processor pops don't
+        # remove keys from our cache (numpy arrays are shared, not duped).
+        self._cached_raw_image = pil_image.copy()
+        self._cached_raw_metadata = metadata.copy()
+
         # Show status based on whether auto-stretch is enabled
         config = self.config
         auto_stretch_enabled = config.get('auto_stretch', {}).get('enabled', False)
@@ -1142,12 +1162,49 @@ class MainWindow(QMainWindow):
             self.app_bar.set_status('stretching')
         else:
             self.app_bar.set_status('processing')
-        
+
         # Send to image processor for processing and saving
         self.image_processor.process_and_save(pil_image, metadata)
-        
+
         # Emit signal for other components
         self.image_captured.emit(pil_image)
+
+    def reprocess_last_frame(self):
+        """Reprocess the cached raw frame with current settings.
+
+        Called when image-processing or overlay settings change so the user
+        sees the effect immediately instead of waiting for the next exposure.
+        Debounced to 500ms so slider drags don't queue dozens of reprocesses.
+        """
+        if self._cached_raw_image is None:
+            return
+
+        # Debounce: restart the timer on every call, fire only once after 500ms idle
+        if not hasattr(self, '_reprocess_timer'):
+            from PySide6.QtCore import QTimer
+            self._reprocess_timer = QTimer(self)
+            self._reprocess_timer.setSingleShot(True)
+            self._reprocess_timer.timeout.connect(self._do_reprocess)
+        self._reprocess_timer.start(500)
+
+    def _do_reprocess(self):
+        """Actually reprocess the cached frame (called by debounce timer)."""
+        if self._cached_raw_image is None:
+            return
+
+        from services.logger import app_logger
+        app_logger.debug("Reprocessing last frame with updated settings")
+
+        auto_stretch_enabled = self.config.get('auto_stretch', {}).get('enabled', False)
+        if auto_stretch_enabled:
+            self.app_bar.set_status('stretching')
+        else:
+            self.app_bar.set_status('processing')
+
+        # Pass copies — processor will gather fresh config from UI automatically
+        self.image_processor.process_and_save(
+            self._cached_raw_image, self._cached_raw_metadata
+        )
     
     def _on_image_processed(self, processed_image, metadata: dict, output_path: str):
         """Handle processed image from image processor"""

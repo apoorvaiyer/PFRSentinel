@@ -68,7 +68,8 @@ class CameraCalibration:
         Returns:
             True if calibration successful, False otherwise
         """
-        self.log("Starting rapid calibration...")
+        self.log(f"Starting rapid calibration... (max_exposure={self.max_exposure_sec}s, "
+                 f"target_brightness={self.target_brightness}, gain={self.gain})")
 
         # Clear any prior abort signal so a fresh run can proceed
         self._abort.clear()

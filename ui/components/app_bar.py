@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QPixmap, QIcon
 from qfluentwidgets import (
     PushButton, ToolButton, PrimaryPushButton,
-    FluentIcon, ProgressBar, InfoBadge, CaptionLabel, Flyout
+    FluentIcon, InfoBadge, Flyout
 )
 from .status_sprite import StatusSpriteWidget
 
@@ -168,30 +168,6 @@ class AppBar(QFrame):
         count_vbox.addWidget(self.count_value)
         right_layout.addLayout(count_vbox)
         
-        # Exposure progress with countdown
-        progress_layout = QVBoxLayout()
-        progress_layout.setSpacing(2)
-
-        self.countdown_label = CaptionLabel("")
-        self.countdown_label.setStyleSheet(f"""
-            color: {Colors.text_secondary};
-            font-size: {Typography.size_small}px;
-        """)
-        self.countdown_label.setAlignment(Qt.AlignCenter)
-        self.countdown_label.setFixedWidth(100)
-        self.countdown_label.hide()
-        progress_layout.addWidget(self.countdown_label)
-
-        self.progress_bar = ProgressBar()
-        self.progress_bar.setFixedWidth(100)
-        self.progress_bar.setFixedHeight(6)
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.hide()
-        progress_layout.addWidget(self.progress_bar)
-
-        right_layout.addLayout(progress_layout)
-
         # Animated status sprite — visible during capture pipeline stages
         self.status_sprite = StatusSpriteWidget()
         self.status_sprite.hide()
@@ -271,18 +247,6 @@ class AppBar(QFrame):
     def update_image_count(self, count: int):
         """Update image counter display"""
         self.count_value.setText(str(count))
-    
-    def update_exposure_progress(self, total_sec: float, remaining_sec: float):
-        """Update exposure progress (forwarded to live monitoring panel)
-        
-        Note: This is now handled by the preview widget overlay.
-        This method exists for backward compatibility with update_status calls.
-        The actual progress display is in LiveMonitoringPanel.preview.
-        """
-        # Progress is now shown in preview overlay, not here
-        # If exposure complete, show capturing status
-        if remaining_sec <= 0:
-            self.set_status('capturing')
     
     def update_status(self, is_capturing: bool, image_count: int, camera_controller=None, live_panel=None):
         """Update all status displays
@@ -370,7 +334,6 @@ class AppBar(QFrame):
         if status:
             self.status_sprite.set_state(status)
             self.status_sprite.show()
-            self.countdown_label.hide()
         else:
             self.status_sprite.set_state(None)
             self.status_sprite.hide()

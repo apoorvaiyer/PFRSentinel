@@ -76,3 +76,4 @@ stacked_out/
 *.tmp
 *.temp
 ~*
+.claude/settings.local.json
