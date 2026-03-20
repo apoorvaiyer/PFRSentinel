@@ -350,10 +350,28 @@ class MainWindow(QMainWindow):
                 
                 num_cameras = asi.get_num_cameras()
                 app_logger.info(f"SDK reports {num_cameras} camera(s)")
-                
+
                 if num_cameras == 0:
-                    main_window.cameras_detected.emit([], "No cameras detected")
-                    return
+                    # SDK may be in a stale state from a previous session —
+                    # force a full re-init and retry once before giving up
+                    app_logger.warning("No cameras found, retrying with fresh SDK init...")
+                    try:
+                        # Force reimport to clear cached SDK state
+                        import importlib
+                        importlib.reload(asi)
+                        asi.init(sdk_path)
+                    except Exception as e:
+                        if "already" not in str(e).lower():
+                            app_logger.debug(f"SDK re-init note: {e}")
+
+                    import time
+                    time.sleep(1.0)
+                    num_cameras = asi.get_num_cameras()
+                    app_logger.info(f"SDK retry reports {num_cameras} camera(s)")
+
+                    if num_cameras == 0:
+                        main_window.cameras_detected.emit([], "No cameras detected")
+                        return
                 
                 for i in range(num_cameras):
                     try:
@@ -401,33 +419,53 @@ class MainWindow(QMainWindow):
             
             self.capture_panel.camera_combo.blockSignals(True)
             
+            # Strip any old "(Index: N)" suffix from saved name for clean matching
+            if '(Index:' in saved_name:
+                saved_name = saved_name.split('(Index:')[0].strip()
+                # Persist the cleaned name so we don't have to strip again
+                self.config.set('zwo_selected_camera_name', saved_name)
+
             if saved_name and cameras:
                 # Try to find camera by name (name is embedded in the combo text)
                 found = False
                 for i, cam in enumerate(cameras):
                     # cam format: "ZWO ASI676MC (Index: 2)"
-                    # saved_name could be full text or just camera name
-                    if saved_name in cam or cam.split(' (Index:')[0] in saved_name:
+                    cam_clean = cam.split(' (Index:')[0] if '(Index:' in cam else cam
+                    if saved_name == cam_clean:
                         self.capture_panel.camera_combo.setCurrentIndex(i)
-                        # Extract actual camera index from the string (e.g., "ZWO ASI676MC (Index: 1)" -> 1)
-                        # The combo box index i may differ from actual camera SDK index
-                        actual_index = i  # Default to combo index
+                        # Extract actual camera SDK index from the combo text
+                        actual_index = i
                         if '(Index: ' in cam:
                             try:
                                 actual_index = int(cam.split('(Index: ')[1].rstrip(')'))
                             except (IndexError, ValueError):
                                 pass
-                        # Update config with the actual camera index
                         self.config.set('zwo_selected_camera', actual_index)
-                        self.config.set('zwo_selected_camera_name', cam)
                         self.config.save()
-                        app_logger.info(f"Restored camera by name: {cam} (SDK Index: {actual_index})")
+                        app_logger.info(f"Restored camera by name: '{saved_name}' (SDK Index: {actual_index})")
                         found = True
                         break
-                
+
                 if not found:
                     app_logger.warning(f"Saved camera '{saved_name}' not found in detected cameras")
-            
+
+            if (not saved_name or not found) and cameras:
+                # No saved name (fresh install) or saved camera not found —
+                # auto-select the first detected camera so capture works immediately
+                cam = cameras[0]
+                cam_clean = cam.split(' (Index:')[0] if '(Index:' in cam else cam
+                actual_index = 0
+                if '(Index: ' in cam:
+                    try:
+                        actual_index = int(cam.split('(Index: ')[1].rstrip(')'))
+                    except (IndexError, ValueError):
+                        pass
+                self.capture_panel.camera_combo.setCurrentIndex(0)
+                self.config.set('zwo_selected_camera', actual_index)
+                self.config.set('zwo_selected_camera_name', cam_clean)
+                self.config.save()
+                app_logger.info(f"Auto-selected camera: '{cam_clean}' (SDK Index: {actual_index})")
+
             self.capture_panel.camera_combo.blockSignals(False)
     
     def _on_test_discord(self):

@@ -501,8 +501,10 @@ class CaptureSettingsPanel(QScrollArea):
                     actual_index = int(camera_name.split('(Index: ')[1].rstrip(')'))
                 except (IndexError, ValueError):
                     pass
+            # Always store clean camera name (without index suffix)
+            clean_name = camera_name.split('(Index:')[0].strip() if '(Index:' in camera_name else camera_name
             self.main_window.config.set('zwo_selected_camera', actual_index)
-            self.main_window.config.set('zwo_selected_camera_name', camera_name)
+            self.main_window.config.set('zwo_selected_camera_name', clean_name)
             self.settings_changed.emit()
     
     def _save_to_camera_profile(self, **kwargs):

@@ -124,6 +124,19 @@ class CameraControllerQt(QObject):
         if '(Index:' in camera_name:
             clean_name = camera_name.split('(Index:')[0].strip()
 
+        # If name is missing/default ('Unknown', empty), fall back to first camera
+        if not clean_name or clean_name == 'Unknown':
+            idx, name = fresh_cameras[0]
+            app_logger.warning(
+                f"No saved camera name — auto-selecting first camera: '{name}' at index {idx}"
+            )
+            self.config.set('zwo_selected_camera', idx)
+            self.config.set('zwo_selected_camera_name', name)
+            self.config.save()
+            camera_list = [f"{n} (Index: {i})" for i, n in fresh_cameras]
+            self.config.set('available_cameras', camera_list)
+            return idx
+
         # Try exact match by name
         for idx, name in fresh_cameras:
             if clean_name in name:
@@ -335,28 +348,37 @@ class CameraControllerQt(QObject):
         """Stop camera capture"""
         if not self.is_capturing:
             return
-        
+
         try:
-            # Update state immediately
+            # Update state immediately for responsive UI
             self.is_capturing = False
             self.is_connected = False
-            
-            # Stop capture using ZWOCamera's method (non-blocking)
-            if self.zwo_camera:
-                self.zwo_camera.stop_capture()
-                # Disconnect in background to avoid blocking UI
+
+            # Capture reference before clearing — the background thread
+            # needs the actual object, not self.zwo_camera which we null below
+            camera = self.zwo_camera
+            self.zwo_camera = None
+
+            if camera:
+                # Run stop + disconnect in background to avoid blocking UI.
+                # stop_capture() sets is_capturing=False and aborts the exposure,
+                # then join()s the capture thread. disconnect_camera() resets the
+                # hardware. Both can involve SDK calls that may block.
                 import threading
-                def disconnect():
+                def shutdown():
                     try:
-                        self.zwo_camera.disconnect_camera()
+                        camera.stop_capture()
+                    except Exception as e:
+                        app_logger.debug(f"Error stopping capture: {e}")
+                    try:
+                        camera.disconnect_camera()
                     except Exception as e:
                         app_logger.debug(f"Error disconnecting camera: {e}")
-                threading.Thread(target=disconnect, daemon=True).start()
-                self.zwo_camera = None
-            
+                threading.Thread(target=shutdown, daemon=True).start()
+
             self.capture_stopped.emit()
             app_logger.info("Camera capture stopped")
-            
+
         except Exception as e:
             app_logger.error(f"Error stopping capture: {e}")
     

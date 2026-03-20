@@ -407,10 +407,16 @@ class ZWOCamera:
             self.exposure_start_time = start_time
             
             while time.time() - start_time < timeout:
-                # Check if camera was disconnected during wait
+                # Check if capture was stopped or camera disconnected during wait
+                if not self.is_capturing:
+                    try:
+                        self.camera.stop_exposure()
+                    except Exception:
+                        pass
+                    raise Exception("Capture stopped during exposure")
                 if self.camera is None:
                     raise Exception("Camera disconnected during exposure")
-                
+
                 status = self.camera.get_exposure_status()
                 if status == self.asi.ASI_EXP_SUCCESS:
                     break
@@ -418,7 +424,7 @@ class ZWOCamera:
                     raise Exception("Exposure failed (camera returned ASI_EXP_FAILED status)")
                 elif status == self.asi.ASI_EXP_IDLE:
                     raise Exception("Exposure error: camera returned to IDLE state unexpectedly")
-                
+
                 # Update remaining time for UI
                 elapsed = time.time() - start_time
                 self.exposure_remaining = max(0, self.exposure_seconds - elapsed)
@@ -588,6 +594,11 @@ class ZWOCamera:
                                 except Exception as e:
                                     self.log(f"Error disconnecting camera: {e}")
                                     self.is_capturing = was_capturing  # Restore flag even on error
+
+                        # Sleep while outside window (interruptible for fast stop)
+                        wait_end = time.time() + 10.0
+                        while self.is_capturing and time.time() < wait_end:
+                            time.sleep(0.2)
                         continue
                     else:
                         # Within window - reconnect camera if needed
@@ -606,7 +617,9 @@ class ZWOCamera:
                                 if not self.reconnect_camera_safe():
                                     self.log("✗ ERROR: Failed to reconnect camera for scheduled window")
                                     self.log("Will retry in 5 seconds...")
-                                    time.sleep(5)  # Wait before retrying
+                                    wait_end = time.time() + 5.0
+                                    while self.is_capturing and time.time() < wait_end:
+                                        time.sleep(0.2)
                                     continue
                                 self.log("✓ Camera reconnected successfully for scheduled captures")
                     
@@ -691,9 +704,11 @@ class ZWOCamera:
                     except Exception:
                         pass  # Not all cameras/modes support dropped frame reporting
                     
-                    # Wait for next capture interval
-                    if self.is_capturing:  # Check again in case stopped during capture
-                        time.sleep(self.capture_interval)
+                    # Wait for next capture interval (interruptible)
+                    if self.is_capturing:
+                        wait_end = time.time() + self.capture_interval
+                        while self.is_capturing and time.time() < wait_end:
+                            time.sleep(0.2)
                 
                 except Exception as e:
                     consecutive_errors += 1
@@ -733,7 +748,9 @@ class ZWOCamera:
                                 # With multiple USB cameras the bus needs time to settle.
                                 # Also probe the camera before resuming to confirm it's live.
                                 self.log("Waiting 3s for USB bus to stabilise...")
-                                time.sleep(3.0)
+                                wait_end = time.time() + 3.0
+                                while self.is_capturing and time.time() < wait_end:
+                                    time.sleep(0.2)
                                 try:
                                     self.camera.get_camera_property()
                                 except Exception as probe_err:
@@ -748,7 +765,9 @@ class ZWOCamera:
                             # Exponential backoff: 2, 4, 8, 16, 32 seconds
                             backoff_time = min(2 ** consecutive_errors, 32)
                             self.log(f"Using exponential backoff: waiting {backoff_time}s before retry {consecutive_errors + 1}/{max_reconnect_attempts}...")
-                            time.sleep(backoff_time)
+                            wait_end = time.time() + backoff_time
+                            while self.is_capturing and time.time() < wait_end:
+                                time.sleep(0.2)
                     else:
                         # Max attempts reached - stop capture
                         self.log(f"✗ CRITICAL: Maximum reconnection attempts ({max_reconnect_attempts}) reached")
@@ -809,19 +828,27 @@ class ZWOCamera:
         # Abort any running calibration so its loop exits quickly
         if self.calibration_manager:
             self.calibration_manager.abort()
-        
-        # Wait briefly for capture thread to finish
+
+        # Abort any in-progress exposure so the poll loop exits immediately
+        if self.camera and self.exposure_start_time is not None:
+            try:
+                self.camera.stop_exposure()
+            except Exception:
+                pass
+
+        # Wait for capture thread — should exit quickly now that
+        # is_capturing is False and exposure is aborted
         if self.capture_thread and self.capture_thread.is_alive():
             self.log("Waiting for capture thread to finish...")
-            self.capture_thread.join(timeout=2.0)  # Reduced timeout for faster stop
-            
+            self.capture_thread.join(timeout=3.0)
+
             if self.capture_thread.is_alive():
                 self.log("Warning: Capture thread still running (will finish in background)")
             else:
                 self.log("Capture thread finished successfully")
-            
+
             self.capture_thread = None
-        
+
         self.log("Capture stopped")
     
     def set_exposure(self, seconds):
