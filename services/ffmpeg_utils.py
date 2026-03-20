@@ -6,6 +6,10 @@ import glob
 import os
 import shutil
 import subprocess
+import sys
+
+# Hide console windows for subprocess calls on Windows
+_POPEN_KWARGS = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
 
 
 def get_ffmpeg_path() -> str:
@@ -45,7 +49,7 @@ def is_ffmpeg_available() -> bool:
     """Check if ffmpeg is installed and runnable (PATH or winget packages folder)."""
     path = get_ffmpeg_path()
     try:
-        result = subprocess.run([path, '-version'], capture_output=True, timeout=5)
+        result = subprocess.run([path, '-version'], capture_output=True, timeout=5, **_POPEN_KWARGS)
         return result.returncode == 0
     except Exception:
         return False
@@ -54,7 +58,7 @@ def is_ffmpeg_available() -> bool:
 def is_winget_available() -> bool:
     """Check if winget (Windows Package Manager) is available."""
     try:
-        result = subprocess.run(['winget', '--version'], capture_output=True, timeout=5)
+        result = subprocess.run(['winget', '--version'], capture_output=True, timeout=5, **_POPEN_KWARGS)
         return result.returncode == 0
     except Exception:
         return False

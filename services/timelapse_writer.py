@@ -4,6 +4,7 @@ Pipes processed frames directly into a long-running ffmpeg subprocess,
 producing a standard MP4 with correct duration metadata.
 """
 import os
+import sys
 import subprocess
 import threading
 import time
@@ -172,11 +173,17 @@ class TimelapseWriter:
         )
 
         try:
+            # Hide the ffmpeg console window on Windows
+            kwargs = {}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+
             self._process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
+                **kwargs,
             )
             self._frame_size = frame_size
             self._session_date = now.date()

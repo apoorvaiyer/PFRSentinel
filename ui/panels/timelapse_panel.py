@@ -5,6 +5,7 @@ Includes in-app ffmpeg installation via winget.
 """
 import os
 import subprocess
+import sys
 import webbrowser
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea,
@@ -33,6 +34,11 @@ class WingetInstallWorker(QThread):
 
     def run(self):
         try:
+            # Hide console window on Windows
+            kwargs = {}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+
             result = subprocess.run(
                 [
                     'winget', 'install',
@@ -45,6 +51,7 @@ class WingetInstallWorker(QThread):
                 capture_output=True,
                 text=True,
                 timeout=180,
+                **kwargs,
             )
             if result.returncode == 0:
                 self.finished.emit(True, "ffmpeg installed successfully.")
