@@ -2,12 +2,17 @@
 Discord webhook integration for alerts and notifications
 """
 import os
+import io
 import json
 import time
 import requests
 from datetime import datetime
+from PIL import Image
 from .logger import app_logger
 from app_config import APP_DISPLAY_NAME
+
+# Max height for images posted to Discord periodic updates (reduces bandwidth)
+DISCORD_IMAGE_MAX_HEIGHT = 750
 
 
 def format_exposure_time(exp_seconds):
@@ -174,23 +179,44 @@ class DiscordAlerts:
             )
             
             if valid_image_path:
-                # Send with image attachment
-                app_logger.debug(f"Attaching image to Discord: {image_path}")
-                files = {
-                    "file": (os.path.basename(image_path), open(image_path, "rb"), "image/jpeg")
-                }
-                
-                # Add image reference to embed
-                embed["image"] = {"url": f"attachment://{os.path.basename(image_path)}"}
-                
-                response = self._post_with_retry(
-                    webhook_url,
-                    data={"payload_json": json.dumps(payload)},
-                    files=files,
-                    timeout=10
-                )
+                # Resize image to limit bandwidth — keep aspect ratio, cap height
+                img_buf = io.BytesIO()
+                try:
+                    with Image.open(image_path) as img:
+                        if img.height > DISCORD_IMAGE_MAX_HEIGHT:
+                            ratio = DISCORD_IMAGE_MAX_HEIGHT / img.height
+                            new_w = int(img.width * ratio)
+                            img_resized = img.resize(
+                                (new_w, DISCORD_IMAGE_MAX_HEIGHT), Image.LANCZOS
+                            )
+                        else:
+                            img_resized = img.copy()
+                        img_resized.save(img_buf, format="JPEG", quality=85)
+                except Exception as resize_err:
+                    app_logger.warning(f"Discord image resize failed, sending original: {resize_err}")
+                    img_buf = open(image_path, "rb")
 
-                files["file"][1].close()  # Close file handle
+                try:
+                    img_buf.seek(0)
+                    size_kb = img_buf.getbuffer().nbytes / 1024 if isinstance(img_buf, io.BytesIO) else os.path.getsize(image_path) / 1024
+                    app_logger.info(f"Discord image: {size_kb:.0f} KB ({os.path.basename(image_path)})")
+
+                    filename = os.path.splitext(os.path.basename(image_path))[0] + ".jpg"
+                    files = {
+                        "file": (filename, img_buf, "image/jpeg")
+                    }
+
+                    # Add image reference to embed
+                    embed["image"] = {"url": f"attachment://{filename}"}
+
+                    response = self._post_with_retry(
+                        webhook_url,
+                        data={"payload_json": json.dumps(payload)},
+                        files=files,
+                        timeout=10
+                    )
+                finally:
+                    img_buf.close()
             else:
                 # Send text-only message
                 if image_path:

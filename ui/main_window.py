@@ -1405,7 +1405,7 @@ class MainWindow(QMainWindow):
                     app_logger.info(f"Posting first image to Discord: {image_path}")
                 else:
                     # Check interval
-                    interval_minutes = discord_config.get('periodic_interval_minutes', 30)
+                    interval_minutes = max(30, discord_config.get('periodic_interval_minutes', 30))
                     
                     if not hasattr(self, 'last_discord_post_time'):
                         self.last_discord_post_time = None

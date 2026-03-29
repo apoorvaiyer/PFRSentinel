@@ -249,7 +249,10 @@ class ZWOCamera:
         }
         
         # Delegate connection to connection manager
-        success = self._connection.connect(camera_index, settings)
+        # Pass expected name so connect() can verify the SDK returned the right camera
+        success = self._connection.connect(
+            camera_index, settings, expected_camera_name=self.camera_name
+        )
         
         if success:
             # Sync camera_name and camera_index from connection manager
@@ -383,6 +386,8 @@ class ZWOCamera:
         if not self.camera:
             raise Exception("Camera not connected")
 
+        sdk_lock = self._connection.sdk_lock
+
         try:
             # Enforce max exposure limit as a safety net.
             # The auto-exposure algorithm should already clamp, but this catches
@@ -394,18 +399,23 @@ class ZWOCamera:
                 )
                 self.exposure_seconds = self.max_exposure
 
-            # Update exposure and gain
-            self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(self.exposure_seconds * 1000000))
-            self.camera.set_control_value(self.asi.ASI_GAIN, self.gain)
-            
-            # Capture frame
-            self.camera.start_exposure()
-            
-            # Wait for exposure to complete
+            # Hold SDK lock while sending commands to the camera.
+            # Released before the exposure wait loop so disconnect can proceed.
+            with sdk_lock:
+                if not self.camera:
+                    raise Exception("Camera disconnected before exposure")
+                # Update exposure and gain
+                self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(self.exposure_seconds * 1000000))
+                self.camera.set_control_value(self.asi.ASI_GAIN, self.gain)
+
+                # Capture frame
+                self.camera.start_exposure()
+
+            # Wait for exposure to complete (lock released so disconnect can run)
             timeout = self.exposure_seconds + 5.0
             start_time = time.time()
             self.exposure_start_time = start_time
-            
+
             while time.time() - start_time < timeout:
                 # Check if capture was stopped or camera disconnected during wait
                 if not self.is_capturing:
@@ -429,24 +439,28 @@ class ZWOCamera:
                 elapsed = time.time() - start_time
                 self.exposure_remaining = max(0, self.exposure_seconds - elapsed)
                 time.sleep(0.05)
-            
+
             # Check if we timed out
             if time.time() - start_time >= timeout:
                 self.exposure_remaining = 0.0
                 self.exposure_start_time = None
                 raise Exception(f"Exposure timeout: camera did not complete {self.exposure_seconds}s exposure within {timeout}s")
-            
+
             # Reset exposure tracking
             self.exposure_remaining = 0.0
             self.exposure_start_time = None
-            
-            # Get the image data
-            img_data = self.camera.get_data_after_exposure()
-            
-            # Get camera info
-            camera_info = self.camera.get_camera_property()
-            width = camera_info['MaxWidth']
-            height = camera_info['MaxHeight']
+
+            # Hold SDK lock while reading back frame data
+            with sdk_lock:
+                if not self.camera:
+                    raise Exception("Camera disconnected before data readout")
+                # Get the image data
+                img_data = self.camera.get_data_after_exposure()
+
+                # Get camera info
+                camera_info = self.camera.get_camera_property()
+                width = camera_info['MaxWidth']
+                height = camera_info['MaxHeight']
             
             # Get temperature
             temp_info = self._get_temperature()

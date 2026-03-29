@@ -54,6 +54,7 @@ class CameraConnection:
         
         # Thread safety
         self._cleanup_lock = threading.Lock()
+        self.sdk_lock = threading.Lock()  # Guards all SDK calls (capture vs disconnect race)
         
         # Callback for persisting camera name to config
         self.config_callback: Optional[Callable[[str, Any], None]] = None
@@ -242,14 +243,17 @@ class CameraConnection:
     # Camera Connection
     # =========================================================================
     
-    def connect(self, camera_index: int = 0, settings: Optional[Dict[str, Any]] = None) -> bool:
+    def connect(self, camera_index: int = 0, settings: Optional[Dict[str, Any]] = None,
+                expected_camera_name: Optional[str] = None) -> bool:
         """
         Connect to a specific camera.
-        
+
         Args:
             camera_index: Index of camera to connect to
             settings: Optional dict with camera settings (gain, exposure_sec, wb_r, wb_b, etc.)
-            
+            expected_camera_name: If provided, verify the opened camera matches this name.
+                Prevents connecting to the wrong physical camera when SDK indices shift.
+
         Returns:
             True if successful, False otherwise
         """
@@ -289,22 +293,41 @@ class CameraConnection:
                         raise
             
             camera_info = self.camera.get_camera_property()
-            
+            actual_name = camera_info['Name']
+
+            # Validate camera identity — if we expected a specific camera, make sure
+            # the SDK gave us the right one.  SDK indices can silently shift when
+            # cameras are hot-plugged, so this catches cross-wiring.
+            if expected_camera_name and expected_camera_name not in actual_name:
+                self.log(
+                    f"✗ Camera identity mismatch! Expected '{expected_camera_name}' "
+                    f"at index {camera_index}, but SDK returned '{actual_name}' "
+                    f"({camera_info['MaxWidth']}x{camera_info['MaxHeight']}, "
+                    f"{camera_info['PixelSize']}µm)"
+                )
+                self.log("  Closing wrong camera and failing connection.")
+                try:
+                    self.camera.close()
+                except Exception:
+                    pass
+                self.camera = None
+                return False
+
             # Store camera name for future reconnection
-            self.camera_name = camera_info['Name']
+            self.camera_name = actual_name
             self.camera_index = camera_index
-            
+
             # Save camera name to config for persistence across restarts
             if self.config_callback:
                 self.config_callback('zwo_selected_camera_name', self.camera_name)
                 self.log(f"Saved camera name to config: {self.camera_name}")
-            
+
             # Store camera capabilities for later access
             self.camera_info = camera_info
             self.supports_raw16 = 2 in camera_info.get('SupportedVideoFormat', [0])  # ASI_IMG_RAW16 = 2
             self.bit_depth = camera_info.get('BitDepth', 8)
-            
-            self.log(f"✓ Connected to camera: {camera_info['Name']}")
+
+            self.log(f"✓ Connected to camera: {actual_name}")
             self.log(f"  Camera ID: {camera_info.get('CameraID', 'N/A')}")
             self.log(f"  Max Resolution: {camera_info['MaxWidth']}x{camera_info['MaxHeight']}")
             self.log(f"  Pixel Size: {camera_info['PixelSize']} µm")
@@ -323,8 +346,10 @@ class CameraConnection:
             if settings:
                 self.configure(settings)
             else:
-                # CRITICAL: Always set ROI to full frame even without settings
-                # Without this, camera may use default ROI causing resolution mismatch
+                # Set ROI to full frame when no settings provided.
+                # The SDK can retain a stale ROI from a previous session (this process
+                # or another app).  Without an explicit set_roi(), captured data size
+                # won't match MaxWidth*MaxHeight, causing numpy reshape failures.
                 self.log("No settings provided - setting ROI to full frame (default)")
                 self.camera.set_roi(
                     start_x=0, start_y=0,
@@ -545,18 +570,18 @@ class CameraConnection:
         self.camera_index = target_index
         
         # Connect with settings (with SDK reset fallback on failure)
-        if self.connect(target_index, settings):
+        if self.connect(target_index, settings, expected_camera_name=camera_to_find):
             return True
-        
+
         self.log("⚠ Connection failed, attempting complete SDK reset...")
         if not self.reset_sdk_completely():
             return False
-        
+
         detected = self.detect_cameras()
         if not detected:
             self.log("✗ No cameras detected after SDK reset")
             return False
-        
+
         # Strict matching again after SDK reset
         if camera_to_find:
             target_index = self._find_camera_index_by_name(detected, camera_to_find)
@@ -568,9 +593,9 @@ class CameraConnection:
                     return False
         else:
             target_index = detected[0]['index']
-            
+
         self.camera_index = target_index
-        return self.connect(target_index, settings)
+        return self.connect(target_index, settings, expected_camera_name=camera_to_find)
     
     # =========================================================================
     # Camera Configuration
@@ -633,8 +658,9 @@ class CameraConnection:
             self.current_image_type = image_type
             self.current_bit_depth = 16 if use_raw16 else 8
             
-            # Set ROI to full frame
-            self.camera.set_roi(start_x=0, start_y=0, width=camera_info['MaxWidth'], 
+            # Set ROI to full frame — required on every connect because the SDK can
+            # retain a stale ROI from a prior session, causing reshape failures.
+            self.camera.set_roi(start_x=0, start_y=0, width=camera_info['MaxWidth'],
                                height=camera_info['MaxHeight'], bins=1, image_type=image_type)
             self.camera.set_image_type(image_type)
             
@@ -678,10 +704,13 @@ class CameraConnection:
     def disconnect(self, stop_exposure_callback: Optional[Callable[[], None]] = None) -> None:
         """
         Disconnect from camera gracefully (idempotent - safe to call multiple times).
-        
-        CRITICAL: Resets camera to factory defaults before closing to prevent SDK
-        contamination that causes other apps (like NINA) to see wrong camera properties.
-        
+
+        Stops any in-progress exposure and closes the camera handle.
+        camera.close() is sufficient cleanup — the SDK releases all state for the
+        handle.  Previously we reset ROI/controls before closing, but that raced
+        with the capture thread and could contaminate other cameras' SDK state when
+        multiple ZWO cameras share the same process.
+
         Args:
             stop_exposure_callback: Optional callback to stop any in-progress exposure
         """
@@ -689,9 +718,9 @@ class CameraConnection:
             if not self.camera:
                 self.log("Disconnect called but camera already disconnected")
                 return
-            
+
             self.log("=== Disconnecting Camera ===")
-            
+
             try:
                 # Call stop exposure callback if provided
                 if stop_exposure_callback:
@@ -699,76 +728,36 @@ class CameraConnection:
                         stop_exposure_callback()
                     except Exception as e:
                         self.log(f"Exposure stop callback error: {e}")
-                
-                # Stop any in-progress exposure before touching camera state.
-                # If the camera is mid-exposure or in ASI_EXP_FAILED, calls like
-                # set_roi() will fail. stop_exposure() returns it to idle first.
-                try:
-                    self.camera.stop_exposure()
-                except Exception:
-                    pass  # Ignore — camera may already be idle or not support this
 
-                # CRITICAL: Reset camera properties to factory defaults BEFORE closing
-                # This prevents SDK state contamination that affects other applications
-                try:
-                    self.log("Resetting camera to factory defaults...")
-                    camera_info = self.camera.get_camera_property()
-                    
-                    # Reset ROI to full frame (most important - prevents size errors)
-                    self.camera.set_roi(
-                        start_x=0, 
-                        start_y=0,
-                        width=camera_info['MaxWidth'],
-                        height=camera_info['MaxHeight'],
-                        bins=1,
-                        image_type=self.asi.ASI_IMG_RAW8
-                    )
-                    self.log(f"  ✓ ROI reset to full frame: {camera_info['MaxWidth']}x{camera_info['MaxHeight']}")
-                    
-                    # Reset common controls to safe defaults
+                # Acquire SDK lock so we don't race with capture_single_frame
+                with self.sdk_lock:
+                    # Stop any in-progress exposure before closing.
                     try:
-                        self.camera.set_control_value(self.asi.ASI_GAIN, 0)
-                        self.camera.set_control_value(self.asi.ASI_EXPOSURE, 100000)  # 100ms
-                        self.camera.set_control_value(self.asi.ASI_WB_R, 52)  # Factory default
-                        self.camera.set_control_value(self.asi.ASI_WB_B, 95)  # Factory default
-                        self.camera.set_control_value(self.asi.ASI_BRIGHTNESS, 50)  # Mid-range offset
-                        self.camera.set_control_value(self.asi.ASI_FLIP, 0)  # No flip
-                        self.camera.set_control_value(self.asi.ASI_AUTO_MAX_GAIN, 0)  # Disable auto
-                        self.camera.set_control_value(self.asi.ASI_AUTO_MAX_EXP, 0)  # Disable auto
-                        if hasattr(self.asi, 'ASI_AUTO_TARGET_BRIGHTNESS'):
-                            self.camera.set_control_value(self.asi.ASI_AUTO_TARGET_BRIGHTNESS, 100)
-                        self.log("  ✓ Camera controls reset to factory defaults")
-                    except Exception as e:
-                        self.log(f"  ⚠ Some controls could not be reset (camera may be monochrome): {e}")
-                    
-                except Exception as e:
-                    self.log(f"⚠ Warning: Could not reset camera properties: {e}")
-                    # Continue with disconnect even if reset fails
-                
-                # Close camera connection
-                try:
-                    self.log("Closing camera connection...")
-                    self.camera.close()
-                    self.log("✓ Camera disconnected successfully")
-                    
-                    # IMPORTANT: Add delay after close to ensure SDK fully releases USB device
-                    # Without this, rapid reconnection attempts can find device in bad state
+                        self.camera.stop_exposure()
+                    except Exception:
+                        pass  # Ignore — camera may already be idle
+
+                    # Close camera connection
                     try:
-                        time.sleep(0.5)
-                    except OSError:
-                        pass  # WinError 6: handle invalid during interpreter shutdown
-                    
-                except Exception as e:
-                    self.log(f"⚠ Warning during camera close: {e}")
-                    # If close fails, the device may be in a bad state
-                    # Consider USB reset as recovery option (Windows only)
-                    if self._usb_reset_available and self.camera_name:
-                        self.log("  Attempting USB reset due to close failure...")
+                        self.log("Closing camera connection...")
+                        self.camera.close()
+                        self.log("✓ Camera disconnected successfully")
+
+                        # Brief delay for SDK to fully release USB device
                         try:
-                            self._usb_reset_func(camera_name=self.camera_name, logger=self.log)
-                        except Exception as usb_err:
-                            self.log(f"  USB reset error: {usb_err}")
-                    
+                            time.sleep(0.5)
+                        except OSError:
+                            pass  # WinError 6: handle invalid during interpreter shutdown
+
+                    except Exception as e:
+                        self.log(f"⚠ Warning during camera close: {e}")
+                        if self._usb_reset_available and self.camera_name:
+                            self.log("  Attempting USB reset due to close failure...")
+                            try:
+                                self._usb_reset_func(camera_name=self.camera_name, logger=self.log)
+                            except Exception as usb_err:
+                                self.log(f"  USB reset error: {usb_err}")
+
             except Exception as e:
                 self.log(f"✗ ERROR during camera disconnect: {e}")
                 import traceback

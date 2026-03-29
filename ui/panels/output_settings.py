@@ -190,7 +190,7 @@ class OutputSettingsPanel(QScrollArea):
         periodic_layout.setSpacing(Spacing.input_gap)
         
         self.periodic_interval_spin = SpinBox()
-        self.periodic_interval_spin.setRange(1, 1440)
+        self.periodic_interval_spin.setRange(30, 1440)
         self.periodic_interval_spin.setValue(60)
         self.periodic_interval_spin.setSuffix(" min")
         self.periodic_interval_spin.valueChanged.connect(self._on_discord_settings_changed)
