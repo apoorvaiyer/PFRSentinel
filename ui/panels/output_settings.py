@@ -195,7 +195,14 @@ class OutputSettingsPanel(QScrollArea):
         self.periodic_interval_spin.setSuffix(" min")
         self.periodic_interval_spin.valueChanged.connect(self._on_discord_settings_changed)
         periodic_layout.addWidget(FormRow("Interval", self.periodic_interval_spin))
-        
+
+        self.periodic_jitter_label = CaptionLabel(
+            "A random offset of up to 5 minutes is applied each cycle to reduce network load"
+        )
+        self.periodic_jitter_label.setWordWrap(True)
+        self.periodic_jitter_label.setObjectName("hintLabel")
+        periodic_layout.addWidget(self.periodic_jitter_label)
+
         # Include image
         self.include_image_switch = SwitchRow("Include Latest Image", "Attach image to Discord posts")
         self.include_image_switch.set_checked(True)

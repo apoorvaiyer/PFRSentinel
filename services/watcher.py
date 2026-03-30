@@ -14,13 +14,17 @@ from .logger import app_logger
 
 class ImageFileHandler(FileSystemEventHandler):
     """Handler for image file events"""
-    
+
+    # Cooldown period: ignore repeated events for the same file within this window
+    RECENTLY_PROCESSED_COOLDOWN = 30  # seconds
+
     def __init__(self, config, on_image_processed=None, weather_service=None):
         super().__init__()  # Initialize parent class
         self.config = config
         self.on_image_processed = on_image_processed
         self.weather_service = weather_service
         self.processing = set()  # Track files being processed
+        self.recently_processed = {}  # filepath -> timestamp of last processing
         self.lock = threading.Lock()
         # Thread pool for concurrent file processing (REL-002 fix)
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="file_processor")
@@ -62,12 +66,33 @@ class ImageFileHandler(FileSystemEventHandler):
         
         return False
     
+    def _is_recently_processed(self, filepath):
+        """Check if file was processed within the cooldown window. Must be called under self.lock."""
+        last_time = self.recently_processed.get(filepath)
+        if last_time is None:
+            return False
+        return (time.time() - last_time) < self.RECENTLY_PROCESSED_COOLDOWN
+
+    def _prune_recently_processed(self):
+        """Remove stale entries from recently_processed. Must be called under self.lock."""
+        now = time.time()
+        stale = [fp for fp, ts in self.recently_processed.items()
+                 if (now - ts) >= self.RECENTLY_PROCESSED_COOLDOWN]
+        for fp in stale:
+            del self.recently_processed[fp]
+
     def process_file(self, filepath):
         """Process a single image file"""
         with self.lock:
             if filepath in self.processing:
                 return  # Already processing
+            if self._is_recently_processed(filepath):
+                app_logger.debug(f"Skipping recently processed file: {os.path.basename(filepath)}")
+                return
             self.processing.add(filepath)
+            # Periodically evict stale cooldown entries to prevent unbounded growth
+            if len(self.recently_processed) > 100:
+                self._prune_recently_processed()
         
         try:
             filename = os.path.basename(filepath)
@@ -85,11 +110,15 @@ class ImageFileHandler(FileSystemEventHandler):
             
             if success:
                 self.update_status(f"✓ Saved: {os.path.basename(output_path)}")
-                
+
+                # Record successful processing for cooldown dedup
+                with self.lock:
+                    self.recently_processed[filepath] = time.time()
+
                 # Notify callback with both path and image
                 if self.on_image_processed:
                     self.on_image_processed(output_path, processed_img)
-                
+
                 # Run cleanup if enabled
                 if self.config.get('cleanup_enabled', False):
                     cleanup_success, cleanup_msg = run_cleanup(self.config)
@@ -99,10 +128,10 @@ class ImageFileHandler(FileSystemEventHandler):
                         self.update_status(f"Cleanup error: {cleanup_msg}")
             else:
                 self.update_status(f"✗ Error processing {filename}: {error}")
-        
+
         except Exception as e:
             self.update_status(f"✗ Exception processing {filepath}: {e}")
-        
+
         finally:
             with self.lock:
                 self.processing.discard(filepath)
@@ -121,15 +150,15 @@ class ImageFileHandler(FileSystemEventHandler):
             self.executor.submit(self.process_file, filepath)
 
     def on_modified(self, event):
-        """Called when a file is modified - we'll also catch files here"""
-        # Some systems trigger modified instead of created
+        """Called when a file is modified - catches systems that trigger modified instead of created"""
         if event.is_directory:
             return
         filepath = event.src_path
         if self._is_supported(filepath):
             with self.lock:
-                if filepath not in self.processing:
-                    self.executor.submit(self.process_file, filepath)
+                if filepath in self.processing or self._is_recently_processed(filepath):
+                    return
+            self.executor.submit(self.process_file, filepath)
 
     def on_moved(self, event):
         """Called when a file is renamed/moved - catches atomic writes (temp -> final)"""
@@ -138,8 +167,9 @@ class ImageFileHandler(FileSystemEventHandler):
         filepath = event.dest_path
         if self._is_supported(filepath):
             with self.lock:
-                if filepath not in self.processing:
-                    self.executor.submit(self.process_file, filepath)
+                if filepath in self.processing or self._is_recently_processed(filepath):
+                    return
+            self.executor.submit(self.process_file, filepath)
 
 
     def shutdown(self):

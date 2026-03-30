@@ -15,6 +15,7 @@ from qfluentwidgets import (
 )
 
 import os
+import random
 import sys
 
 # Add parent directory for imports
@@ -1399,31 +1400,42 @@ class MainWindow(QMainWindow):
                 
                 if not hasattr(self, 'first_image_posted_to_discord'):
                     self.first_image_posted_to_discord = False
-                
+                if not hasattr(self, '_discord_jitter_seconds'):
+                    self._discord_jitter_seconds = 0
+
                 if not self.first_image_posted_to_discord:
                     should_post = True
                     app_logger.info(f"Posting first image to Discord: {image_path}")
                 else:
-                    # Check interval
+                    # Check interval with jitter to reduce network load
                     interval_minutes = max(30, discord_config.get('periodic_interval_minutes', 30))
-                    
+
                     if not hasattr(self, 'last_discord_post_time'):
                         self.last_discord_post_time = None
-                    
+
                     if self.last_discord_post_time is None:
                         should_post = True
                     else:
                         from datetime import datetime, timedelta
-                        elapsed = (datetime.now() - self.last_discord_post_time).total_seconds() / 60
-                        if elapsed >= interval_minutes:
+                        elapsed_seconds = (datetime.now() - self.last_discord_post_time).total_seconds()
+                        target_seconds = (interval_minutes * 60) - self._discord_jitter_seconds
+                        if elapsed_seconds >= target_seconds:
                             should_post = True
-                            app_logger.info(f"Posting periodic Discord update (interval: {interval_minutes}m)")
+                            actual_min = elapsed_seconds / 60
+                            app_logger.info(
+                                f"Posting periodic Discord update "
+                                f"(interval: {interval_minutes}m, jitter: -{self._discord_jitter_seconds}s, "
+                                f"actual: {actual_min:.1f}m)"
+                            )
                 
                 if should_post:
                     success = self._send_discord_periodic_update(image_path)
-                    # Mark first image as posted only after successful send
-                    if success and not self.first_image_posted_to_discord:
-                        self.first_image_posted_to_discord = True
+                    if success:
+                        if not self.first_image_posted_to_discord:
+                            self.first_image_posted_to_discord = True
+                        # Recalculate jitter for next cycle (0–300 seconds / 0–5 minutes)
+                        self._discord_jitter_seconds = random.randint(0, 300)
+                        app_logger.debug(f"Next Discord jitter: -{self._discord_jitter_seconds}s")
                 
         except Exception as e:
             app_logger.error(f"Error pushing to output servers: {e}")

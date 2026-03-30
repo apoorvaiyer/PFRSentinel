@@ -14,6 +14,9 @@ from app_config import APP_DISPLAY_NAME
 # Max height for images posted to Discord periodic updates (reduces bandwidth)
 DISCORD_IMAGE_MAX_HEIGHT = 750
 
+# Hard limit for Discord image uploads (1 MB)
+DISCORD_IMAGE_MAX_BYTES = 1 * 1024 * 1024
+
 
 def format_exposure_time(exp_seconds):
     """Format exposure time dynamically as ms/s/m based on value
@@ -198,8 +201,16 @@ class DiscordAlerts:
 
                 try:
                     img_buf.seek(0)
-                    size_kb = img_buf.getbuffer().nbytes / 1024 if isinstance(img_buf, io.BytesIO) else os.path.getsize(image_path) / 1024
+                    size_bytes = img_buf.getbuffer().nbytes if isinstance(img_buf, io.BytesIO) else os.path.getsize(image_path)
+                    size_kb = size_bytes / 1024
                     app_logger.info(f"Discord image: {size_kb:.0f} KB ({os.path.basename(image_path)})")
+
+                    if size_bytes > DISCORD_IMAGE_MAX_BYTES:
+                        size_mb = size_bytes / (1024 * 1024)
+                        msg = f"Discord image too large ({size_mb:.1f} MB > 1 MB limit), skipping upload"
+                        app_logger.warning(msg)
+                        self.last_send_status = f"Skipped: Image too large ({size_mb:.1f} MB)"
+                        return False  # finally block handles img_buf.close()
 
                     filename = os.path.splitext(os.path.basename(image_path))[0] + ".jpg"
                     files = {
