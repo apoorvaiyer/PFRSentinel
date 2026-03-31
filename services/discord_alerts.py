@@ -214,14 +214,16 @@ class DiscordAlerts:
                     size_kb = size_bytes / 1024
                     app_logger.info(f"Discord image: {size_kb:.0f} KB ({os.path.basename(image_path)})")
 
-                    _discord_image_stats = {
-                        'image_size_kb': round(size_kb, 1),
-                        'image_width': _sent_w,
-                        'image_height': _sent_h,
-                        'was_resized': _was_resized,
-                        'original_width': _original_w,
-                        'original_height': _original_h,
-                    }
+                    # Only track stats if image was actually opened successfully
+                    if _original_w > 0 and _original_h > 0:
+                        _discord_image_stats = {
+                            'image_size_kb': round(size_kb, 1),
+                            'image_width': _sent_w,
+                            'image_height': _sent_h,
+                            'was_resized': _was_resized,
+                            'original_width': _original_w,
+                            'original_height': _original_h,
+                        }
 
                     if size_bytes > DISCORD_IMAGE_MAX_BYTES:
                         size_mb = size_bytes / (1024 * 1024)
