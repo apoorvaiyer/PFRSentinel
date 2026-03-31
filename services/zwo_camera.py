@@ -325,28 +325,36 @@ class ZWOCamera:
             return False
         
         try:
-            # Update our setting
-            self.use_raw16 = enabled
-            
-            # Get camera info for ROI
-            camera_info = self.camera.get_camera_property()
-            width = camera_info['MaxWidth']
-            height = camera_info['MaxHeight']
-            
-            # Set new image type
-            image_type = self.asi.ASI_IMG_RAW16 if enabled else self.asi.ASI_IMG_RAW8
-            self.camera.set_roi(start_x=0, start_y=0, width=width, height=height, 
-                               bins=1, image_type=image_type)
-            self.camera.set_image_type(image_type)
-            
-            # Update connection manager state
-            self._connection.current_image_type = image_type
-            self._connection.current_bit_depth = 16 if enabled else 8
-            
-            # Update calibration manager bit depth
+            with self._connection.sdk_lock:
+                if not self.camera:
+                    raise Exception("Camera disconnected before RAW mode change")
+
+                # Verify we're talking to the right camera before writing settings
+                if not self._connection.verify_identity():
+                    raise Exception("Camera identity mismatch — aborting RAW mode change")
+
+                # Update our setting
+                self.use_raw16 = enabled
+
+                # Get camera info for ROI
+                camera_info = self.camera.get_camera_property()
+                width = camera_info['MaxWidth']
+                height = camera_info['MaxHeight']
+
+                # Set new image type
+                image_type = self.asi.ASI_IMG_RAW16 if enabled else self.asi.ASI_IMG_RAW8
+                self.camera.set_roi(start_x=0, start_y=0, width=width, height=height,
+                                    bins=1, image_type=image_type)
+                self.camera.set_image_type(image_type)
+
+                # Update connection manager state
+                self._connection.current_image_type = image_type
+                self._connection.current_bit_depth = 16 if enabled else 8
+
+            # Update calibration manager bit depth (outside lock — no SDK calls)
             if self.calibration_manager:
                 self.calibration_manager.bit_depth = self.current_bit_depth
-            
+
             mode_str = "RAW16" if enabled else "RAW8"
             self.log(f"Switched to {mode_str} mode ({self.current_bit_depth}-bit capture)")
             return True
