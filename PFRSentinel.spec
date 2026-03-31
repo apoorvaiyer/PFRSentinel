@@ -127,6 +127,22 @@ except Exception as e:
     print(f"[WARN] platformdirs: {e}")
     platformdirs_datas, platformdirs_binaries, platformdirs_hiddenimports = [], [], []
 
+# --- posthog (analytics) ---
+try:
+    posthog_datas, posthog_binaries, posthog_hiddenimports = collect_all('posthog')
+    print(f"[OK] posthog: {len(posthog_datas)} datas, {len(posthog_hiddenimports)} imports")
+except Exception as e:
+    print(f"[WARN] posthog: {e}")
+    posthog_datas, posthog_binaries, posthog_hiddenimports = [], [], []
+
+# --- backoff (posthog dependency) ---
+try:
+    backoff_datas, backoff_binaries, backoff_hiddenimports = collect_all('backoff')
+    print(f"[OK] backoff: {len(backoff_datas)} datas, {len(backoff_hiddenimports)} imports")
+except Exception as e:
+    print(f"[WARN] backoff: {e}")
+    backoff_datas, backoff_binaries, backoff_hiddenimports = [], [], []
+
 # --- onnxruntime (ML inference - lightweight, minimal collection) ---
 try:
     # Only collect onnxruntime core, not all the tools/transformers
@@ -226,7 +242,7 @@ hiddenimports = [
     # --- ML modules ---
     'ml', 'ml.roof_classifier', 'ml.sky_classifier',
     'onnxruntime',
-] + fluent_hiddenimports + requests_hiddenimports + jaraco_hiddenimports + pystray_hiddenimports + platformdirs_hiddenimports + onnx_hiddenimports
+] + fluent_hiddenimports + requests_hiddenimports + jaraco_hiddenimports + pystray_hiddenimports + platformdirs_hiddenimports + onnx_hiddenimports + posthog_hiddenimports + backoff_hiddenimports
 
 # ============================================================================
 # ANALYSIS
@@ -235,8 +251,8 @@ hiddenimports = [
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=fluent_binaries + requests_binaries + jaraco_binaries + pystray_binaries + platformdirs_binaries + onnx_binaries + xml_binaries,
-    datas=added_files + fluent_datas + requests_datas + jaraco_datas + pystray_datas + platformdirs_datas + onnx_datas,
+    binaries=fluent_binaries + requests_binaries + jaraco_binaries + pystray_binaries + platformdirs_binaries + onnx_binaries + xml_binaries + posthog_binaries + backoff_binaries,
+    datas=added_files + fluent_datas + requests_datas + jaraco_datas + pystray_datas + platformdirs_datas + onnx_datas + posthog_datas + backoff_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

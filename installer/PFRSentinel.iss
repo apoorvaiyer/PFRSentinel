@@ -87,6 +87,7 @@ begin
            'Anonymous usage analytics is enabled by default to help improve ' +
            'the app. No personal data is collected. You can disable this ' +
            'in Settings > System.';
+    WizardForm.FinishedLabel.Height := WizardForm.FinishedLabel.Height + ScaleY(40);
     WizardForm.FinishedLabel.Caption := Msg;
   end;
 end;
