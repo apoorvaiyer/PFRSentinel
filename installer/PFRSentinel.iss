@@ -82,12 +82,9 @@ begin
   if CurPageID = wpFinished then
   begin
     Msg := 'Setup has finished installing {#MyAppName} on your computer.' + #13#10 + #13#10 +
-           'User data is stored in:' + #13#10 +
-           ExpandConstant('{localappdata}\PFRSentinel\') + #13#10 + #13#10 +
            'Anonymous usage analytics is enabled by default to help improve ' +
            'the app. No personal data is collected. You can disable this ' +
            'in Settings > System.';
-    WizardForm.FinishedLabel.Height := WizardForm.FinishedLabel.Height + ScaleY(40);
     WizardForm.FinishedLabel.Caption := Msg;
   end;
 end;
