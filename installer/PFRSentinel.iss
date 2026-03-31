@@ -88,7 +88,6 @@ begin
            'the app. No personal data is collected. You can disable this ' +
            'in Settings > System.';
     WizardForm.FinishedLabel.Caption := Msg;
-    WizardForm.FinishedLabel.AdjustSize;
   end;
 end;
 
