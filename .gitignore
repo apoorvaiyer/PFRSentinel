@@ -72,6 +72,9 @@ noise_models/
 colorize_out/
 stacked_out/
 
+# Wiki (managed locally, pushed via scripts/wiki-push.sh)
+wiki/
+
 # Temporary Files
 *.tmp
 *.temp
