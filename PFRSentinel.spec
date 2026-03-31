@@ -185,6 +185,13 @@ hiddenimports = [
     # --- HTTP/Network ---
     'requests', 'urllib3', 'certifi', 'charset_normalizer', 'idna',
     'http.server', 'socketserver',
+
+    # --- Analytics (PostHog) ---
+    'posthog', 'posthog.client', 'posthog.consumer', 'posthog.request',
+    'posthog.version', 'posthog.exception_capture', 'posthog.exception_utils',
+    'posthog.feature_flags', 'posthog.poller', 'posthog.utils', 'posthog.types',
+    'posthog.contexts', 'posthog.args', 'posthog.flag_definition_cache',
+    'backoff', 'six', 'python_dateutil', 'dateutil', 'distro',
     
     # --- XML (Python 3.13 fix) ---
     'xml', 'xml.parsers', 'xml.parsers.expat',
@@ -212,7 +219,7 @@ hiddenimports = [
     'services.camera_calibration', 'services.camera_utils', 'services.cleanup',
     'services.color_balance', 'services.web_output',
     'services.discord_alerts', 'services.headless_runner', 'services.weather',
-    'services.ml_service', 'services.ascom_safety',
+    'services.ml_service', 'services.ascom_safety', 'services.posthog_service',
     'ui', 'ui.main_window', 'ui.theme', 'ui.components', 'ui.panels',
     'ui.controllers', 'ui.system_tray_qt',
     

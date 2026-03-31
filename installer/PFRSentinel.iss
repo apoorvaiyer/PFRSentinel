@@ -84,13 +84,11 @@ begin
     Msg := 'Setup has finished installing {#MyAppName} on your computer.' + #13#10 + #13#10 +
            'User data is stored in:' + #13#10 +
            ExpandConstant('{localappdata}\PFRSentinel\') + #13#10 + #13#10 +
-           '  - config.json (preserved during upgrades)' + #13#10 +
-           '  - Logs\ (rotated daily, kept for 7 days)' + #13#10 + #13#10 +
-           'Anonymous usage analytics is enabled by default to help ' +
-           'improve features and identify bugs sooner. No personal data ' +
-           'is collected. You can turn this off at any time in ' +
-           'Settings > System.';
+           'Anonymous usage analytics is enabled by default to help improve ' +
+           'the app. No personal data is collected. You can disable this ' +
+           'in Settings > System.';
     WizardForm.FinishedLabel.Caption := Msg;
+    WizardForm.FinishedLabel.AdjustSize;
   end;
 end;
 
