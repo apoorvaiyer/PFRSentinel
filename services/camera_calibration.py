@@ -78,7 +78,8 @@ class CameraCalibration:
         self.baseline_brightness = None
 
         # Track exposure/brightness pairs for interpolation
-        calibration_history = []
+        self.calibration_history = []
+        calibration_history = self.calibration_history
         previous_brightness = None
         stalled_count = 0  # Track consecutive attempts with no brightness change
 

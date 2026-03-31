@@ -181,23 +181,32 @@ class DiscordAlerts:
                 os.path.exists(image_path)
             )
             
+            # Track image stats for analytics
+            _discord_image_stats = None
+
             if valid_image_path:
                 # Resize image to limit bandwidth — keep aspect ratio, cap height
                 img_buf = io.BytesIO()
+                _was_resized = False
+                _original_w, _original_h = 0, 0
                 try:
                     with Image.open(image_path) as img:
+                        _original_w, _original_h = img.width, img.height
                         if img.height > DISCORD_IMAGE_MAX_HEIGHT:
                             ratio = DISCORD_IMAGE_MAX_HEIGHT / img.height
                             new_w = int(img.width * ratio)
                             img_resized = img.resize(
                                 (new_w, DISCORD_IMAGE_MAX_HEIGHT), Image.LANCZOS
                             )
+                            _was_resized = True
                         else:
                             img_resized = img.copy()
                         img_resized.save(img_buf, format="JPEG", quality=85)
+                        _sent_w, _sent_h = img_resized.width, img_resized.height
                 except Exception as resize_err:
                     app_logger.warning(f"Discord image resize failed, sending original: {resize_err}")
                     img_buf = open(image_path, "rb")
+                    _sent_w, _sent_h = _original_w, _original_h
 
                 try:
                     img_buf.seek(0)
@@ -205,11 +214,24 @@ class DiscordAlerts:
                     size_kb = size_bytes / 1024
                     app_logger.info(f"Discord image: {size_kb:.0f} KB ({os.path.basename(image_path)})")
 
+                    _discord_image_stats = {
+                        'image_size_kb': round(size_kb, 1),
+                        'image_width': _sent_w,
+                        'image_height': _sent_h,
+                        'was_resized': _was_resized,
+                        'original_width': _original_w,
+                        'original_height': _original_h,
+                    }
+
                     if size_bytes > DISCORD_IMAGE_MAX_BYTES:
                         size_mb = size_bytes / (1024 * 1024)
                         msg = f"Discord image too large ({size_mb:.1f} MB > 1 MB limit), skipping upload"
                         app_logger.warning(msg)
                         self.last_send_status = f"Skipped: Image too large ({size_mb:.1f} MB)"
+                        from .posthog_service import capture_event
+                        if _discord_image_stats:
+                            _discord_image_stats['skipped_too_large'] = True
+                            capture_event('discord_image_sent', _discord_image_stats)
                         return False  # finally block handles img_buf.close()
 
                     filename = os.path.splitext(os.path.basename(image_path))[0] + ".jpg"
@@ -247,6 +269,10 @@ class DiscordAlerts:
                 self.last_send_time = datetime.now()
                 self.last_send_status = f"Success (HTTP {response.status_code})"
                 app_logger.info(f"Discord alert sent: {title}")
+                if _discord_image_stats:
+                    from .posthog_service import capture_event
+                    _discord_image_stats['skipped_too_large'] = False
+                    capture_event('discord_image_sent', _discord_image_stats)
                 return True
             else:
                 error_msg = f"HTTP {response.status_code}"

@@ -107,7 +107,16 @@ class SettingsPanel(QScrollArea):
         self.tray_enabled_switch = tray_row.switch
         self.tray_enabled_switch.checkedChanged.connect(self._on_system_changed)
         system_card.add_widget(tray_row)
-        
+
+        # Analytics opt-out
+        analytics_row = SwitchRow(
+            "Send Anonymous Usage Data",
+            "Help improve PFR Sentinel by sharing anonymous feature usage and error reports"
+        )
+        self.analytics_switch = analytics_row.switch
+        self.analytics_switch.checkedChanged.connect(self._on_analytics_changed)
+        system_card.add_widget(analytics_row)
+
         layout.addWidget(system_card)
         
         # === DISCORD ALERTS (cross-reference) ===
@@ -289,12 +298,23 @@ class SettingsPanel(QScrollArea):
         if self.main_window and hasattr(self.main_window, 'config'):
             tray_enabled = self.tray_enabled_switch.isChecked()
             self.main_window.config.set('tray_mode_enabled', tray_enabled)
-            
+
             # Apply tray mode change immediately
             if hasattr(self.main_window, 'set_tray_mode'):
                 self.main_window.set_tray_mode(tray_enabled)
-            
+
             self.settings_changed.emit()
+
+    def _on_analytics_changed(self):
+        """Handle analytics opt-in/out toggle"""
+        if self._loading_config:
+            return
+        if self.main_window and hasattr(self.main_window, 'config'):
+            enabled = self.analytics_switch.isChecked()
+            self.main_window.config.set('analytics_enabled', enabled)
+            self.main_window.config.save()
+            from services.posthog_service import set_enabled
+            set_enabled(enabled)
     
     def _on_weather_changed(self):
         """Handle weather settings change"""
@@ -388,6 +408,7 @@ class SettingsPanel(QScrollArea):
 
             # System
             self.tray_enabled_switch.setChecked(config.get('tray_mode_enabled', False))
+            self.analytics_switch.setChecked(config.get('analytics_enabled', True))
             
             # Weather
             weather = config.get('weather', {})

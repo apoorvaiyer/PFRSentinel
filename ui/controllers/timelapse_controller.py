@@ -98,8 +98,25 @@ class TimelapseController(QObject):
             f"Timelapse: session finished — {frame_count} frames  {mins}m{secs:02d}s"
         )
 
+        import os
+        from services.posthog_service import capture_event
+        file_size_mb = None
+        try:
+            file_size_mb = round(os.path.getsize(path) / (1024 * 1024), 1)
+        except OSError:
+            pass
+
         discord_cfg = self._main_window.config.get('discord', {})
-        if not discord_cfg.get('enabled', False) or not discord_cfg.get('post_timelapse', False):
+        discord_delivery = discord_cfg.get('enabled', False) and discord_cfg.get('post_timelapse', False)
+
+        capture_event('timelapse_session_finished', {
+            'frame_count': frame_count,
+            'duration_seconds': elapsed_seconds,
+            'file_size_mb': file_size_mb,
+            'discord_delivery': discord_delivery,
+        })
+
+        if not discord_delivery:
             return
 
         app_logger.info("Timelapse: posting completed video to Discord")

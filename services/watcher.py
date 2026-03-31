@@ -131,6 +131,8 @@ class ImageFileHandler(FileSystemEventHandler):
 
         except Exception as e:
             self.update_status(f"✗ Exception processing {filepath}: {e}")
+            from .posthog_service import capture_error
+            capture_error(e, context='file_watcher')
 
         finally:
             with self.lock:

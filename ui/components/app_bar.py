@@ -225,6 +225,11 @@ class AppBar(QFrame):
     def _on_stop_clicked(self):
         self.stop_clicked.emit()
     
+    def set_start_enabled(self, enabled: bool, tooltip: str = ""):
+        """Enable or disable the Start Capture button with an optional tooltip."""
+        self.start_btn.setEnabled(enabled)
+        self.start_btn.setToolTip(tooltip)
+
     def set_capturing(self, capturing: bool):
         """Update button states for capturing mode"""
         self._is_capturing = capturing

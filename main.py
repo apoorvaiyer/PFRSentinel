@@ -25,6 +25,7 @@ from qfluentwidgets import SplashScreen, FluentIcon
 from ui.main_window import MainWindow
 from ui.theme import apply_theme
 from services.logger import app_logger
+from services.posthog_service import posthog, get_distinct_id, capture_event, is_enabled as posthog_enabled
 from version import __version__
 from app_config import APP_DISPLAY_NAME, APP_SUBTITLE
 
@@ -108,6 +109,17 @@ def main():
     
     app_logger.info(f"Starting {APP_DISPLAY_NAME} v{__version__} (PySide6 UI)")
     is_admin = _check_admin_privileges()
+    if posthog_enabled():
+        _did = get_distinct_id()
+        posthog.set_once(distinct_id=_did, properties={
+            'first_seen_version': __version__,
+            'os': 'Windows',
+        })
+        posthog.set(distinct_id=_did, properties={
+            'app_version': __version__,
+            'is_admin': is_admin,
+        })
+    capture_event('app_started', {'version': __version__, 'is_admin': is_admin})
     
     # Create main window (this takes time - splash stays visible)
     window = MainWindow()
@@ -180,7 +192,10 @@ def main():
         QTimer.singleShot(3000, _show_admin_warning)
     
     # Run event loop
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    capture_event('app_shutdown')
+    posthog.shutdown()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

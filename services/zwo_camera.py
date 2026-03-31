@@ -731,6 +731,9 @@ class ZWOCamera:
                     self.log(f"Consecutive errors: {consecutive_errors}/{max_reconnect_attempts}")
                     import traceback
                     self.log(f"Stack trace: {traceback.format_exc()}")
+
+                    from .posthog_service import capture_error
+                    capture_error(e, context='camera_capture_loop')
                     
                     # Notify error callback on first error (for Discord alerts etc.)
                     if consecutive_errors == 1 and hasattr(self, 'on_error_callback') and self.on_error_callback:
@@ -893,25 +896,41 @@ class ZWOCamera:
         """Rapid calibration to find optimal exposure before starting interval captures"""
         if not self.auto_exposure or not self.camera or not self.calibration_manager:
             return
-        
+
         self.log(f"Starting rapid auto-exposure calibration... "
                  f"(max_exposure={self.max_exposure}s, "
                  f"cal_max={self.calibration_manager.max_exposure_sec}s)")
         self.calibration_mode = True
-        
+
         # Notify UI that calibration is starting
         if self.on_calibration_callback:
             self.on_calibration_callback(True)
-        
+
         # Run calibration using the calibration manager
+        import time as _time
+        _cal_start = _time.time()
         success = self.calibration_manager.run_calibration(max_attempts=15)
-        
+        _cal_duration = _time.time() - _cal_start
+
         # Update our exposure from calibration manager
         self.exposure_seconds = self.calibration_manager.exposure_seconds
-        
+
         self.calibration_complete = True
         self.calibration_mode = False
-        
+
+        # PostHog: calibration results
+        from .posthog_service import capture_event
+        cal_history = getattr(self.calibration_manager, 'calibration_history', [])
+        capture_event('calibration_completed', {
+            'success': success,
+            'duration_seconds': round(_cal_duration, 1),
+            'attempts': len(cal_history) if cal_history else None,
+            'final_exposure_ms': round(self.exposure_seconds * 1000, 2),
+            'final_brightness': round(cal_history[-1][1], 1) if cal_history else None,
+            'target_brightness': self.calibration_manager.target_brightness,
+            'max_exposure_ms': round(self.max_exposure * 1000, 0),
+        })
+
         # Notify UI that calibration is complete
         if self.on_calibration_callback:
             self.on_calibration_callback(False)

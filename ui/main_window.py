@@ -468,7 +468,9 @@ class MainWindow(QMainWindow):
                 app_logger.info(f"Auto-selected camera: '{cam_clean}' (SDK Index: {actual_index})")
 
             self.capture_panel.camera_combo.blockSignals(False)
-    
+
+        self._update_start_button()
+
     def _on_test_discord(self):
         """Test Discord webhook"""
         # Get discord config from config
@@ -565,6 +567,11 @@ class MainWindow(QMainWindow):
     def _handle_update_available(self, update_info: UpdateInfo):
         """Handle update available (must be called on main thread)."""
         self._notify(f"Update available: v{update_info.latest_version}")
+        from services.posthog_service import capture_event
+        capture_event('update_available', {
+            'current_version': __version__,
+            'latest_version': update_info.latest_version,
+        })
         # Show badge on Settings nav button
         if hasattr(self, 'nav_rail'):
             self.nav_rail.set_badge('settings', True, "!")
@@ -739,6 +746,9 @@ class MainWindow(QMainWindow):
             self.config.save()
         
         app_logger.debug(f"Navigation: {section}")
+
+        from services.posthog_service import capture_event
+        capture_event('$pageview', {'$current_url': f'/app/{section}'})
     
     # =========================================================================
     # CAPTURE CONTROL
@@ -852,6 +862,23 @@ class MainWindow(QMainWindow):
         except Exception as e:
             app_logger.error(f"Failed to send Discord capture started notification: {e}")
     
+    def _update_start_button(self):
+        """Enable/disable Start Capture based on current mode and readiness."""
+        if self.is_capturing:
+            return
+        mode = self.config.get('capture_mode', 'camera')
+        if mode == 'camera':
+            cameras = self.config.get('available_cameras', [])
+            if not cameras:
+                self.app_bar.set_start_enabled(False, "No ZWO cameras detected — click Detect Cameras on the Capture tab")
+                return
+        else:
+            watch_dir = self.config.get('watch_directory', '')
+            if not watch_dir or not os.path.isdir(watch_dir):
+                self.app_bar.set_start_enabled(False, "Set a valid watch directory on the Capture tab")
+                return
+        self.app_bar.set_start_enabled(True)
+
     def start_capture(self):
         """Start capture (camera or watch mode)"""
         mode = self.config.get('capture_mode', 'camera')
@@ -874,6 +901,9 @@ class MainWindow(QMainWindow):
             self.app_bar.set_status('waiting')  # Show waiting status until first image
             self.capture_started.emit()
             self._notify(f"Capture started ({mode} mode)")
+
+            # PostHog: capture session config snapshot
+            self._send_posthog_capture_started(mode)
             
             # Faster status updates while capturing
             self.status_timer.setInterval(200)
@@ -920,12 +950,69 @@ class MainWindow(QMainWindow):
             # Reset camera chip to Ready (if cameras detected) or Idle
             self.app_bar.camera_chip.set_status('connected')
             self.app_bar.camera_chip.set_label('Ready')
-            
+
+            self._update_start_button()
+
             app_logger.info("Capture stopped")
-            
+
+            # PostHog: session summary
+            from services.posthog_service import capture_event
+            capture_event('capture_stopped', {
+                'mode': mode,
+                'images_processed': self.image_count,
+            })
+
         except Exception as e:
             app_logger.error(f"Error stopping capture: {e}")
     
+    def _send_posthog_capture_started(self, mode: str):
+        """Send a PostHog event with the full session config snapshot."""
+        try:
+            from services.posthog_service import capture_event
+            from version import __version__
+
+            output_cfg = self.config.get('output', {})
+            discord_cfg = self.config.get('discord', {})
+            timelapse_cfg = self.config.get('timelapse', {})
+            ml_cfg = self.config.get('ml_models', {})
+            rtsp_cfg = self.config.get('rtsp', {})
+
+            props = {
+                'version': __version__,
+                'mode': mode,
+                # Camera
+                'camera_name': self.config.get('zwo_selected_camera_name', '') if mode == 'camera' else None,
+                'auto_exposure': self.config.get('zwo_auto_exposure', False) if mode == 'camera' else None,
+                # Outputs
+                'output_file_enabled': True,
+                'output_format': self.config.get('output_format', 'jpg'),
+                'output_web_enabled': output_cfg.get('webserver_enabled', False),
+                'output_discord_enabled': discord_cfg.get('enabled', False),
+                'output_discord_interval_min': discord_cfg.get('periodic_interval_minutes', 30) if discord_cfg.get('periodic_enabled') else None,
+                'output_rtsp_enabled': rtsp_cfg.get('enabled', False),
+                # Features
+                'weather_enabled': self.weather_service is not None,
+                'timelapse_enabled': timelapse_cfg.get('enabled', False),
+                'ml_enabled': ml_cfg.get('enabled', False),
+                'overlay_count': len(self.config.get('overlays', [])),
+                'auto_stretch_enabled': self.config.get('auto_stretch', {}).get('enabled', False),
+                'scheduled_capture': self.config.get('scheduled_capture_enabled', False),
+            }
+
+            # Extract which overlay tokens are in use across all overlays
+            import re
+            overlays = self.config.get('overlays', [])
+            tokens_used = set()
+            for ov in overlays:
+                tokens_used.update(t.upper() for t in re.findall(r'\{([^}]+)\}', ov.get('text', '')))
+            if tokens_used:
+                props['overlay_tokens'] = sorted(tokens_used)
+            # Strip None values for cleaner events
+            props = {k: v for k, v in props.items() if v is not None}
+            capture_event('capture_started', props)
+        except Exception:
+            pass
+
     def _start_camera_capture(self):
         """Initialize and start camera capture"""
         # Import here to avoid circular imports
@@ -1042,7 +1129,7 @@ class MainWindow(QMainWindow):
         self.save_config()
         
         # Re-init weather service in case weather config changed
-        self._init_weather_service()
+        self._init_weather_service(from_settings_save=True)
         
         # Update ML display in live panel if ML settings changed
         ml_config = self.config.get('ml_models', {})
@@ -1051,6 +1138,9 @@ class MainWindow(QMainWindow):
         
         # Update status chips based on new settings
         self._update_service_status()
+
+        # Enable/disable Start button based on mode readiness
+        self._update_start_button()
         
         # Live update camera settings if capturing (e.g., target brightness, auto-exposure)
         # Debounced to avoid spamming SDK calls during slider drags
@@ -1124,8 +1214,9 @@ class MainWindow(QMainWindow):
             app_logger.error(f"Failed to load config: {e}")
         finally:
             self.is_loading_config = False
+            self._update_start_button()
     
-    def _init_weather_service(self):
+    def _init_weather_service(self, from_settings_save=False):
         """Initialize weather service from config"""
         try:
             from services.weather import WeatherService
@@ -1149,6 +1240,9 @@ class MainWindow(QMainWindow):
                 )
                 loc_info = f"({latitude}, {longitude})" if has_coords else location
                 app_logger.info(f"Weather service initialized: {loc_info}, {units} units")
+                if from_settings_save:
+                    from services.posthog_service import capture_event
+                    capture_event('weather_configured', {'units': units})
             else:
                 self.weather_service = None
                 app_logger.debug("Weather service not configured (missing API key or location/coordinates)")
@@ -1491,6 +1585,11 @@ class MainWindow(QMainWindow):
             if success:
                 self.last_discord_post_time = datetime.now()
                 app_logger.info("Discord update sent successfully")
+                from services.posthog_service import capture_event
+                capture_event('discord_post_sent', {
+                    'interval_minutes': discord_config.get('periodic_interval_minutes', 30),
+                    'include_image': include_image,
+                })
                 return True
             else:
                 app_logger.warning(f"Discord update failed: {alerts.last_send_status}")

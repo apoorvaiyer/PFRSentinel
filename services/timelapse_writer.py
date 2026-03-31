@@ -191,6 +191,19 @@ class TimelapseWriter:
             self._session_path = output_path
             self._frame_count = 0
 
+            from .posthog_service import capture_event
+            _res_labels = {0: 'native', 1920: '1920p', 1440: '1440p', 1280: '1280p', 720: '720p'}
+            _quality_labels = {28: 'low', 23: 'medium', 18: 'high', 12: 'maximum'}
+            capture_event('timelapse_recording_started', {
+                'window_mode': self._config.get('window_mode', 'sun'),
+                'playback_fps': fps,
+                'output_resolution': _res_labels.get(self._config.get('output_max_dim', 0), 'native'),
+                'video_quality': _quality_labels.get(crf, 'medium'),
+                'include_overlays': self._config.get('include_overlays', False),
+                'frame_width': frame_size[0],
+                'frame_height': frame_size[1],
+            })
+
             # Drain stderr in a background thread so it never blocks ffmpeg.
             # Filter out per-frame progress lines (frame=...) which ffmpeg emits
             # every ~0.5s — over an 11-hour session that's ~80k lines of log bloat.

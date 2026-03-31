@@ -94,6 +94,9 @@ DEFAULT_CONFIG = {
         "gray_world_high_pct": 95
     },
     
+    # Analytics (PostHog)
+    "analytics_enabled": True,  # Send anonymous usage data (opt-out via Settings > System)
+
     "auto_brightness": False,  # Automatically adjust brightness
     "brightness_factor": 1.0,  # Brightness multiplier (0.5 to 2.0, 1.0 = neutral)
     "saturation_factor": 1.0,  # Saturation multiplier (0.0 to 2.0, 1.0 = neutral)

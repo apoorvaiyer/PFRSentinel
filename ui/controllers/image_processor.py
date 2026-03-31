@@ -74,6 +74,8 @@ class ImageProcessorWorker(QThread):
             except Exception as e:
                 app_logger.error(f"Processing worker error: {e}")
                 app_logger.error(traceback.format_exc())
+                from services.posthog_service import capture_error
+                capture_error(e, context='image_processor_worker')
         
         app_logger.debug("Image processing worker stopped")
     
@@ -310,6 +312,8 @@ class ImageProcessorWorker(QThread):
         except Exception as e:
             app_logger.error(f"Image processing failed: {e}")
             app_logger.error(traceback.format_exc())
+            from services.posthog_service import capture_error
+            capture_error(e, context='image_processing')
             self.error_occurred.emit(str(e))
 
 

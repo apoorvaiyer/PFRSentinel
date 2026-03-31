@@ -342,6 +342,8 @@ class CameraControllerQt(QObject):
             app_logger.error(f"Failed to start capture: {e}")
             import traceback
             app_logger.debug(f"Stack trace: {traceback.format_exc()}")
+            from services.posthog_service import capture_error
+            capture_error(e, context='camera_start')
             return  # Prevent any further execution
     
     def stop_capture(self):
