@@ -611,6 +611,26 @@ class CameraConnection:
             return validated, ctrl
         return value, None
 
+    def verify_identity(self) -> bool:
+        """
+        Verify the open camera handle still points to the expected physical camera.
+        Returns True if identity matches, False if mismatch or no camera.
+        """
+        if not self.camera or not self.camera_name:
+            return False
+        try:
+            actual_name = self.camera.get_camera_property()['Name']
+            if self.camera_name not in actual_name:
+                self.log(
+                    f"✗ Camera identity MISMATCH: expected '{self.camera_name}', "
+                    f"SDK returned '{actual_name}'. Refusing operation."
+                )
+                return False
+            return True
+        except Exception as e:
+            self.log(f"✗ Camera identity check failed: {e}")
+            return False
+
     def configure(self, settings: Dict[str, Any]) -> None:
         """Configure camera settings."""
         if not self.camera:
@@ -618,8 +638,12 @@ class CameraConnection:
             return
         
         self.log("Configuring camera settings...")
-        
+
         try:
+            if not self.verify_identity():
+                self.log("Aborting configure — camera identity mismatch")
+                return
+
             camera_info = self.camera.get_camera_property()
             controls = self.camera.get_controls()
             
