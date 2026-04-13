@@ -147,6 +147,51 @@ def seeing_label(fwhm):
     return "N/A"
 
 
+def should_run_star_detection(config, metadata):
+    """Return True only if conditions are suitable for star detection.
+
+    Primary gate: sun must be below civil twilight (-6°). Requires
+    weather.latitude and weather.longitude to be configured.
+
+    Secondary gate: if ML is enabled and roof is predicted Closed, skip.
+
+    Falls through (returns True) if location is not configured or astral
+    is unavailable, so the feature degrades gracefully.
+    """
+    # Primary gate: sun elevation check
+    weather_cfg = config.get('weather', {})
+    lat = weather_cfg.get('latitude', '')
+    lon = weather_cfg.get('longitude', '')
+
+    if lat and lon:
+        try:
+            from astral import LocationInfo
+            from astral.sun import elevation
+            from datetime import datetime, timezone
+
+            loc = LocationInfo(latitude=float(lat), longitude=float(lon))
+            sun_alt = elevation(loc.observer, dateandtime=datetime.now(tz=timezone.utc))
+            if sun_alt > -6.0:
+                app_logger.debug(
+                    f"Star detection suppressed: sun elevation {sun_alt:.1f}° "
+                    f"(above civil twilight -6°)"
+                )
+                return False
+        except Exception as e:
+            app_logger.debug(f"Sun elevation check failed, allowing star detection: {e}")
+
+    # Secondary gate: ML roof status (only checked when ML is enabled)
+    ml_config = config.get('ml_models', {})
+    if ml_config.get('enabled', False):
+        # ROOF_STATUS token is formatted as "Open (95%)" / "Closed (98%)" or raw "Open"/"Closed"
+        roof_status = metadata.get('ROOF_STATUS', 'N/A')
+        if roof_status.startswith('Closed'):
+            app_logger.debug(f"Star detection suppressed: ML roof status '{roof_status}'")
+            return False
+
+    return True
+
+
 def analyze_stars(image):
     """Run full star analysis: detection + FWHM + seeing label.
 

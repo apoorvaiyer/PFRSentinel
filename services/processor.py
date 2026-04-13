@@ -1220,12 +1220,15 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
             except Exception as e:
                 app_logger.debug(f"ML prediction skipped: {e}")
 
-        # Star detection tokens
+        # Star detection tokens (gated: sun below civil twilight, and roof open if ML enabled)
         try:
-            from .star_detection import analyze_stars
-            src_img = Image.open(image_path) if isinstance(image_path, str) else image_path
-            star_tokens = analyze_stars(np.array(src_img.convert('RGB')))
-            metadata.update(star_tokens)
+            from .star_detection import analyze_stars, should_run_star_detection
+            if should_run_star_detection(config, metadata):
+                src_img = Image.open(image_path) if isinstance(image_path, str) else image_path
+                star_tokens = analyze_stars(np.array(src_img.convert('RGB')))
+                metadata.update(star_tokens)
+            else:
+                metadata.update({'STAR_COUNT': 'N/A', 'FWHM': 'N/A', 'SEEING': 'N/A'})
         except Exception as e:
             app_logger.debug(f"Star detection skipped: {e}")
 
