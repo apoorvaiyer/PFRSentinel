@@ -27,7 +27,7 @@ def _section_card(title: str) -> tuple:
     card = CardWidget()
     card.setStyleSheet(f"CardWidget {{ border-radius: {Layout.radius_md}px; }}")
     vl = QVBoxLayout(card)
-    vl.setContentsMargins(Spacing.base, Spacing.base, Spacing.base, Spacing.base)
+    vl.setContentsMargins(Spacing.base, Spacing.base, Spacing.base, Spacing.lg)
     vl.setSpacing(Spacing.sm)
 
     lbl = SubtitleLabel(title)

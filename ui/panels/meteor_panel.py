@@ -302,7 +302,7 @@ class MeteorPanel(QScrollArea):
         w = QFrame()
         w.setStyleSheet(
             f"QFrame {{ background: {Colors.bg_input}; "
-            f"border: 1px solid {Colors.border_subtle}; "
+            f"border: none; "
             f"border-radius: {Layout.radius_md}px; }}"
         )
         vbox = QVBoxLayout(w)
