@@ -120,7 +120,7 @@ class ColorPaletteRow(QWidget):
     def __init__(self, default_color: str = '#4488FF', parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, 4, 0, 4)
 
         lbl = BodyLabel("Color")
         lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
