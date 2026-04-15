@@ -286,36 +286,50 @@ class WebOutputServer:
 
     @staticmethod
     def _downsize_image(image_data_bytes: bytes, content_type: str):
-        """Progressively downscale an image until it fits within WEB_IMAGE_MAX_BYTES.
+        """Downscale an image to fit within WEB_IMAGE_MAX_BYTES.
 
-        Shrinks by 10% each pass and re-encodes as JPEG (quality 90) to bring
-        the payload under the limit.  Returns (new_bytes, new_content_type)
+        Estimates the initial scale from the ratio of target to actual file
+        size (file size ~ pixel count, so scale = sqrt(target / actual)),
+        then refines with a few extra passes if JPEG compression doesn't
+        hit the estimate exactly.  Returns (new_bytes, new_content_type)
         on success, or None if the image could not be brought under the limit.
         """
+        import math
+
         try:
             img = Image.open(io.BytesIO(image_data_bytes))
             if img.mode == 'RGBA':
                 img = img.convert('RGB')
 
             original_size = len(image_data_bytes)
-            scale = 1.0
 
-            for _ in range(20):  # safety cap — 0.9^20 ≈ 12% of original
-                scale *= 0.9
+            # First pass: estimate scale from byte ratio
+            # file_size ∝ width × height ∝ scale², so scale = sqrt(target / actual)
+            # Use 0.85× target as headroom since JPEG isn't perfectly linear
+            scale = math.sqrt((WEB_IMAGE_MAX_BYTES * 0.85) / original_size)
+            scale = min(scale, 0.99)  # Always shrink at least a little
+
+            for attempt in range(5):
                 new_w = max(1, int(img.width * scale))
                 new_h = max(1, int(img.height * scale))
                 resized = img.resize((new_w, new_h), Image.LANCZOS)
 
                 buf = io.BytesIO()
                 resized.save(buf, format='JPEG', quality=90)
-                if buf.tell() <= WEB_IMAGE_MAX_BYTES:
+                result_size = buf.tell()
+
+                if result_size <= WEB_IMAGE_MAX_BYTES:
                     app_logger.info(
                         f"Web image downsized: {original_size / (1024*1024):.1f} MB → "
-                        f"{buf.tell() / (1024*1024):.1f} MB ({new_w}x{new_h})"
+                        f"{result_size / (1024*1024):.1f} MB "
+                        f"({new_w}x{new_h}, attempt {attempt + 1})"
                     )
                     return buf.getvalue(), 'image/jpeg'
 
-            app_logger.warning("Web image still above 5 MB after max downscale passes")
+                # Refine: adjust scale based on how far off we are
+                scale *= math.sqrt((WEB_IMAGE_MAX_BYTES * 0.85) / result_size)
+
+            app_logger.warning("Web image still above 5 MB after downscale attempts")
             return None
         except Exception as e:
             app_logger.warning(f"Web image downsize failed: {e}")
