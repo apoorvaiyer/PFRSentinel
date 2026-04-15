@@ -12,12 +12,11 @@ a working star catalog.
 |------|--------|----------|---------|
 | `bsc5-short.json` | Yale Bright Star Catalog 5th ed. | All naked-eye stars | ~9,100 stars (V ≤ 6.5) |
 | `messier_list.json` | Messier Catalog | Famous DSOs cross-referenced to NGC | 110 objects |
-| `NGC.csv` | OpenNGC | Full NGC/IC deep-sky catalog | ~13,000+ objects |
-| `addendum.csv` | OpenNGC addendum | Supplementary DSOs (Barnard, Caldwell, ESO, etc.) | ~100+ objects |
-| `Dien.json` | constellation-lines (Dien 1831) | Constellation line figures | 88+ IAU constellations |
+| `NGC.csv` | OpenNGC + addendum | Full NGC/IC deep-sky catalog + supplementary DSOs | ~14,000 objects |
+| `constellations.json` | Stellarium (Western IAU) | Constellation lines + embedded HIP coords | 88 IAU constellations |
 | *(calculated)* | Skyfield | Planet positions | 8 planets + Moon + Sun |
 
-**Licenses**: OpenNGC (CC BY-SA 4.0), constellation-lines (CC BY-SA).
+**Licenses**: OpenNGC (CC BY-SA 4.0), constellation data (CC BY-SA).
 The BSC5 is public domain. Skyfield is MIT.
 
 ---
@@ -139,15 +138,14 @@ def parse_messier_dec(dec_str):
 
 ---
 
-### `NGC.csv` and `addendum.csv` — OpenNGC Database
+### `NGC.csv` — OpenNGC Database
 
 **Source**: https://github.com/mattiaverga/OpenNGC
 **License**: CC BY-SA 4.0
 
-Semicolon-delimited CSV files containing the full New General Catalogue, Index Catalogue,
-and supplementary objects. `NGC.csv` holds the main NGC and IC entries; `addendum.csv`
-holds objects with non-NGC/IC designations (Barnard dark nebulae, Caldwell catalog, ESO
-objects, well-known named objects such as the LMC and Horsehead Nebula).
+A single semicolon-delimited CSV file containing the full New General Catalogue, Index
+Catalogue, and supplementary objects (Barnard dark nebulae, Caldwell catalog, ESO objects,
+well-known named objects such as the LMC and Horsehead Nebula).
 
 **Key fields**:
 
@@ -218,22 +216,20 @@ def load_ngc(path):
             objects.append(row)
     return objects
 
-ngc = load_ngc("star_data/NGC.csv")
-addendum = load_ngc("star_data/addendum.csv")
-all_dso = ngc + addendum
+all_dso = load_ngc("star_data/NGC.csv")
 ```
 
 **Finding a specific object**:
 
 ```python
 # By NGC number
-m31 = next(o for o in ngc if o["Name"] == "NGC0224")
+m31 = next(o for o in all_dso if o["Name"] == "NGC0224")
 
 # By Messier number
-m42 = next(o for o in ngc if o["M"] == "42")
+m42 = next(o for o in all_dso if o["M"] == "42")
 
 # By common name (case-insensitive substring)
-horsehead = next(o for o in addendum if "Horsehead" in o.get("Common names", ""))
+horsehead = next(o for o in all_dso if "Horsehead" in o.get("Common names", ""))
 
 # All galaxies brighter than mag 10
 bright_galaxies = [
@@ -241,100 +237,6 @@ bright_galaxies = [
     if o["Type"] in ("G", "SG", "EG", "BG", "IG")
     and o.get("V-Mag") and float(o["V-Mag"]) < 10.0
 ]
-```
-
----
-
-### `Dien.json` — Constellation Line Figures
-
-**Source**: https://github.com/doinab/constellation-lines
-**License**: CC BY-SA
-
-Historical constellation line data digitised from Charles Dien's 1831 star chart
-*Uranographie dressée sous l'inspection de M. Bouvard*. Contains 75 lined constellations
-plus variants, including obsolete constellations (Cerberus, Antinoüs, Taurus Poniatovii,
-Musca Borealis).
-
-**Top-level structure**:
-
-```json
-{
-  "id": "Dien",
-  "name": "Dien",
-  "region": "Europe",
-  "subregion": "Western Europe",
-  "period": "1831",
-  "place": "Paris, France",
-  "licence": "CC BY-SA",
-  "constellations": [ ... ]
-}
-```
-
-**Each constellation**:
-
-```json
-{
-  "id": "CON Dien And",
-  "names": [{"english": "Andromeda", "native": "Andromède"}],
-  "lines": [
-    ["* ups Per", "* gam01 And", "* bet And", "* alf And"],
-    ["* alf And", "* del And", "* eps And"]
-  ],
-  "IAU": "And",
-  "semantics": ["humanoid"]
-}
-```
-
-**Star IDs** use the SIMBAD Bayer designation format: `"* <bayer> <const>"`.
-Examples: `"* alf And"` = α Andromedae, `"* bet Ori"` = β Orionis (Rigel).
-
-To connect `Dien.json` lines to `bsc5-short.json` stars, resolve the Bayer designation
-to an HR number via a lookup table or by matching the `B` and `C` fields:
-
-```python
-import json
-
-with open("star_data/Dien.json") as f:
-    dien = json.load(f)
-
-with open("star_data/bsc5-short.json") as f:
-    bsc5 = json.load(f)
-
-# Build a Bayer → star lookup: "alf And" → star record
-bayer_map = {}
-for star in bsc5:
-    if "B" in star and "C" in star:
-        # Normalise Bayer letter to ASCII approximation for matching
-        key = f"{star['B']} {star['C']}"
-        bayer_map[key] = star
-
-# Resolve a SIMBAD-style ID like "* alf And" → BSC5 entry
-def resolve_star(simbad_id):
-    """'* alf And' → BSC5 record or None."""
-    # simbad_id format: "* <bayer_abbrev> <const>"
-    # bsc5-short uses Greek letters; this requires a Greek-to-abbrev map.
-    # Use a pre-built mapping or resolve via HR number lookup.
-    pass
-```
-
-> **Note**: The star IDs in Dien.json use abbreviated Bayer names in SIMBAD format
-> (e.g. `alf`, `bet`, `gam01`). BSC5 uses Unicode Greek letters (`α`, `β`, `γ¹`).
-> A mapping table between the two is needed for full resolution — see the
-> [OpenNGC README](https://github.com/mattiaverga/OpenNGC) for reference, or maintain
-> a manual mapping of the ~200 brightest Bayer stars.
-
-**Iterating constellation lines**:
-
-```python
-for constellation in dien["constellations"]:
-    iau_code = constellation.get("IAU")       # e.g. "And", "Ori"
-    eng_name = constellation["names"][0]["english"]
-    for polyline in constellation["lines"]:
-        # polyline is a list of star IDs forming one connected line segment
-        for i in range(len(polyline) - 1):
-            star_a = polyline[i]
-            star_b = polyline[i + 1]
-            # draw_line(resolve_star(star_a), resolve_star(star_b))
 ```
 
 ---
@@ -414,7 +316,7 @@ import json
 import csv
 
 def load_all():
-    # 1. Bright stars (for plotting and BSC5-to-Dien resolution)
+    # 1. Bright stars (for plotting and calibration)
     with open("star_data/bsc5-short.json") as f:
         stars = json.load(f)
 
@@ -422,22 +324,21 @@ def load_all():
     with open("star_data/messier_list.json") as f:
         messier = json.load(f)
 
-    # 3. Full NGC/IC + addendum (detailed DSO data)
+    # 3. Full NGC/IC catalog (includes addendum objects)
     def load_csv(path):
         with open(path, newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f, delimiter=";"))
 
-    ngc = load_csv("star_data/NGC.csv")
-    addendum = load_csv("star_data/addendum.csv")
+    dso = load_csv("star_data/NGC.csv")
 
-    # 4. Constellation lines
-    with open("star_data/Dien.json") as f:
+    # 4. Constellation lines (HIP coords embedded in same file)
+    with open("star_data/constellations.json") as f:
         constellations = json.load(f)
 
     return {
         "stars": stars,
         "messier": messier,
-        "dso": ngc + addendum,
+        "dso": dso,
         "constellations": constellations,
     }
 ```
@@ -448,9 +349,9 @@ def load_all():
 |-------|--------|--------|
 | Background stars | BSC5 | V ≤ 6.5 (all entries) |
 | Bright star labels | BSC5 | `N` field present (proper name) |
-| Constellation lines | Dien.json | All IAU constellations |
+| Constellation lines | constellations.json | All IAU constellations |
 | Famous DSO labels | messier_list.json | V ≤ 9.0 or named |
-| Extended DSO catalog | NGC.csv + addendum | V ≤ 12.0 (per use-case) |
+| Extended DSO catalog | NGC.csv | V ≤ 12.0 (per use-case) |
 | Planets | Skyfield | Always visible if above horizon |
 
 ---
@@ -497,6 +398,5 @@ def objects_in_fov(catalog, center_ra, center_dec, fov_width_deg, fov_height_deg
   downloaded on first use.
 - When matching Messier objects to NGC records, use the `M` column in NGC.csv as the
   join key (stored as an integer string, e.g. `"42"`).
-- The `addendum.csv` `Name` column uses non-NGC prefixes: `B` (Barnard), `C` (Caldwell),
-  `Cl` (cluster designations), `ESO`, etc. Keep this separate from NGC.csv to avoid
-  `Name` collisions.
+- NGC.csv includes addendum objects with non-NGC prefixes in the `Name` column:
+  `B` (Barnard), `C` (Caldwell), `Cl` (cluster designations), `ESO`, etc.

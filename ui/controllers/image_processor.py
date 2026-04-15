@@ -283,11 +283,14 @@ class ImageProcessorWorker(QThread):
                 except Exception as e:
                     app_logger.debug(f"ML prediction skipped: {e}")
             
-            # Star detection tokens
+            # Star detection tokens (gated: sun below civil twilight, and roof open if ML enabled)
             try:
-                from services.star_detection import analyze_stars
-                star_tokens = analyze_stars(raw_array)
-                metadata.update(star_tokens)
+                from services.star_detection import analyze_stars, should_run_star_detection
+                if should_run_star_detection(config, metadata):
+                    star_tokens = analyze_stars(raw_array)
+                    metadata.update(star_tokens)
+                else:
+                    metadata.update({'STAR_COUNT': 'N/A', 'FWHM': 'N/A', 'SEEING': 'N/A'})
             except Exception as e:
                 app_logger.debug(f"Star detection skipped: {e}")
 

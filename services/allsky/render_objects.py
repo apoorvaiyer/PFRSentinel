@@ -88,10 +88,11 @@ def render_planets(
     if not config.get('enabled', True):
         return img
 
-    img_scale  = max(img.width, img.height) / 750.0
-    label_size = int(round(config.get('label_size', 14) * img_scale))
-    opacity    = int(config.get('opacity', 255))
-    colors     = config.get('colors', {})
+    img_scale    = max(img.width, img.height) / 750.0
+    label_size   = int(round(config.get('label_size', 14) * img_scale))
+    opacity      = int(config.get('opacity', 255))
+    single_color = config.get('color', '')
+    colors       = config.get('colors', {})
 
     font = _load_font(label_size)
     gray = sky_gray if sky_gray is not None else np.array(img.convert('L'))
@@ -121,7 +122,7 @@ def render_planets(
         if not _is_sky_visible(gray, x, y):
             continue
 
-        hex_color  = colors.get(name, '#FFFFFF')
+        hex_color  = single_color if single_color else colors.get(name, '#FFFFFF')
         text_color = _parse_color(hex_color, opacity)
 
         tw, th = estimate_text_size(name, label_size)

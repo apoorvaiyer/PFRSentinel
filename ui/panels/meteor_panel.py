@@ -151,8 +151,8 @@ class MeteorPanel(QScrollArea):
     def _build_enable_card(self, layout: QVBoxLayout):
         card = SettingsCard(
             "Meteor Tracker",
-            "Detect meteor trails on each processed frame using Canny edge "
-            "detection and Hough line analysis."
+            "Detects meteor trails by comparing consecutive frames within "
+            "the sky circle to isolate transient streaks."
         )
         self._enable_switch = SwitchRow("Enable Detection", "Runs on every captured frame")
         self._enable_switch.toggled.connect(self._on_settings_changed)
@@ -161,6 +161,7 @@ class MeteorPanel(QScrollArea):
 
     def _build_detection_card(self, layout: QVBoxLayout):
         card = CollapsibleCard("Detection Settings", FluentIcon.ZOOM_IN)
+
         self._min_length_spin = SpinBox()
         self._min_length_spin.setRange(10, 500)
         self._min_length_spin.setValue(100)
@@ -170,6 +171,59 @@ class MeteorPanel(QScrollArea):
             "Min Trail Length", self._min_length_spin,
             "Minimum pixel length for a line to be counted as a meteor",
         )
+
+        self._adaptive_switch = SwitchRow(
+            "Adaptive Sensitivity",
+            "Auto-compute threshold from sky noise level (recommended)",
+        )
+        self._adaptive_switch.toggled.connect(self._on_adaptive_toggled)
+        card.add_widget(self._adaptive_switch)
+
+        self._diff_threshold_spin = SpinBox()
+        self._diff_threshold_spin.setRange(5, 100)
+        self._diff_threshold_spin.setValue(25)
+        self._diff_threshold_spin.valueChanged.connect(self._on_settings_changed)
+        card.add_row(
+            "Fixed Diff Threshold", self._diff_threshold_spin,
+            "Manual pixel threshold (only used when adaptive is off)",
+        )
+
+        self._cooldown_spin = SpinBox()
+        self._cooldown_spin.setRange(0, 300)
+        self._cooldown_spin.setValue(30)
+        self._cooldown_spin.setSuffix(" sec")
+        self._cooldown_spin.valueChanged.connect(self._on_settings_changed)
+        card.add_row(
+            "Detection Cooldown", self._cooldown_spin,
+            "Minimum seconds between detection events to prevent flooding",
+        )
+
+        # --- Multi-frame confirmation (advanced) ---
+        self._multi_frame_switch = SwitchRow(
+            "Multi-Frame Confirmation",
+            "Require consistent motion across multiple frames",
+        )
+        self._multi_frame_switch.toggled.connect(self._on_settings_changed)
+        card.add_widget(self._multi_frame_switch)
+
+        self._multi_frame_warn = CaptionLabel(
+            "Short exposures recommended (< 2 s). With long exposures "
+            "a meteor may only appear in a single frame and be discarded."
+        )
+        self._multi_frame_warn.setWordWrap(True)
+        self._multi_frame_warn.setStyleSheet(
+            f"color: {Colors.text_muted}; padding-left: 4px;")
+        card.add_widget(self._multi_frame_warn)
+
+        self._confirm_frames_spin = SpinBox()
+        self._confirm_frames_spin.setRange(2, 10)
+        self._confirm_frames_spin.setValue(2)
+        self._confirm_frames_spin.valueChanged.connect(self._on_settings_changed)
+        card.add_row(
+            "Min Confirm Frames", self._confirm_frames_spin,
+            "Number of frames a trail must appear in before reporting",
+        )
+
         layout.addWidget(card)
 
     def _build_logging_card(self, layout: QVBoxLayout):
@@ -283,6 +337,13 @@ class MeteorPanel(QScrollArea):
         try:
             self._enable_switch.set_checked(config.get("enabled", False))
             self._min_length_spin.setValue(int(config.get("min_length", 100)))
+            adaptive = config.get("adaptive_threshold", True)
+            self._adaptive_switch.set_checked(adaptive)
+            self._diff_threshold_spin.setEnabled(not adaptive)
+            self._diff_threshold_spin.setValue(int(config.get("diff_threshold", 25)))
+            self._cooldown_spin.setValue(int(config.get("detection_cooldown", 30)))
+            self._multi_frame_switch.set_checked(config.get("multi_frame_confirm", False))
+            self._confirm_frames_spin.setValue(int(config.get("min_confirm_frames", 2)))
             self._save_detections_switch.set_checked(config.get("save_detections", True))
             self._log_file_edit.setText(config.get("log_file", ""))
             self._save_annotated_switch.set_checked(config.get("save_annotated", False))
@@ -326,6 +387,10 @@ class MeteorPanel(QScrollArea):
     #  Slots / helpers                                                     #
     # ------------------------------------------------------------------ #
 
+    def _on_adaptive_toggled(self, checked: bool):
+        self._diff_threshold_spin.setEnabled(not checked)
+        self._on_settings_changed()
+
     def _on_settings_changed(self):
         if self._loading_config:
             return
@@ -339,12 +404,17 @@ class MeteorPanel(QScrollArea):
         # controller) are never overwritten by a panel save.
         existing = dict(self.main_window.config.get("meteor", {}))
         existing.update({
-            "enabled":         self._enable_switch.is_checked(),
-            "min_length":      self._min_length_spin.value(),
-            "save_detections": self._save_detections_switch.is_checked(),
-            "log_file":        self._log_file_edit.text().strip(),
-            "save_annotated":  self._save_annotated_switch.is_checked(),
-            "annotated_dir":   self._annotated_dir_edit.text().strip(),
+            "enabled":              self._enable_switch.is_checked(),
+            "min_length":           self._min_length_spin.value(),
+            "adaptive_threshold":   self._adaptive_switch.is_checked(),
+            "diff_threshold":       self._diff_threshold_spin.value(),
+            "detection_cooldown":   self._cooldown_spin.value(),
+            "multi_frame_confirm":  self._multi_frame_switch.is_checked(),
+            "min_confirm_frames":   self._confirm_frames_spin.value(),
+            "save_detections":      self._save_detections_switch.is_checked(),
+            "log_file":             self._log_file_edit.text().strip(),
+            "save_annotated":       self._save_annotated_switch.is_checked(),
+            "annotated_dir":        self._annotated_dir_edit.text().strip(),
         })
         self.main_window.config.set("meteor", existing)
         self.main_window.config.save()

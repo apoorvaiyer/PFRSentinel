@@ -3,8 +3,8 @@ Catalog loader for All-Sky overlays.
 
 Loads from star_data/ at module level (cached). All catalog data is read-only.
 Sources: BSC5 (bsc5-short.json), Messier (messier_list.json),
-         OpenNGC (NGC.csv, addendum.csv),
-         Western IAU constellation lines (constellations.json + hip_coords.json).
+         OpenNGC (NGC.csv),
+         Western IAU constellation lines (constellations.json — includes hip_coords).
 """
 import json
 import csv
@@ -199,43 +199,40 @@ def _load_messier() -> List[Dict]:
 
 
 def _load_ngc() -> List[Dict]:
+    path = _star_data_path('NGC.csv')
     objects = []
-    for fname in ('NGC.csv', 'addendum.csv'):
-        path = _star_data_path(fname)
-        if not os.path.exists(path):
-            continue
-        with open(path, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f, delimiter=';')
-            for row in reader:
-                ra_s = (row.get('RA') or '').strip()
-                dec_s = (row.get('Dec') or '').strip()
-                if not ra_s or not dec_s:
-                    continue
-                try:
-                    ra = _parse_ngc_ra(ra_s)
-                    dec = _parse_ngc_dec(dec_s)
-                except Exception:
-                    continue
-                vmag_s = (row.get('V-Mag') or '').strip()
-                vmag = float(vmag_s) if vmag_s else None
-                messier_n = (row.get('M') or '').strip()
-                objects.append({
-                    'ra_deg': ra,
-                    'dec_deg': dec,
-                    'vmag': vmag,
-                    'id': (row.get('Name') or '').strip(),
-                    'label': (row.get('Name') or '').strip(),
-                    'name': (row.get('Common names') or '').split('|')[0].strip(),
-                    'type': (row.get('Type') or '').strip(),
-                    'messier': messier_n,
-                })
+    with open(path, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f, delimiter=';')
+        for row in reader:
+            ra_s = (row.get('RA') or '').strip()
+            dec_s = (row.get('Dec') or '').strip()
+            if not ra_s or not dec_s:
+                continue
+            try:
+                ra = _parse_ngc_ra(ra_s)
+                dec = _parse_ngc_dec(dec_s)
+            except Exception:
+                continue
+            vmag_s = (row.get('V-Mag') or '').strip()
+            vmag = float(vmag_s) if vmag_s else None
+            messier_n = (row.get('M') or '').strip()
+            objects.append({
+                'ra_deg': ra,
+                'dec_deg': dec,
+                'vmag': vmag,
+                'id': (row.get('Name') or '').strip(),
+                'label': (row.get('Name') or '').strip(),
+                'name': (row.get('Common names') or '').split('|')[0].strip(),
+                'type': (row.get('Type') or '').strip(),
+                'messier': messier_n,
+            })
     return objects
 
 
 def _load_western_constellations() -> tuple:
     """
     Load Western IAU constellation lines from constellations.json using HIP IDs.
-    Coordinates come from hip_coords.json (built by scripts/build_hip_coords.py).
+    HIP coordinates are embedded in the same file under the 'hip_coords' key.
     lines_list: [(ra1, dec1, ra2, dec2, iau, thin), ...]  thin=True for secondary body lines
     labels_list: [{'name', 'abbrev', 'ra_deg', 'dec_deg'}, ...]
     """
@@ -243,15 +240,10 @@ def _load_western_constellations() -> tuple:
     with open(path, encoding='utf-8') as f:
         data = json.load(f)
 
-    # Load HIP → (ra, dec) lookup built by build_hip_coords.py
+    # HIP → (ra, dec) lookup is embedded in the same file
     hip_coords: Dict[int, tuple] = {}
-    try:
-        hip_path = _star_data_path('hip_coords.json')
-        with open(hip_path, encoding='utf-8') as f:
-            raw = json.load(f)
-        hip_coords = {int(k): (v[0], v[1]) for k, v in raw.items()}
-    except Exception:
-        pass
+    for k, v in data.get('hip_coords', {}).items():
+        hip_coords[int(k)] = (v[0], v[1])
 
     lines: List[tuple] = []
     labels: List[Dict] = []

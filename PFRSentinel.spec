@@ -183,8 +183,7 @@ added_files = [
     ('star_data/bsc5-short.json', 'star_data'),
     ('star_data/messier_list.json', 'star_data'),
     ('star_data/NGC.csv', 'star_data'),
-    ('star_data/addendum.csv', 'star_data'),
-    ('star_data/Dien.json', 'star_data'),
+    ('star_data/constellations.json', 'star_data'),
 ]
 
 # ============================================================================

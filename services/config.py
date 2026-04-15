@@ -233,15 +233,20 @@ DEFAULT_CONFIG = {
         "max_videos_to_keep": 30,      # Auto-delete oldest beyond this many days
     },
 
-    # Meteor Tracker — CV-based trail detection on each processed frame
+    # Meteor Tracker — frame-differencing trail detection
     "meteor": {
         "enabled": False,
-        "min_length": 100,          # Minimum trail length in pixels
-        "save_detections": True,    # Append events to a JSONL log
-        "log_file": "",             # "" = %LOCALAPPDATA%\PFRSentinel\meteor_detections.jsonl
-        "save_annotated": False,    # Save annotated full-frame copies with detections
-        "annotated_dir": "",        # "" = disabled
-        "exclusion_zones": [],      # [{x,y,w,h,note}] — user-rejected regions
+        "min_length": 100,              # Minimum trail length in pixels
+        "diff_threshold": 25,           # Pixel threshold for frame differencing (5-100)
+        "adaptive_threshold": True,     # Auto-compute threshold from sky noise (overrides diff_threshold)
+        "detection_cooldown": 30,       # Seconds between detection events (0 = disabled)
+        "multi_frame_confirm": False,   # Require detections across 2+ frames (short exposures only)
+        "min_confirm_frames": 2,        # Frames needed when multi_frame_confirm is True
+        "save_detections": True,        # Append events to a JSONL log
+        "log_file": "",                 # "" = %LOCALAPPDATA%\PFRSentinel\meteor_detections.jsonl
+        "save_annotated": False,        # Save annotated full-frame copies with detections
+        "annotated_dir": "",            # "" = disabled
+        "exclusion_zones": [],          # [{x,y,w,h,note}] — user-rejected regions
     },
 
     # All-sky overlay — astronomical annotations on each frame

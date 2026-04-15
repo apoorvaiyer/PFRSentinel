@@ -32,9 +32,8 @@ scripts/
 star_data/                 Read-only catalog data (bundled in installer)
 ├── bsc5-short.json        Yale BSC5 ~9100 stars (V ≤ 6.5)
 ├── messier_list.json      110 Messier objects
-├── NGC.csv                OpenNGC full catalog (semicolon-delimited)
-├── addendum.csv           OpenNGC addendum (Barnard, Caldwell, ESO...)
-└── Dien.json              Constellation line figures (Dien 1831, CC BY-SA)
+├── NGC.csv                OpenNGC full catalog + addendum (semicolon-delimited)
+└── constellations.json    Western IAU constellation lines + embedded HIP coords
 ```
 
 ---
@@ -239,8 +238,7 @@ Sufficient for labelling on an all-sky camera image (typical pixel scale ~0.5°/
 ('star_data/bsc5-short.json', 'star_data'),
 ('star_data/messier_list.json', 'star_data'),
 ('star_data/NGC.csv', 'star_data'),
-('star_data/addendum.csv', 'star_data'),
-('star_data/Dien.json', 'star_data'),
+('star_data/constellations.json', 'star_data'),
 ```
 
 The calibration JSON (`allsky_calibration.json`) is stored in `%LOCALAPPDATA%\PFRSentinel\` and **not** bundled — it is user-specific and generated at runtime.

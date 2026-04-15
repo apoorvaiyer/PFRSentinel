@@ -18,6 +18,9 @@ class ImageFileHandler(FileSystemEventHandler):
     # Cooldown period: ignore repeated events for the same file within this window
     RECENTLY_PROCESSED_COOLDOWN = 30  # seconds
 
+    # Max entries before pruning the processed-files dict
+    _MAX_PROCESSED_ENTRIES = 500
+
     def __init__(self, config, on_image_processed=None, weather_service=None):
         super().__init__()  # Initialize parent class
         self.config = config
@@ -25,6 +28,10 @@ class ImageFileHandler(FileSystemEventHandler):
         self.weather_service = weather_service
         self.processing = set()  # Track files being processed
         self.recently_processed = {}  # filepath -> timestamp of last processing
+        # Tracks (mtime, size) at time of processing so on_modified only
+        # re-processes files whose content has genuinely changed — prevents
+        # spurious re-processing from indexers, antivirus, backup tools, etc.
+        self._processed_signatures = {}  # filepath -> (mtime, size)
         self.lock = threading.Lock()
         # Thread pool for concurrent file processing (REL-002 fix)
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="file_processor")
@@ -81,6 +88,32 @@ class ImageFileHandler(FileSystemEventHandler):
         for fp in stale:
             del self.recently_processed[fp]
 
+    def _prune_processed_signatures(self):
+        """Evict oldest half of signature entries. Must be called under self.lock."""
+        if len(self._processed_signatures) <= self._MAX_PROCESSED_ENTRIES // 2:
+            return
+        # Keep the most-recently-processed entries (by mtime)
+        sorted_items = sorted(self._processed_signatures.items(), key=lambda kv: kv[1][0])
+        to_remove = len(sorted_items) // 2
+        for fp, _ in sorted_items[:to_remove]:
+            del self._processed_signatures[fp]
+
+    def _has_file_changed(self, filepath):
+        """Check if a file's content has changed since we last processed it.
+
+        Returns True if the file should be (re-)processed — either because
+        we've never seen it or because its mtime/size differ from last time.
+        Must be called under self.lock.
+        """
+        prev = self._processed_signatures.get(filepath)
+        if prev is None:
+            return True
+        try:
+            stat = os.stat(filepath)
+            return (stat.st_mtime, stat.st_size) != prev
+        except OSError:
+            return True
+
     def process_file(self, filepath):
         """Process a single image file"""
         with self.lock:
@@ -114,6 +147,14 @@ class ImageFileHandler(FileSystemEventHandler):
                 # Record successful processing for cooldown dedup
                 with self.lock:
                     self.recently_processed[filepath] = time.time()
+                    # Store file signature so on_modified skips unchanged files
+                    try:
+                        stat = os.stat(filepath)
+                        self._processed_signatures[filepath] = (stat.st_mtime, stat.st_size)
+                    except OSError:
+                        pass
+                    if len(self._processed_signatures) > self._MAX_PROCESSED_ENTRIES:
+                        self._prune_processed_signatures()
 
                 # Notify callback with both path and image
                 if self.on_image_processed:
@@ -152,13 +193,21 @@ class ImageFileHandler(FileSystemEventHandler):
             self.executor.submit(self.process_file, filepath)
 
     def on_modified(self, event):
-        """Called when a file is modified - catches systems that trigger modified instead of created"""
+        """Called when a file is modified.
+
+        Catches systems that trigger modified instead of created, but skips
+        files whose content (mtime + size) hasn't actually changed since we
+        last processed them — prevents spurious re-processing caused by
+        antivirus, Windows Search indexing, backup tools, etc.
+        """
         if event.is_directory:
             return
         filepath = event.src_path
         if self._is_supported(filepath):
             with self.lock:
                 if filepath in self.processing or self._is_recently_processed(filepath):
+                    return
+                if not self._has_file_changed(filepath):
                     return
             self.executor.submit(self.process_file, filepath)
 

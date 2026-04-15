@@ -116,7 +116,7 @@ def render_constellations(
     color_str   = config.get('color', '#4488FF')
     opacity     = config.get('opacity', 180)
     img_scale   = max(img.width, img.height) / 750.0
-    line_width  = max(1, int(config.get('line_width', 1)))
+    line_width  = max(1, int(config.get('line_width', 2)))
     label_size  = int(round(config.get('label_size', 12) * img_scale))
     edge_fade   = int(config.get('edge_fade_px', 250))
 

@@ -1,15 +1,16 @@
 """
 One-time data-build script: query SIMBAD for every HIP (Hipparcos) star number
-referenced in star_data/constellations.json and write the results to
-star_data/hip_coords.json.
+referenced in star_data/constellations.json and write the results back into
+that same file under the 'hip_coords' key.
 
 Usage:
     python scripts/build_hip_coords.py
 
-Resume: if hip_coords.json already exists, HIP numbers already present are
-skipped so the script can be safely re-run after a partial failure.
+Resume: if constellations.json already contains a 'hip_coords' key, HIP numbers
+already present are skipped so the script can be safely re-run after a partial
+failure.
 
-Output format:
+The hip_coords value is a dict:
     {"677": [ra_deg, dec_deg], "3092": [ra_deg, dec_deg], ...}
 
 Keys are string HIP numbers (JSON only supports string keys).
@@ -100,19 +101,15 @@ def _collect_hips(data: dict) -> set:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    out_path = _star_data_path('hip_coords.json')
     src_path = _star_data_path('constellations.json')
 
-    # Load existing output (resume support)
-    coords: Dict[str, list] = {}
-    if os.path.exists(out_path):
-        with open(out_path, encoding='utf-8') as f:
-            coords = json.load(f)
-        print(f"Loaded {len(coords)} existing entries from {out_path}")
-
-    # Load constellations.json
+    # Load constellations.json (includes existing hip_coords if any)
     with open(src_path, encoding='utf-8') as f:
         data = json.load(f)
+
+    # Resume support: use existing hip_coords entries
+    coords: Dict[str, list] = dict(data.get('hip_coords', {}))
+    print(f"Loaded {len(coords)} existing hip_coords entries from constellations.json")
 
     all_hips = _collect_hips(data)
     needed = sorted(h for h in all_hips if str(h) not in coords)
@@ -149,9 +146,10 @@ def main() -> None:
         print(f"Not found: {failed}")
 
     if new_entries > 0:
-        with open(out_path, 'w', encoding='utf-8') as f:
-            json.dump(coords, f, indent=2, sort_keys=True)
-        print(f"Written: {out_path}")
+        data['hip_coords'] = {k: v for k, v in sorted(coords.items(), key=lambda x: int(x[0]))}
+        with open(src_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        print(f"Written: {src_path}")
     else:
         print("No new entries — file not updated.")
 

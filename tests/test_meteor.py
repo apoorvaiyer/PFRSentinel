@@ -27,8 +27,13 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from services.meteor.detector import MeteorDetection, annotate_image, detect_meteors
+from services.meteor.detector import (
+    MeteorDetection, annotate_image, detect_meteors,
+    compute_frame_difference, apply_sky_circle_mask,
+    estimate_adaptive_threshold, check_speed_plausibility,
+)
 from services.meteor.storage import log_detections, save_thumbnail
+from services.meteor.tracker import MeteorTracker, MeteorEvent
 from services.meteor.mask import (
     ExclusionZone, apply_exclusion_zones,
     zone_from_detection, zones_from_config, zones_to_config,
@@ -356,6 +361,23 @@ class TestSampleImages:
             f"Expected ~8 equipment-edge detections, got {len(result)}"
         )
 
+    def test_moon_frame_self_diff_zero_detections(self):
+        """
+        Frame differencing a frame with itself produces a blank image.
+        The equipment-edge false positives that plague single-frame
+        detection are completely eliminated.
+        """
+        moon_frame = os.path.join(SAMPLE_DIR, "raw_20260107_040940.fits")
+        if not os.path.exists(moon_frame):
+            pytest.skip("raw_20260107_040940.fits not present")
+
+        img = _fits_to_pil(moon_frame)
+        diff = compute_frame_difference(img, img.copy(), threshold=25)
+        result = detect_meteors(diff, min_length=100)
+        assert result == [], (
+            f"Self-diff should produce 0 detections, got {len(result)}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestExclusionMask
@@ -426,6 +448,241 @@ class TestExclusionMask:
         zone = zone_from_detection(50, 128, 300, 128, 512, 512, padding=20)
         with_zone = detect_meteors(img, min_length=100, exclusion_zones=[zone])
         assert with_zone == [], "Line inside exclusion zone must not be detected"
+
+
+# ---------------------------------------------------------------------------
+# TestFrameDifferencing
+# ---------------------------------------------------------------------------
+
+class TestFrameDifferencing:
+    def test_identical_frames_blank_diff(self):
+        """Identical frames produce a blank diff → zero detections."""
+        img = _with_line(50, 128, 300, 128)
+        diff = compute_frame_difference(img, img.copy(), threshold=25)
+        result = detect_meteors(diff, min_length=100)
+        assert result == [], "Identical frames should produce zero detections"
+
+    def test_static_line_disappears_in_diff(self):
+        """A line present in both frames cancels out in the diff."""
+        frame_a = _with_line(50, 128, 300, 128)
+        frame_b = _with_line(50, 128, 300, 128)
+        diff = compute_frame_difference(frame_a, frame_b, threshold=25)
+        result = detect_meteors(diff, min_length=100)
+        assert result == [], "Static line should cancel in diff"
+
+    def test_new_line_appears_in_diff(self):
+        """A line only in the current frame survives the diff."""
+        blank = _blank(512, 512)
+        with_line = _with_line(50, 128, 300, 128)
+        diff = compute_frame_difference(with_line, blank, threshold=10)
+        result = detect_meteors(diff, min_length=100)
+        assert result, "New line should be detected in diff"
+
+    def test_diff_threshold_suppresses_noise(self):
+        """Random noise below threshold should be zeroed out."""
+        np.random.seed(42)
+        base = np.full((256, 256, 3), 20, dtype=np.uint8)
+        noisy = base.copy()
+        noise = np.random.randint(0, 10, size=(256, 256, 3), dtype=np.uint8)
+        noisy = np.clip(base.astype(int) + noise, 0, 255).astype(np.uint8)
+        diff = compute_frame_difference(
+            Image.fromarray(noisy), Image.fromarray(base), threshold=25
+        )
+        diff_arr = np.array(diff)
+        assert diff_arr.max() == 0, "Noise below threshold should be suppressed"
+
+    def test_diff_threshold_preserves_signal(self):
+        """A bright line (value 200) on a dark bg survives threshold=25."""
+        blank = _blank(512, 512, fill=10)
+        lined = _with_line(50, 128, 300, 128, bg=10, line_val=200)
+        diff = compute_frame_difference(lined, blank, threshold=25)
+        diff_arr = np.array(diff)
+        assert diff_arr.max() > 100, "Strong signal should survive threshold"
+
+
+# ---------------------------------------------------------------------------
+# TestSkyCircleMask
+# ---------------------------------------------------------------------------
+
+class TestSkyCircleMask:
+    def test_line_outside_circle_masked(self):
+        """A line drawn entirely outside the sky circle is suppressed."""
+        # Image 512x512, circle centred at (256, 256) with radius 100
+        # Line drawn at y=450, well outside
+        img = _with_line(50, 450, 400, 450, width=512, height=512)
+        masked = apply_sky_circle_mask(img, cx=256, cy=256, radius=100)
+        result = detect_meteors(masked, min_length=100)
+        assert result == [], "Line outside sky circle should be masked"
+
+    def test_line_inside_circle_preserved(self):
+        """A line drawn inside the sky circle is preserved."""
+        # Line at y=256, within circle centred at (256, 256) radius 200
+        img = _with_line(150, 256, 350, 256, width=512, height=512)
+        masked = apply_sky_circle_mask(img, cx=256, cy=256, radius=200)
+        result = detect_meteors(masked, min_length=100)
+        assert result, "Line inside sky circle should be preserved"
+
+    def test_mask_does_not_mutate_input(self):
+        img = _with_line(50, 256, 400, 256, width=512, height=512)
+        original = np.array(img.copy())
+        apply_sky_circle_mask(img, cx=256, cy=256, radius=200)
+        np.testing.assert_array_equal(np.array(img), original)
+
+
+# ---------------------------------------------------------------------------
+# TestStrictValidation
+# ---------------------------------------------------------------------------
+
+class TestStrictValidation:
+    def test_horizontal_rejected_strict(self):
+        """A perfectly horizontal line (0 deg) is rejected with strict_validation."""
+        img = _with_line(50, 256, 350, 256, width=512, height=512)
+        result = detect_meteors(img, min_length=100, strict_validation=True)
+        assert result == [], "Exactly horizontal line should be rejected"
+
+    def test_vertical_rejected_strict(self):
+        """A perfectly vertical line (90 deg) is rejected with strict_validation."""
+        img = _with_line(256, 50, 256, 350, width=512, height=512)
+        result = detect_meteors(img, min_length=100, strict_validation=True)
+        assert result == [], "Exactly vertical line should be rejected"
+
+    def test_diagonal_accepted_strict(self):
+        """A ~45-degree diagonal line passes strict_validation."""
+        img = _with_line(100, 100, 240, 240)
+        result = detect_meteors(img, min_length=100, strict_validation=True)
+        assert result, "Diagonal line should pass strict validation"
+
+    def test_strict_off_allows_horizontal(self):
+        """Without strict_validation, horizontal lines are still detected."""
+        img = _with_line(50, 128, 350, 128)
+        result = detect_meteors(img, min_length=100, strict_validation=False)
+        assert result, "Horizontal line should be detected without strict"
+
+
+# ---------------------------------------------------------------------------
+# TestAdaptiveThreshold
+# ---------------------------------------------------------------------------
+
+class TestAdaptiveThreshold:
+    def test_dark_image_low_threshold(self):
+        """A dark, low-noise image should produce a low threshold."""
+        img = _blank(512, 512, fill=10)
+        threshold = estimate_adaptive_threshold(img)
+        assert 5 <= threshold <= 15, f"Dark image threshold={threshold}, expected low"
+
+    def test_noisy_image_higher_threshold(self):
+        """An image with significant noise should produce a higher threshold."""
+        np.random.seed(42)
+        arr = np.random.randint(0, 80, size=(512, 512, 3), dtype=np.uint8)
+        img = Image.fromarray(arr)
+        threshold = estimate_adaptive_threshold(img)
+        assert threshold > 15, f"Noisy image threshold={threshold}, expected > 15"
+
+    def test_threshold_clamped_range(self):
+        """Output should always be in [5, 100]."""
+        # Uniform image → std ≈ 0 → threshold = int(3.6) = 3 → clamped to 5
+        img = _blank(256, 256, fill=128)
+        threshold = estimate_adaptive_threshold(img)
+        assert 5 <= threshold <= 100
+
+
+# ---------------------------------------------------------------------------
+# TestSpeedPlausibility
+# ---------------------------------------------------------------------------
+
+class TestSpeedPlausibility:
+    def test_meteor_speed_accepted(self):
+        """A 200px trail in 1s exposure on a 1000px-wide image = 20%/s — plausible."""
+        det = MeteorDetection(100, 200, 300, 200, 200.0, 0.0)
+        assert check_speed_plausibility(det, 1.0, 1000) is True
+
+    def test_slow_plane_rejected(self):
+        """A 5px trail in 10s exposure on a 1000px image = 0.05%/s — too slow."""
+        det = MeteorDetection(100, 200, 105, 200, 5.0, 0.0)
+        assert check_speed_plausibility(det, 10.0, 1000) is False
+
+    def test_zero_exposure_passes(self):
+        """With unknown exposure (0), speed check should pass (can't validate)."""
+        det = MeteorDetection(100, 200, 300, 200, 200.0, 0.0)
+        assert check_speed_plausibility(det, 0.0, 1000) is True
+
+    def test_very_fast_rejected(self):
+        """A 600px trail in 0.1s on 1000px image = 600%/s — too fast."""
+        det = MeteorDetection(100, 200, 700, 200, 600.0, 0.0)
+        assert check_speed_plausibility(det, 0.1, 1000) is False
+
+
+# ---------------------------------------------------------------------------
+# TestMeteorTracker
+# ---------------------------------------------------------------------------
+
+class TestMeteorTracker:
+    def test_single_frame_not_confirmed(self):
+        """A detection in only one frame should not be confirmed."""
+        tracker = MeteorTracker(min_frames=2, max_gap_sec=1.0)
+        det = MeteorDetection(100, 100, 200, 200, 141.0, 45.0)
+        # Frame 1: detection
+        confirmed = tracker.update([det], 0.0)
+        assert confirmed == []
+        # Frame 2: no detection — series expires with only 1 frame
+        confirmed = tracker.update([], 2.0)
+        assert confirmed == [], "Single-frame series should not be confirmed"
+
+    def test_two_frames_confirmed(self):
+        """A detection in two frames should be confirmed when the series expires."""
+        tracker = MeteorTracker(min_frames=2, max_gap_sec=1.0)
+        det1 = MeteorDetection(100, 100, 200, 200, 141.0, 45.0)
+        det2 = MeteorDetection(120, 120, 220, 220, 141.0, 45.0)  # nearby, same direction
+        tracker.update([det1], 0.0)
+        tracker.update([det2], 0.5)
+        # Trigger expiry
+        confirmed = tracker.update([], 2.0)
+        assert len(confirmed) == 1
+        assert confirmed[0].frame_count == 2
+
+    def test_inconsistent_direction_rejected(self):
+        """Detections with wildly different angles should be rejected."""
+        tracker = MeteorTracker(
+            min_frames=2, max_gap_sec=1.0, max_direction_std=0.3)
+        # Two detections at same location but opposite directions
+        det1 = MeteorDetection(100, 100, 200, 100, 100.0, 0.0)    # horizontal
+        det2 = MeteorDetection(110, 100, 110, 200, 100.0, 90.0)   # vertical
+        tracker.update([det1], 0.0)
+        tracker.update([det2], 0.5)
+        confirmed = tracker.update([], 2.0)
+        assert confirmed == [], "Inconsistent direction should not confirm"
+
+    def test_flush_returns_pending(self):
+        """flush() should confirm any valid pending series."""
+        tracker = MeteorTracker(min_frames=2, max_gap_sec=10.0)
+        det1 = MeteorDetection(100, 100, 200, 200, 141.0, 45.0)
+        det2 = MeteorDetection(120, 120, 220, 220, 141.0, 45.0)
+        tracker.update([det1], 0.0)
+        tracker.update([det2], 0.5)
+        # Without flush, series hasn't expired yet (max_gap=10s)
+        confirmed = tracker.flush()
+        assert len(confirmed) == 1
+
+    def test_reset_clears_state(self):
+        tracker = MeteorTracker(min_frames=2, max_gap_sec=10.0)
+        det = MeteorDetection(100, 100, 200, 200, 141.0, 45.0)
+        tracker.update([det], 0.0)
+        tracker.reset()
+        confirmed = tracker.flush()
+        assert confirmed == []
+
+    def test_meteor_event_properties(self):
+        tracker = MeteorTracker(min_frames=2, max_gap_sec=1.0)
+        det1 = MeteorDetection(100, 100, 200, 200, 141.0, 45.0)
+        det2 = MeteorDetection(120, 120, 250, 250, 184.0, 45.0)  # longer
+        tracker.update([det1], 0.0)
+        tracker.update([det2], 0.5)
+        confirmed = tracker.update([], 2.0)
+        assert len(confirmed) == 1
+        event = confirmed[0]
+        assert event.best.length == 184.0  # longest detection
+        assert event.frame_count == 2
+        assert 0.4 <= event.duration_sec <= 0.6
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ ALLSKY_OVERLAY_DEFAULTS = {
         "lines": True,
         "labels": True,
         "color": "#4488FF",
-        "line_width": 1,
+        "line_width": 2,
         "label_size": 12,
         "opacity": 180,
         # Fade lines over this many pixels approaching the sky circle edge (0 = no fade)
@@ -38,6 +38,7 @@ ALLSKY_OVERLAY_DEFAULTS = {
     },
     "planets": {
         "enabled": True,
+        "color": "",
         "label_size": 14,
         "opacity": 255,
         "colors": {
@@ -52,12 +53,12 @@ ALLSKY_OVERLAY_DEFAULTS = {
         },
     },
     "grid": {
-        "enabled": True,
-        "horizon": False,          # Horizon circle hidden by default
-        "altitude_rings": True,
+        "enabled": False,
+        "horizon": False,
+        "altitude_rings": False,
         "altitude_step": 30,
-        "azimuth_lines": True,
-        "cardinal_labels": True,
+        "azimuth_lines": False,
+        "cardinal_labels": False,
         "color": "#336633",
         "line_width": 1,
         "label_size": 14,

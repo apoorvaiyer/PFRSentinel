@@ -2,21 +2,32 @@
 Meteor Controller
 Receives processed frames, runs meteor detection in a daemon thread,
 saves thumbnails, persists detections, and handles user rejections.
+
+Detection uses frame differencing: consecutive frames are subtracted so only
+transient events (meteors) produce edges.  A sky circle mask restricts
+detection to the fisheye's circular sky region.
 """
+import math
 import os
 import threading
+import time
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QObject, Signal, QTimer
 from PIL import Image
 
 from services.logger import app_logger
-from services.meteor.detector import detect_meteors, annotate_image, MeteorDetection
+from services.meteor.detector import (
+    detect_meteors, annotate_image, MeteorDetection,
+    compute_frame_difference, apply_sky_circle_mask,
+    estimate_adaptive_threshold, check_speed_plausibility,
+)
 from services.meteor.storage import log_detections, save_thumbnail
 from services.meteor.mask import (
     zone_from_detection, zones_from_config, zones_to_config, ExclusionZone,
 )
+from services.meteor.tracker import MeteorTracker
 
 
 _MAX_RECENT_EVENTS = 20
@@ -44,6 +55,12 @@ class MeteorController(QObject):
         self._last_detection_time: Optional[str] = None
         self._recent_events: List[dict] = []
 
+        # Frame differencing state
+        self._previous_frame: Optional[Image.Image] = None
+        self._last_detection_ts: float = 0.0   # monotonic, for cooldown
+        self._sky_circle: Optional[Tuple[float, float, float]] = None  # (cx, cy, r)
+        self._tracker: Optional[MeteorTracker] = None
+
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(5000)
         self._status_timer.timeout.connect(self._emit_status)
@@ -59,10 +76,50 @@ class MeteorController(QObject):
         if not cfg.get("enabled", False):
             return
 
+        # --- Roof gate (soft — only blocks when confirmed closed) ---
+        ml_results = getattr(self._main_window, 'last_ml_results', None) or {}
+        if ml_results.get('roof_status') == 'Closed':
+            self._previous_frame = None  # invalidate diff chain
+            return
+
         self._session_frames += 1
+        current = clean_image.copy()
+
+        # --- Cooldown gate ---
+        cooldown = float(cfg.get("detection_cooldown", 30))
+        if cooldown > 0 and (time.monotonic() - self._last_detection_ts) < cooldown:
+            self._previous_frame = current
+            return
+
+        # --- First-frame guard + sky circle init ---
+        if self._previous_frame is None:
+            self._previous_frame = current
+            self._resolve_sky_circle(current)
+            return
+
+        # --- Frame differencing (adaptive or fixed threshold) ---
+        if cfg.get("adaptive_threshold", True):
+            threshold = estimate_adaptive_threshold(current)
+        else:
+            threshold = int(cfg.get("diff_threshold", 25))
+        diff_image = compute_frame_difference(
+            current, self._previous_frame, threshold)
+        self._previous_frame = current
+
+        # --- Sky circle mask ---
+        if self._sky_circle:
+            diff_image = apply_sky_circle_mask(diff_image, *self._sky_circle)
+
+        # --- Ensure tracker is initialised if multi-frame mode enabled ---
+        if cfg.get("multi_frame_confirm", False) and self._tracker is None:
+            self._tracker = MeteorTracker(
+                min_frames=int(cfg.get("min_confirm_frames", 2)))
+        elif not cfg.get("multi_frame_confirm", False):
+            self._tracker = None
+
         threading.Thread(
             target=self._run_detection,
-            args=(clean_image.copy(), cfg),
+            args=(diff_image, current, cfg),
             daemon=True,
         ).start()
 
@@ -70,61 +127,104 @@ class MeteorController(QObject):
     #  Detection  (background thread — no Qt calls allowed)               #
     # ------------------------------------------------------------------ #
 
-    def _run_detection(self, image: Image.Image, cfg: dict):
+    def _run_detection(self, diff_image: Image.Image,
+                       original_image: Image.Image, cfg: dict):
         try:
             min_length = int(cfg.get("min_length", 100))
             zones = zones_from_config(cfg)
-            detections = detect_meteors(image, min_length=min_length,
-                                        exclusion_zones=zones or None)
+            detections = detect_meteors(
+                diff_image, min_length=min_length,
+                exclusion_zones=zones or None,
+                strict_validation=True,
+            )
 
             if not detections:
+                # Still feed empty frame to tracker so series can expire
+                if self._tracker:
+                    self._process_confirmed(
+                        self._tracker.update([], time.monotonic()),
+                        original_image, cfg)
                 return
 
-            timestamp = datetime.now().isoformat(timespec="seconds")
-            best = max(detections, key=lambda d: d.length)
+            # --- Speed plausibility filter ---
+            exposure_sec = self._get_exposure_sec()
+            if exposure_sec > 0:
+                detections = [
+                    d for d in detections
+                    if check_speed_plausibility(
+                        d, exposure_sec, original_image.width)
+                ]
+                if not detections:
+                    if self._tracker:
+                        self._process_confirmed(
+                            self._tracker.update([], time.monotonic()),
+                            original_image, cfg)
+                    return
 
-            # Save thumbnail centred on the longest detection
-            thumb_path = save_thumbnail(
-                image, best,
-                thumb_dir=self._resolve_thumb_dir(),
-                timestamp=timestamp,
-            )
-
-            event = {
-                "timestamp":      timestamp,
-                "count":          len(detections),
-                "max_length":     round(best.length, 1),
-                "thumbnail_path": thumb_path,
-                # Stored for exclusion zone creation on rejection
-                "best_x1": best.x1, "best_y1": best.y1,
-                "best_x2": best.x2, "best_y2": best.y2,
-                "img_w":   image.width,
-                "img_h":   image.height,
-            }
-
-            if cfg.get("save_detections", True):
-                log_detections(self._resolve_log_path(cfg), detections)
-
-            if cfg.get("save_annotated", False):
-                self._save_annotated(image, detections, cfg, timestamp)
-
-            self._session_detections += len(detections)
-            self._last_detection_time = timestamp
-
-            # Evict oldest events, deleting their thumbnails to free disk
-            new_list = ([event] + self._recent_events)[:_MAX_RECENT_EVENTS]
-            evicted = self._recent_events[_MAX_RECENT_EVENTS - 1:]
-            for old in evicted:
-                self._delete_thumbnail(old.get("thumbnail_path", ""))
-            self._recent_events = new_list
-
-            app_logger.info(
-                f"Meteor: {len(detections)} detection(s), "
-                f"longest={event['max_length']}px"
-            )
+            # --- Multi-frame confirmation or direct report ---
+            if self._tracker:
+                confirmed = self._tracker.update(detections, time.monotonic())
+                self._process_confirmed(confirmed, original_image, cfg)
+            else:
+                self._report_detections(detections, original_image, cfg)
 
         except Exception as exc:
             app_logger.error(f"Meteor detection error: {exc}")
+
+    def _report_detections(self, detections: List[MeteorDetection],
+                           original_image: Image.Image, cfg: dict):
+        """Report detections directly (single-frame mode)."""
+        self._last_detection_ts = time.monotonic()
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        best = max(detections, key=lambda d: d.length)
+
+        thumb_path = save_thumbnail(
+            original_image, best,
+            thumb_dir=self._resolve_thumb_dir(),
+            timestamp=timestamp,
+        )
+
+        event = {
+            "timestamp":      timestamp,
+            "count":          len(detections),
+            "max_length":     round(best.length, 1),
+            "thumbnail_path": thumb_path,
+            "best_x1": best.x1, "best_y1": best.y1,
+            "best_x2": best.x2, "best_y2": best.y2,
+            "img_w":   original_image.width,
+            "img_h":   original_image.height,
+        }
+
+        if cfg.get("save_detections", True):
+            log_detections(self._resolve_log_path(cfg), detections)
+
+        if cfg.get("save_annotated", False):
+            self._save_annotated(original_image, detections, cfg, timestamp)
+
+        self._session_detections += len(detections)
+        self._last_detection_time = timestamp
+
+        new_list = ([event] + self._recent_events)[:_MAX_RECENT_EVENTS]
+        evicted = self._recent_events[_MAX_RECENT_EVENTS - 1:]
+        for old in evicted:
+            self._delete_thumbnail(old.get("thumbnail_path", ""))
+        self._recent_events = new_list
+
+        app_logger.info(
+            f"Meteor: {len(detections)} detection(s), "
+            f"longest={event['max_length']}px"
+        )
+
+    def _process_confirmed(self, events, original_image: Image.Image,
+                           cfg: dict):
+        """Handle confirmed events from the multi-frame tracker."""
+        for meteor_event in events:
+            self._report_detections(
+                [meteor_event.best], original_image, cfg)
+            app_logger.info(
+                f"Meteor: confirmed across {meteor_event.frame_count} frames, "
+                f"direction_std={meteor_event.direction_std:.2f} rad"
+            )
 
     def _save_annotated(
         self,
@@ -202,12 +302,23 @@ class MeteorController(QObject):
     # ------------------------------------------------------------------ #
 
     def on_capture_stopped(self):
+        if self._tracker:
+            self._tracker.flush()  # expire any pending series
+            self._tracker = None
         self._session_frames = 0
         self._session_detections = 0
         self._last_detection_time = None
+        self._previous_frame = None
+        self._last_detection_ts = 0.0
+        self._sky_circle = None
         self._emit_status()
 
     def shutdown(self):
+        if self._tracker:
+            self._tracker.reset()
+            self._tracker = None
+        self._previous_frame = None
+        self._sky_circle = None
         app_logger.debug("Meteor controller shutdown")
 
     # ------------------------------------------------------------------ #
@@ -228,6 +339,42 @@ class MeteorController(QObject):
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #
+
+    def _resolve_sky_circle(self, image: Image.Image):
+        """Compute and cache the sky circle (cx, cy, radius) for masking."""
+        if self._sky_circle is not None:
+            return
+        try:
+            # Prefer calibration model (precise optical centre)
+            ctrl = getattr(self._main_window, 'allsky_controller', None)
+            model = getattr(ctrl, '_model', None) if ctrl else None
+            if model and hasattr(model, 'cx') and hasattr(model, 'a1'):
+                r = model.a1 * (math.pi / 2)  # 90-deg horizon radius
+                self._sky_circle = (model.cx, model.cy, r)
+                app_logger.info(
+                    f"Meteor: sky circle from calibration — "
+                    f"cx={model.cx:.0f}, cy={model.cy:.0f}, r={r:.0f}")
+                return
+        except Exception:
+            pass
+        try:
+            from services.allsky.star_centroid import estimate_sky_circle
+            cx, cy, r = estimate_sky_circle(image)
+            self._sky_circle = (cx, cy, r)
+            app_logger.info(
+                f"Meteor: sky circle auto-detected — "
+                f"cx={cx:.0f}, cy={cy:.0f}, r={r:.0f}")
+        except Exception as exc:
+            app_logger.debug(f"Meteor: sky circle detection failed ({exc}), "
+                             "running without mask")
+
+    def _get_exposure_sec(self) -> float:
+        """Return current exposure time in seconds, or 0 if unavailable."""
+        try:
+            ms = float(self._main_window.config.get("zwo_exposure_ms", 0))
+            return ms / 1000.0
+        except (TypeError, ValueError):
+            return 0.0
 
     def _get_config(self) -> dict:
         return self._main_window.config.get("meteor", {})
