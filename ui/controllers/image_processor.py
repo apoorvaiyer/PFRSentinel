@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from services.logger import app_logger
 from services.processor import add_overlays, auto_stretch_image
+from services.sharpening import apply_unsharp_mask
 from services.ml_service import get_ml_service, analyze_image_for_tokens
 from .dev_mode_utils import dev_mode_saver, collect_ml_contribution_sample
 
@@ -233,6 +234,21 @@ class ImageProcessorWorker(QThread):
                     font = ImageFont.load_default()
                 draw.text((img.width - 200, 10), timestamp_text, fill='white', font=font)
             
+            # Apply cosmetic star sharpening (unsharp mask, before overlays)
+            sharpening_cfg = config.get('sharpening', {})
+            if sharpening_cfg.get('enabled', False):
+                img = apply_unsharp_mask(
+                    img,
+                    radius=float(sharpening_cfg.get('radius', 1.5)),
+                    amount=int(sharpening_cfg.get('amount', 80)),
+                    threshold=int(sharpening_cfg.get('threshold', 3)),
+                )
+                app_logger.debug(
+                    f"Sharpening applied: radius={sharpening_cfg.get('radius', 1.5)}, "
+                    f"amount={sharpening_cfg.get('amount', 80)}, "
+                    f"threshold={sharpening_cfg.get('threshold', 3)}"
+                )
+
             # === ML Models: Add predictions to metadata for overlay tokens ===
             ml_config = config.get('ml_models', {})
             if ml_config.get('enabled', False):
@@ -262,11 +278,14 @@ class ImageProcessorWorker(QThread):
                 except Exception as e:
                     app_logger.debug(f"ML prediction skipped: {e}")
             
-            # Star detection tokens
+            # Star detection tokens (gated: sun below civil twilight, and roof open if ML enabled)
             try:
-                from services.star_detection import analyze_stars
-                star_tokens = analyze_stars(raw_array)
-                metadata.update(star_tokens)
+                from services.star_detection import analyze_stars, should_run_star_detection
+                if should_run_star_detection(config, metadata):
+                    star_tokens = analyze_stars(raw_array)
+                    metadata.update(star_tokens)
+                else:
+                    metadata.update({'STAR_COUNT': 'N/A', 'FWHM': 'N/A', 'SEEING': 'N/A'})
             except Exception as e:
                 app_logger.debug(f"Star detection skipped: {e}")
 

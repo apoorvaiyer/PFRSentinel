@@ -113,7 +113,15 @@ DEFAULT_CONFIG = {
         "normalize_channels": True,  # Equalize R/G/B medians before stretch (fixes color cast in dark scenes)
         "dark_scene_threshold": 0.05  # Median below this triggers dark scene mode (0.0-0.2)
     },
-    
+
+    # Star sharpening — cosmetic unsharp mask applied before overlay rendering
+    "sharpening": {
+        "enabled": False,   # Disabled by default; user opts in
+        "radius": 1.5,      # Gaussian blur radius in pixels (keep <= 2 for stars)
+        "amount": 80,       # Strength on Pillow 0-500 scale (80 = subtle)
+        "threshold": 3,     # Min pixel diff to sharpen; suppresses noise in dark sky
+    },
+
     # ML Models (Beta) - Observatory condition classification
     # These models analyze images to detect roof state and sky conditions
     "ml_models": {
@@ -173,7 +181,8 @@ DEFAULT_CONFIG = {
         "latitude": "",  # Preferred: direct coordinates (e.g., "51.5074")
         "longitude": "",  # Preferred: direct coordinates (e.g., "-0.1278")
         "units": "metric",  # "metric", "imperial", or "standard"
-        "cache_duration": 600  # Cache weather data for 10 minutes
+        "cache_duration": 600,  # Cache weather data for 10 minutes
+        "elevation": "",       # Observer elevation in metres (for refraction)
     },
     
     # Discord alerts

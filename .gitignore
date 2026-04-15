@@ -71,6 +71,7 @@ stretch_tuner_out/
 noise_models/
 colorize_out/
 stacked_out/
+sample_images/
 
 # Wiki (managed locally, pushed via scripts/wiki-push.sh)
 wiki/
