@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QFont, QIcon, QPainter, QColor, QBrush
-from qfluentwidgets import FluentIcon
+import qtawesome as qta
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
 from ..theme.styles import get_nav_item_style
@@ -30,10 +30,8 @@ class NavButton(QPushButton):
         self.setFixedHeight(40)
         self.setCursor(Qt.PointingHandCursor)
         
-        # Icon handling - FluentIcon or QIcon
-        if hasattr(icon, 'icon'):
-            self.setIcon(icon.icon())
-        elif isinstance(icon, QIcon):
+        # Icon handling - QIcon instance
+        if isinstance(icon, QIcon):
             self.setIcon(icon)
         
         self.setIconSize(QSize(20, 20))
@@ -189,16 +187,17 @@ class NavRail(QFrame):
         layout.addWidget(self.header)
         
         # Navigation buttons
+        _ico = lambda name: qta.icon(f'mdi6.{name}', color=Colors.text_secondary)
         nav_items = [
-            (FluentIcon.VIEW, "Live Monitoring", 'monitoring'),
-            (FluentIcon.CAMERA, "Capture", 'capture'),
-            (FluentIcon.SHARE, "Output", 'output'),
-            (FluentIcon.PHOTO, "Image Processing", 'processing'),
-            (FluentIcon.FONT, "Overlays", 'overlays'),
-            (FluentIcon.GLOBE, "All-Sky", 'allsky'),
-            (FluentIcon.VIDEO, "Timelapse", 'timelapse'),
-            (FluentIcon.TRANSPARENT, "Meteor Tracker", 'meteor'),
-            (FluentIcon.HISTORY, "Logs", 'logs'),
+            (_ico('monitor-shimmer'), "Live Monitoring", 'monitoring'),
+            (_ico('camera-plus-outline'), "Capture", 'capture'),
+            (_ico('monitor-share'), "Output", 'output'),
+            (_ico('image-edit-outline'), "Image Processing", 'processing'),
+            (_ico('format-textbox'), "Overlays", 'overlays'),
+            (_ico('sphere'), "All-Sky", 'allsky'),
+            (_ico('filmstrip-box-multiple'), "Timelapse", 'timelapse'),
+            (_ico('meteor'), "Meteor Tracker", 'meteor'),
+            (_ico('math-log'), "Logs", 'logs'),
         ]
         
         for icon, label, key in nav_items:
@@ -211,7 +210,7 @@ class NavRail(QFrame):
         layout.addItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
         
         # Settings button (bottom)
-        settings_btn = NavButton(FluentIcon.SETTING, "Settings", 'settings', self)
+        settings_btn = NavButton(_ico('cog'), "Settings", 'settings', self)
         settings_btn.clicked.connect(lambda checked: self._on_button_clicked('settings'))
         layout.addWidget(settings_btn)
         self._buttons['settings'] = settings_btn
