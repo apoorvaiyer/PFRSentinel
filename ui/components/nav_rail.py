@@ -192,12 +192,12 @@ class NavRail(QFrame):
         nav_items = [
             (FluentIcon.VIEW, "Live Monitoring", 'monitoring'),
             (FluentIcon.CAMERA, "Capture", 'capture'),
-            (FluentIcon.CLOUD, "Output", 'output'),
+            (FluentIcon.SHARE, "Output", 'output'),
             (FluentIcon.PHOTO, "Image Processing", 'processing'),
             (FluentIcon.FONT, "Overlays", 'overlays'),
             (FluentIcon.GLOBE, "All-Sky", 'allsky'),
             (FluentIcon.VIDEO, "Timelapse", 'timelapse'),
-            (FluentIcon.ZOOM_IN, "Meteor Tracker", 'meteor'),
+            (FluentIcon.TRANSPARENT, "Meteor Tracker", 'meteor'),
             (FluentIcon.HISTORY, "Logs", 'logs'),
         ]
         

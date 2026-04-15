@@ -6,6 +6,7 @@ import os
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFileDialog, QLabel,
+    QFrame,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
@@ -14,7 +15,7 @@ from qfluentwidgets import (
     PushButton, SpinBox, FluentIcon, LineEdit,
 )
 
-from ..theme.tokens import Colors, Spacing
+from ..theme.tokens import Colors, Spacing, Layout
 from ..components.cards import SettingsCard, SwitchRow, CollapsibleCard
 
 
@@ -298,16 +299,26 @@ class MeteorPanel(QScrollArea):
         layout.addWidget(card)
 
     def _make_stat(self, label: str, value: str) -> QWidget:
-        w = QWidget()
+        w = QFrame()
+        w.setStyleSheet(
+            f"QFrame {{ background: {Colors.bg_input}; "
+            f"border: 1px solid {Colors.border_subtle}; "
+            f"border-radius: {Layout.radius_md}px; }}"
+        )
         vbox = QVBoxLayout(w)
-        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setContentsMargins(
+            Spacing.md, Spacing.sm, Spacing.md, Spacing.sm,
+        )
         vbox.setSpacing(2)
         val_lbl = BodyLabel(value)
         val_lbl.setStyleSheet(
             f"color: {Colors.text_primary}; font-size: 22px; font-weight: 600;"
+            f"background: transparent;"
         )
         cap_lbl = CaptionLabel(label)
-        cap_lbl.setStyleSheet(f"color: {Colors.text_muted};")
+        cap_lbl.setStyleSheet(
+            f"color: {Colors.text_muted}; background: transparent;"
+        )
         vbox.addWidget(val_lbl)
         vbox.addWidget(cap_lbl)
         w._val = val_lbl  # type: ignore[attr-defined]
