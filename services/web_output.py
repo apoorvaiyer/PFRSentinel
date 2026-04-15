@@ -12,7 +12,11 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
+from PIL import Image
 from .logger import app_logger
+
+# Maximum image size served by the web endpoint (5 MB)
+WEB_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
 
 class ImageHTTPHandler(BaseHTTPRequestHandler):
@@ -246,7 +250,10 @@ class WebOutputServer:
     def update_image(self, image_path, image_data_bytes, metadata=None, content_type='image/jpeg'):
         """
         Update the latest image to serve.
-        
+
+        If the image exceeds WEB_IMAGE_MAX_BYTES (5 MB), it is progressively
+        downsized to fit within the limit before being served.
+
         Args:
             image_path: Path to the saved image file (for reference)
             image_data_bytes: Image data as bytes (JPEG or PNG)
@@ -255,8 +262,14 @@ class WebOutputServer:
         """
         if not self.running:
             return
-        
+
         try:
+            # Downsize if image exceeds the web endpoint size limit
+            if len(image_data_bytes) > WEB_IMAGE_MAX_BYTES:
+                image_data_bytes, content_type = self._downsize_image(
+                    image_data_bytes, content_type
+                )
+
             # PERF-002: Use centralized update method with ETag generation
             ImageHTTPHandler.update_image(
                 image_data=image_data_bytes,
@@ -267,6 +280,43 @@ class WebOutputServer:
             app_logger.debug(f"Web server updated with new image: {os.path.basename(image_path)} ({len(image_data_bytes)} bytes, {content_type})")
         except Exception as e:
             app_logger.error(f"Error updating web server image: {e}")
+
+    @staticmethod
+    def _downsize_image(image_data_bytes: bytes, content_type: str) -> tuple:
+        """Progressively downscale an image until it fits within WEB_IMAGE_MAX_BYTES.
+
+        Shrinks by 10% each pass and re-encodes as JPEG (quality 90) to bring
+        the payload under the limit.  Returns (new_bytes, new_content_type).
+        """
+        try:
+            img = Image.open(io.BytesIO(image_data_bytes))
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+
+            original_size = len(image_data_bytes)
+            scale = 1.0
+
+            for _ in range(20):  # safety cap — 0.9^20 ≈ 12% of original
+                scale *= 0.9
+                new_w = max(1, int(img.width * scale))
+                new_h = max(1, int(img.height * scale))
+                resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+                buf = io.BytesIO()
+                resized.save(buf, format='JPEG', quality=90)
+                if buf.tell() <= WEB_IMAGE_MAX_BYTES:
+                    app_logger.info(
+                        f"Web image downsized: {original_size / (1024*1024):.1f} MB → "
+                        f"{buf.tell() / (1024*1024):.1f} MB ({new_w}x{new_h})"
+                    )
+                    return buf.getvalue(), 'image/jpeg'
+
+            # Exhausted attempts — serve whatever we have at smallest scale
+            app_logger.warning("Web image still above limit after max downscale passes")
+            return buf.getvalue(), 'image/jpeg'
+        except Exception as e:
+            app_logger.warning(f"Web image downsize failed, serving original: {e}")
+            return image_data_bytes, content_type
     
     def get_url(self):
         """Get the full URL for the image endpoint."""
