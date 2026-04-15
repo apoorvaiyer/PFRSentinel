@@ -459,6 +459,30 @@ Latest sky capture from {APP_DISPLAY_NAME}."""
             "🎬 Timelapse Complete", description, attach_path
         )
 
+    def send_calibration_complete(self, model_info: dict):
+        """
+        Post an all-sky calibration-complete notification.
+
+        model_info keys: rms_residual, n_matches, calibrated_at, a1, cx, cy.
+        """
+        if not self.is_enabled():
+            return False
+        if not self.config.get('discord', {}).get('post_calibration', False):
+            return False
+
+        rms = model_info.get('rms_residual', 0)
+        n = model_info.get('n_matches', 0)
+        ts = (model_info.get('calibrated_at', '') or '')[:10]
+        description = (
+            f"All-sky lens calibrated successfully.\n"
+            f"**Stars matched:** {n}\n"
+            f"**RMS residual:** {rms:.2f} px\n"
+            f"**Date:** {ts}"
+        )
+        return self.send_discord_message(
+            "All-Sky Calibration Complete", description, level="info"
+        )
+
     def _send_with_video(self, title: str, description: str, video_path=None):
         """
         Internal helper: send an embed, optionally attaching an MP4 file.

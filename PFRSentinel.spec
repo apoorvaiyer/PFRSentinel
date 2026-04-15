@@ -179,6 +179,12 @@ added_files = [
     # ML models (ONNX format for production)
     ('ml/models/roof_classifier_v1.onnx', 'ml/models'),
     ('ml/models/sky_classifier_v1.onnx', 'ml/models'),
+    # All-sky overlay catalog data
+    ('star_data/bsc5-short.json', 'star_data'),
+    ('star_data/messier_list.json', 'star_data'),
+    ('star_data/NGC.csv', 'star_data'),
+    ('star_data/addendum.csv', 'star_data'),
+    ('star_data/Dien.json', 'star_data'),
 ]
 
 # ============================================================================
@@ -229,6 +235,18 @@ hiddenimports = [
     'more_itertools', 'autocommand',
     'platformdirs',
     
+    # --- Scipy (calibration) ---
+    'scipy', 'scipy.optimize', 'scipy.optimize._lsq', 'scipy.optimize.minpack2',
+    'scipy._lib', 'scipy._lib._util',
+
+    # --- All-sky overlay modules ---
+    'services.allsky', 'services.allsky.coords', 'services.allsky.catalogs',
+    'services.allsky.planets', 'services.allsky.fisheye',
+    'services.allsky.calibration', 'services.allsky.star_centroid',
+    'services.allsky.label_collision', 'services.allsky.overlay_renderer',
+    'services.allsky.render_grid', 'services.allsky.render_constellations',
+    'services.allsky.render_objects', 'services.allsky.config_schema',
+
     # --- App modules ---
     'services', 'services.config', 'services.logger', 'services.processor',
     'services.watcher', 'services.zwo_camera', 'services.camera_connection',
@@ -263,11 +281,11 @@ a = Analysis(
         'onnx',  # onnx package (model format), NOT onnxruntime (inference)
         'tensorflow', 'keras',
         'sklearn', 'scikit-learn',
-        'scipy',
         'pandas',
         'matplotlib', 'mpl_toolkits',
         'seaborn', 'plotly',
-        'astropy',  # Only needed for FITS in dev mode
+        'astropy',  # Only needed for FITS in dev mode — all-sky uses pure numpy
+        # Note: scipy is intentionally NOT excluded (needed for calibration)
         'sympy',  # Not needed
         
         # === Exclude unused stdlib ===

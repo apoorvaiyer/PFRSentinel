@@ -195,7 +195,9 @@ class NavRail(QFrame):
             (FluentIcon.CLOUD, "Output", 'output'),
             (FluentIcon.PHOTO, "Image Processing", 'processing'),
             (FluentIcon.FONT, "Overlays", 'overlays'),
+            (FluentIcon.GLOBE, "All-Sky", 'allsky'),
             (FluentIcon.VIDEO, "Timelapse", 'timelapse'),
+            (FluentIcon.ZOOM_IN, "Meteor Tracker", 'meteor'),
             (FluentIcon.HISTORY, "Logs", 'logs'),
         ]
         

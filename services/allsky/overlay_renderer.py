@@ -1,0 +1,317 @@
+"""
+Main all-sky overlay entry point.
+
+render_allsky_overlay(img, config, metadata) → PIL.Image
+
+Orchestrates: grid → constellations → Messier → NGC → planets.
+All layers share a single LabelGrid for collision avoidance.
+Fails silently if model not calibrated or any layer errors.
+"""
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+
+import numpy as np
+from PIL import Image
+
+from .fisheye import FisheyeModel
+from .label_collision import LabelGrid
+from .render_grid import render_grid
+from .render_constellations import render_constellations
+from .render_objects import render_messier, render_ngc, render_planets, _is_sky_visible
+
+log = logging.getLogger(__name__)
+
+def _build_detection_mask(img: Image.Image) -> np.ndarray:
+    """Build a sky visibility mask from actual star detections.
+
+    Each detected star claims a circular region whose radius is based on
+    the 2nd-nearest-neighbour distance (robust to isolated edge stars)
+    and weighted by local image brightness — bright open sky gets full
+    radius, dim equipment edges get small radii so labels don't bleed
+    onto obstructed areas.
+
+    Returns a uint8 array (0 = obstructed, 255 = open sky) that is a
+    drop-in replacement for the grayscale image in ``_is_sky_visible()``.
+    Falls back to image grayscale if < 10 stars detected.
+    """
+    from .star_centroid import detect_stars, estimate_sky_circle
+    from PIL import ImageDraw
+
+    try:
+        sky_cx, sky_cy, sky_r = estimate_sky_circle(img)
+        detections = detect_stars(
+            img, max_stars=200,
+            sky_cx=sky_cx, sky_cy=sky_cy, sky_radius=sky_r,
+        )
+    except Exception:
+        return np.array(img.convert('L'))
+
+    if len(detections) < 10:
+        return np.array(img.convert('L'))
+
+    w, h = img.size
+    det_xy = np.array([(x, y) for x, y, _ in detections])
+
+    # 2nd nearest neighbour distance (more robust than 1st to outliers)
+    from scipy.spatial.distance import cdist
+    dists = cdist(det_xy, det_xy)
+    np.fill_diagonal(dists, 1e9)
+    nn2_dist = np.sort(dists, axis=1)[:, 1]
+    base_radii = np.clip(nn2_dist * 0.8, 50, 250)
+
+    # Brightness weight: detections in dim areas (near equipment, median
+    # brightness < 20) get 30% of their base radius.  Detections in
+    # bright sky (median > 60) get 100%.  This prevents equipment-edge
+    # stars from claiming nearby obstructed regions.
+    gray = np.array(img.convert('L'))
+    bw = 25  # brightness sample half-window
+    brightness = np.array([
+        float(np.median(gray[max(0, int(y) - bw):int(y) + bw + 1,
+                              max(0, int(x) - bw):int(x) + bw + 1]))
+        for x, y in det_xy
+    ])
+    weight = np.clip((brightness - 20.0) / 40.0, 0.3, 1.0)
+    radii = (base_radii * weight).astype(int)
+
+    mask = Image.new('L', (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+    for (x, y), r in zip(det_xy, radii):
+        draw.ellipse([(x - r, y - r), (x + r, y + r)], fill=255)
+    return np.array(mask)
+
+
+def render_allsky_overlay(
+    img: Image.Image,
+    config: dict,
+    metadata: dict,
+) -> Image.Image:
+    """
+    Add astronomical overlays to an all-sky camera image.
+
+    Reads calibration model path from config['calibration_file'].
+    Observer location from config keys '_lat', '_lon', '_elevation'
+    (injected by the pipeline callers).
+
+    Args:
+        img: PIL Image (RGB or RGBA) to annotate.
+        config: allsky_overlay config dict.
+        metadata: Frame metadata dict (may contain timestamp keys).
+
+    Returns:
+        Modified PIL Image (same mode as input).
+    """
+    if not config.get('enabled', False):
+        return img
+
+    original_mode = img.mode
+
+    # --- Load fisheye model ---
+    model = _load_model(config)
+    if model is None:
+        return img  # Silently skip — not calibrated
+
+    # --- Determine observation time ---
+    dt = _get_datetime(metadata)
+    utc_offset = float(config.get('utc_offset_hours', 0))
+    if utc_offset != 0.0:
+        from datetime import timedelta
+        dt = dt - timedelta(hours=utc_offset)
+
+    # --- Observer location ---
+    lat = float(config.get('_lat', 0.0))
+    lon = float(config.get('_lon', 0.0))
+    if lat == 0.0 and lon == 0.0:
+        log.debug("allsky: lat/lon not configured, overlays may be inaccurate")
+
+    # --- Ensure RGBA for compositing ---
+    if img.mode != 'RGBA':
+        img = img.convert('RGBA')
+
+    w, h = img.size
+    grid_cfg = LabelGrid(w, h)
+
+    # Build a sky visibility mask from star detections.  Pixels near
+    # detected stars are 255 (open sky); all others are 0 (obstructed).
+    # This replaces the old brightness-threshold approach which was
+    # fragile across different FITS stretches and scattered light levels.
+    # Falls back to image grayscale when <10 stars are detected.
+    gray = _build_detection_mask(img)
+
+    # Layer order: grid first (background), then constellations, then objects
+    try:
+        grid_config = config.get('grid', {})
+        img = render_grid(img, model, grid_config)
+    except Exception as e:
+        log.warning(f"allsky grid render failed: {e}")
+
+    try:
+        con_config = config.get('constellations', {})
+        img = render_constellations(img, model, con_config, lat, lon, dt, grid_cfg,
+                                    sky_gray=gray)
+    except Exception as e:
+        log.warning(f"allsky constellation render failed: {e}")
+
+    # Pre-compute global allowed object set (top_n across all types combined)
+    # Uses the ORIGINAL gray (no overlays) for accurate equipment detection
+    allowed_ids = _compute_allowed_ids(config, model, lat, lon, dt, gray)
+
+    try:
+        messier_config = config.get('messier', {})
+        img = render_messier(img, model, messier_config, lat, lon, dt, grid_cfg,
+                             allowed_ids, sky_gray=gray)
+    except Exception as e:
+        log.warning(f"allsky messier render failed: {e}")
+
+    try:
+        ngc_config = config.get('ngc', {})
+        img = render_ngc(img, model, ngc_config, lat, lon, dt, grid_cfg,
+                         allowed_ids, sky_gray=gray)
+    except Exception as e:
+        log.warning(f"allsky NGC render failed: {e}")
+
+    try:
+        planet_config = config.get('planets', {})
+        img = render_planets(img, model, planet_config, lat, lon, dt, grid_cfg,
+                             allowed_ids, sky_gray=gray)
+    except Exception as e:
+        log.warning(f"allsky planet render failed: {e}")
+
+    # Restore original mode
+    if original_mode != 'RGBA':
+        img = img.convert(original_mode)
+
+    return img
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _compute_allowed_ids(
+    config: dict,
+    model: FisheyeModel,
+    lat: float,
+    lon: float,
+    dt: datetime,
+    gray: Optional['np.ndarray'] = None,
+) -> Optional[set]:
+    """
+    Rank all visible objects (planets + Messier + NGC) by brightness and
+    return the set of UIDs for the top_n brightest ones.
+
+    Objects projected onto dark equipment areas (checked via gray pixel
+    brightness) are excluded from ranking so they don't consume the budget.
+
+    UIDs are prefixed by type to avoid collisions:
+        'planet:Jupiter', 'messier:M45', 'ngc:NGC 2244'
+
+    Returns None if top_n is 0 or not set (show everything).
+    """
+    top_n = int(config.get('top_n', 0))
+    if top_n <= 0:
+        return None
+
+    from .catalogs import get_messier_objects, get_ngc_objects
+    from .planets import get_all_positions
+    from .coords import radec_to_altaz as _ra2aa
+
+    # Approximate typical visual magnitudes for planets (used for ranking only)
+    _PLANET_MAG = {
+        'Moon': -12.0, 'Venus': -4.0, 'Jupiter': -2.0, 'Mars': 0.5,
+        'Mercury': 0.0, 'Saturn': 0.7, 'Uranus': 5.7, 'Neptune': 7.8,
+    }
+
+    def _visible(xy) -> bool:
+        if xy is None:
+            return False
+        if gray is None:
+            return True
+        return _is_sky_visible(gray, int(xy[0]), int(xy[1]))
+
+    candidates = []  # (mag, uid)
+
+    # Planets
+    for name, (ra, dec) in get_all_positions(dt).items():
+        if name == 'Sun':
+            continue
+        alt, az = _ra2aa(ra, dec, lat, lon, dt, refraction=True)
+        if float(alt) < -1.0:
+            continue
+        xy = model.altaz_to_pixel(float(alt), float(az))
+        if not _visible(xy):
+            continue
+        candidates.append((_PLANET_MAG.get(name, 0.0), f'planet:{name}'))
+
+    # Messier
+    for obj in get_messier_objects():
+        alt, az = _ra2aa(
+            obj['ra_deg'], obj['dec_deg'], lat, lon, dt, refraction=True
+        )
+        if float(alt) < 5.0:
+            continue
+        xy = model.altaz_to_pixel(float(alt), float(az))
+        if not _visible(xy):
+            continue
+        label = obj.get('label', '')
+        if label:
+            mag = float(obj.get('vmag') or obj.get('mag') or 10.0)
+            candidates.append((mag, f'messier:{label}'))
+
+    # NGC (only when that layer is enabled)
+    ngc_cfg = config.get('ngc', {})
+    if ngc_cfg.get('enabled', False):
+        max_mag = float(ngc_cfg.get('min_magnitude', 12.0))
+        for obj in get_ngc_objects(max_mag=max_mag):
+            if obj.get('messier'):
+                continue
+            alt, az = _ra2aa(
+                obj['ra_deg'], obj['dec_deg'], lat, lon, dt, refraction=True
+            )
+            if float(alt) < 5.0:
+                continue
+            xy = model.altaz_to_pixel(float(alt), float(az))
+            if not _visible(xy):
+                continue
+            oid = obj.get('id', obj.get('name', ''))
+            if oid:
+                mag = float(obj.get('vmag') or obj.get('mag') or 99.0)
+                candidates.append((mag, f'ngc:{oid}'))
+
+    candidates.sort(key=lambda c: c[0])  # brightest first
+    return {uid for _, uid in candidates[:top_n]}
+
+
+def _load_model(config: dict) -> Optional[FisheyeModel]:
+    """Load fisheye model from calibration_file path; return None on failure."""
+    path = config.get('calibration_file', '')
+    if not path:
+        return None
+    model = FisheyeModel.try_load(path)
+    if model is None or not model.is_valid():
+        log.debug(f"allsky: calibration model not valid at {path!r}")
+        return None
+    return model
+
+
+def _get_datetime(metadata: dict) -> datetime:
+    """
+    Extract observation UTC datetime from frame metadata.
+    Falls back to current UTC time if no timestamp available.
+    """
+    # Try common metadata keys from capture pipelines
+    for key in ('DATETIME', 'capture_time', 'timestamp', 'date_obs'):
+        val = metadata.get(key)
+        if val is None:
+            continue
+        if isinstance(val, datetime):
+            return val.replace(tzinfo=timezone.utc) if val.tzinfo is None else val
+        if isinstance(val, str):
+            for fmt in ('%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S',
+                        '%Y%m%d_%H%M%S', '%d/%m/%Y %H:%M:%S'):
+                try:
+                    return datetime.strptime(val, fmt).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+
+    return datetime.now(timezone.utc)

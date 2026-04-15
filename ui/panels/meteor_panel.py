@@ -1,0 +1,365 @@
+"""
+Meteor Tracker Panel
+Full-page settings, live status, and per-detection thumbnail cards.
+"""
+import os
+
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFileDialog, QLabel,
+)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPixmap
+from qfluentwidgets import (
+    CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
+    PushButton, SpinBox, FluentIcon, LineEdit,
+)
+
+from ..theme.tokens import Colors, Spacing
+from ..components.cards import SettingsCard, SwitchRow, CollapsibleCard
+
+
+# ------------------------------------------------------------------ #
+#  Detection card widget                                               #
+# ------------------------------------------------------------------ #
+
+class DetectionCard(CardWidget):
+    """
+    One card per detection event.
+    Shows a 300×300 annotated thumbnail, metadata, and a "Not a Meteor" button.
+    """
+
+    reject_clicked = Signal(str)  # timestamp
+
+    _THUMB_SIZE = 300
+    _PLACEHOLDER_STYLE = f"background-color: #1a1a2e; border: 1px solid #333;"
+
+    def __init__(self, event: dict, parent=None):
+        super().__init__(parent)
+        self._timestamp = event.get("timestamp", "")
+        self._setup_ui(event)
+
+    def _setup_ui(self, event: dict):
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(Spacing.sm, Spacing.sm, Spacing.sm, Spacing.sm)
+        outer.setSpacing(Spacing.base)
+
+        # --- Thumbnail ---
+        thumb_lbl = QLabel()
+        thumb_lbl.setFixedSize(self._THUMB_SIZE, self._THUMB_SIZE)
+        thumb_lbl.setAlignment(Qt.AlignCenter)
+        thumb_path = event.get("thumbnail_path", "")
+        if thumb_path and os.path.isfile(thumb_path):
+            pix = QPixmap(thumb_path).scaled(
+                self._THUMB_SIZE, self._THUMB_SIZE,
+                Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            )
+            thumb_lbl.setPixmap(pix)
+        else:
+            thumb_lbl.setStyleSheet(self._PLACEHOLDER_STYLE)
+            thumb_lbl.setText("No image")
+            thumb_lbl.setStyleSheet(
+                self._PLACEHOLDER_STYLE
+                + f" color: {Colors.text_muted}; font-size: 12px;"
+            )
+        outer.addWidget(thumb_lbl)
+
+        # --- Metadata + button ---
+        meta_layout = QVBoxLayout()
+        meta_layout.setSpacing(Spacing.xs)
+
+        ts = event.get("timestamp", "")
+        time_str = ts.replace("T", "  ") if "T" in ts else ts
+        time_lbl = BodyLabel(time_str)
+        time_lbl.setStyleSheet(f"color: {Colors.text_primary}; font-weight: 600;")
+        meta_layout.addWidget(time_lbl)
+
+        count = event.get("count", 0)
+        max_len = event.get("max_length", 0)
+        noun = "meteor" if count == 1 else "meteors"
+        desc_lbl = BodyLabel(f"{count} {noun}  \u2022  longest {max_len:.0f} px")
+        desc_lbl.setStyleSheet(f"color: {Colors.text_secondary};")
+        meta_layout.addWidget(desc_lbl)
+
+        meta_layout.addStretch()
+
+        reject_btn = PushButton("Not a Meteor")
+        reject_btn.setIcon(FluentIcon.CLOSE)
+        reject_btn.clicked.connect(lambda: self.reject_clicked.emit(self._timestamp))
+        reject_btn.setToolTip(
+            "Mark as a false positive — this region will be excluded from future detection"
+        )
+        meta_layout.addWidget(reject_btn)
+
+        outer.addLayout(meta_layout, 1)
+
+
+# ------------------------------------------------------------------ #
+#  Main panel                                                          #
+# ------------------------------------------------------------------ #
+
+class MeteorPanel(QScrollArea):
+    """
+    Full-page meteor tracker panel.
+
+    Sections:
+    - Enable toggle
+    - Detection settings  (min trail length)
+    - Logging             (JSONL log, annotated images)
+    - Session status      (frames analysed, meteors detected, last hit)
+    - Recent detections   (thumbnail cards with "Not a Meteor" buttons)
+    """
+
+    settings_changed  = Signal()
+    detection_rejected = Signal(str)  # timestamp of rejected event
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_window = parent
+        self._loading_config = True
+        self._setup_ui()
+        self._loading_config = False
+
+    # ------------------------------------------------------------------ #
+    #  Layout                                                              #
+    # ------------------------------------------------------------------ #
+
+    def _setup_ui(self):
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: {Colors.bg_app};
+                border: none;
+            }}
+        """)
+
+        content = QWidget()
+        self.setWidget(content)
+
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(Spacing.base, Spacing.base, Spacing.base, Spacing.base)
+        layout.setSpacing(Spacing.card_gap)
+
+        self._build_enable_card(layout)
+        self._build_detection_card(layout)
+        self._build_logging_card(layout)
+        self._build_status_card(layout)
+        self._build_events_card(layout)
+
+        layout.addStretch()
+
+    def _build_enable_card(self, layout: QVBoxLayout):
+        card = SettingsCard(
+            "Meteor Tracker",
+            "Detect meteor trails on each processed frame using Canny edge "
+            "detection and Hough line analysis."
+        )
+        self._enable_switch = SwitchRow("Enable Detection", "Runs on every captured frame")
+        self._enable_switch.toggled.connect(self._on_settings_changed)
+        card.add_widget(self._enable_switch)
+        layout.addWidget(card)
+
+    def _build_detection_card(self, layout: QVBoxLayout):
+        card = CollapsibleCard("Detection Settings", FluentIcon.ZOOM_IN)
+        self._min_length_spin = SpinBox()
+        self._min_length_spin.setRange(10, 500)
+        self._min_length_spin.setValue(100)
+        self._min_length_spin.setSuffix(" px")
+        self._min_length_spin.valueChanged.connect(self._on_settings_changed)
+        card.add_row(
+            "Min Trail Length", self._min_length_spin,
+            "Minimum pixel length for a line to be counted as a meteor",
+        )
+        layout.addWidget(card)
+
+    def _build_logging_card(self, layout: QVBoxLayout):
+        card = CollapsibleCard("Logging", FluentIcon.FOLDER)
+
+        self._save_detections_switch = SwitchRow(
+            "Save Detection Log", "Append each detected event to a JSONL file"
+        )
+        self._save_detections_switch.toggled.connect(self._on_settings_changed)
+        card.add_widget(self._save_detections_switch)
+
+        self._log_file_edit, log_widget = self._make_path_row(
+            "Default: %LOCALAPPDATA%\\PFRSentinel\\meteor_detections.jsonl",
+            self._browse_log_file, file_picker=True,
+        )
+        card.add_row("Log File", log_widget, "Leave blank to use the default location")
+
+        self._save_annotated_switch = SwitchRow(
+            "Save Annotated Images",
+            "Write full-frame copies with trails highlighted in green"
+        )
+        self._save_annotated_switch.toggled.connect(self._on_settings_changed)
+        card.add_widget(self._save_annotated_switch)
+
+        self._annotated_dir_edit, ann_widget = self._make_path_row(
+            "Directory for annotated images",
+            self._browse_annotated_dir, file_picker=False,
+        )
+        card.add_row("Annotated Image Dir", ann_widget,
+                     "Leave blank to disable saving full annotated frames")
+
+        layout.addWidget(card)
+
+    def _make_path_row(self, placeholder: str, browse_callback, file_picker: bool):
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(Spacing.sm)
+        edit = LineEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.textChanged.connect(self._on_settings_changed)
+        row.addWidget(edit, 1)
+        btn = PushButton("Browse")
+        btn.setIcon(FluentIcon.FOLDER)
+        btn.clicked.connect(browse_callback)
+        row.addWidget(btn)
+        return edit, container
+
+    def _build_status_card(self, layout: QVBoxLayout):
+        card = CardWidget()
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(
+            Spacing.card_padding, Spacing.card_padding,
+            Spacing.card_padding, Spacing.card_padding,
+        )
+        card_layout.setSpacing(Spacing.element_gap)
+
+        title = SubtitleLabel("Session Status")
+        title.setStyleSheet(f"color: {Colors.text_primary};")
+        card_layout.addWidget(title)
+
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(Spacing.base)
+        self._frames_widget   = self._make_stat("Frames Analysed", "0")
+        self._hits_widget     = self._make_stat("Meteors Detected", "0")
+        self._last_hit_widget = self._make_stat("Last Detection", "\u2014")
+        stats_row.addWidget(self._frames_widget)
+        stats_row.addWidget(self._hits_widget)
+        stats_row.addWidget(self._last_hit_widget)
+        stats_row.addStretch()
+        card_layout.addLayout(stats_row)
+        layout.addWidget(card)
+
+    def _make_stat(self, label: str, value: str) -> QWidget:
+        w = QWidget()
+        vbox = QVBoxLayout(w)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(2)
+        val_lbl = BodyLabel(value)
+        val_lbl.setStyleSheet(
+            f"color: {Colors.text_primary}; font-size: 22px; font-weight: 600;"
+        )
+        cap_lbl = CaptionLabel(label)
+        cap_lbl.setStyleSheet(f"color: {Colors.text_muted};")
+        vbox.addWidget(val_lbl)
+        vbox.addWidget(cap_lbl)
+        w._val = val_lbl  # type: ignore[attr-defined]
+        return w
+
+    def _build_events_card(self, layout: QVBoxLayout):
+        self._events_card = CollapsibleCard("Recent Detections", FluentIcon.HISTORY)
+
+        self._events_container = QWidget()
+        self._events_layout = QVBoxLayout(self._events_container)
+        self._events_layout.setContentsMargins(0, 0, 0, 0)
+        self._events_layout.setSpacing(Spacing.sm)
+
+        self._no_events_lbl = CaptionLabel("No meteors detected this session.")
+        self._no_events_lbl.setStyleSheet(f"color: {Colors.text_muted};")
+        self._events_layout.addWidget(self._no_events_lbl)
+
+        self._events_card.add_widget(self._events_container)
+        layout.addWidget(self._events_card)
+
+    # ------------------------------------------------------------------ #
+    #  Public interface                                                    #
+    # ------------------------------------------------------------------ #
+
+    def load_from_config(self, config: dict):
+        self._loading_config = True
+        try:
+            self._enable_switch.set_checked(config.get("enabled", False))
+            self._min_length_spin.setValue(int(config.get("min_length", 100)))
+            self._save_detections_switch.set_checked(config.get("save_detections", True))
+            self._log_file_edit.setText(config.get("log_file", ""))
+            self._save_annotated_switch.set_checked(config.get("save_annotated", False))
+            self._annotated_dir_edit.setText(config.get("annotated_dir", ""))
+        finally:
+            self._loading_config = False
+
+    def update_status(self, status: dict):
+        """Called by MeteorController.status_updated every 5 s."""
+        self._frames_widget._val.setText(str(status.get("session_frames", 0)))
+        self._hits_widget._val.setText(str(status.get("session_detections", 0)))
+        last = status.get("last_detection_time")
+        self._last_hit_widget._val.setText(
+            last.replace("T", "  ")[:19] if last else "\u2014"
+        )
+        self._refresh_events(status.get("recent_events", []))
+
+    # ------------------------------------------------------------------ #
+    #  Events list                                                         #
+    # ------------------------------------------------------------------ #
+
+    def _refresh_events(self, events: list):
+        # Remove existing detection cards (keep placeholder label)
+        for i in reversed(range(self._events_layout.count())):
+            item = self._events_layout.itemAt(i)
+            if item and item.widget() and item.widget() is not self._no_events_lbl:
+                item.widget().deleteLater()
+                self._events_layout.removeItem(item)
+
+        if not events:
+            self._no_events_lbl.show()
+            return
+
+        self._no_events_lbl.hide()
+        for event in events[:10]:
+            card = DetectionCard(event, self._events_container)
+            card.reject_clicked.connect(self.detection_rejected.emit)
+            self._events_layout.addWidget(card)
+
+    # ------------------------------------------------------------------ #
+    #  Slots / helpers                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _on_settings_changed(self):
+        if self._loading_config:
+            return
+        self._save_config()
+        self.settings_changed.emit()
+
+    def _save_config(self):
+        if not self.main_window:
+            return
+        # Merge into existing config so exclusion_zones (managed by the
+        # controller) are never overwritten by a panel save.
+        existing = dict(self.main_window.config.get("meteor", {}))
+        existing.update({
+            "enabled":         self._enable_switch.is_checked(),
+            "min_length":      self._min_length_spin.value(),
+            "save_detections": self._save_detections_switch.is_checked(),
+            "log_file":        self._log_file_edit.text().strip(),
+            "save_annotated":  self._save_annotated_switch.is_checked(),
+            "annotated_dir":   self._annotated_dir_edit.text().strip(),
+        })
+        self.main_window.config.set("meteor", existing)
+        self.main_window.config.save()
+
+    def _browse_log_file(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Choose Log File", "",
+            "JSONL Files (*.jsonl);;All Files (*)",
+        )
+        if path:
+            self._log_file_edit.setText(path)
+
+    def _browse_annotated_dir(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Choose Annotated Image Directory"
+        )
+        if path:
+            self._annotated_dir_edit.setText(path)

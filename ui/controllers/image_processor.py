@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from services.logger import app_logger
 from services.processor import add_overlays, auto_stretch_image
+from services.sharpening import apply_unsharp_mask
 from services.ml_service import get_ml_service, analyze_image_for_tokens
 from .dev_mode_utils import dev_mode_saver, collect_ml_contribution_sample
 
@@ -43,10 +44,15 @@ class ImageProcessorWorker(QThread):
         self._running = False
         self._weather_service = None
         self._main_window = None  # Reference to main window for camera access
+        self._calibration_service = None  # Background calibration accumulation
     
     def set_weather_service(self, weather_service):
         """Set weather service for overlay tokens"""
         self._weather_service = weather_service
+
+    def set_calibration_service(self, service):
+        """Set calibration service for background accumulation"""
+        self._calibration_service = service
     
     def set_main_window(self, main_window):
         """Set main window reference for camera access"""
@@ -233,6 +239,21 @@ class ImageProcessorWorker(QThread):
                     font = ImageFont.load_default()
                 draw.text((img.width - 200, 10), timestamp_text, fill='white', font=font)
             
+            # Apply cosmetic star sharpening (unsharp mask, before overlays)
+            sharpening_cfg = config.get('sharpening', {})
+            if sharpening_cfg.get('enabled', False):
+                img = apply_unsharp_mask(
+                    img,
+                    radius=float(sharpening_cfg.get('radius', 1.5)),
+                    amount=int(sharpening_cfg.get('amount', 80)),
+                    threshold=int(sharpening_cfg.get('threshold', 3)),
+                )
+                app_logger.debug(
+                    f"Sharpening applied: radius={sharpening_cfg.get('radius', 1.5)}, "
+                    f"amount={sharpening_cfg.get('amount', 80)}, "
+                    f"threshold={sharpening_cfg.get('threshold', 3)}"
+                )
+
             # === ML Models: Add predictions to metadata for overlay tokens ===
             ml_config = config.get('ml_models', {})
             if ml_config.get('enabled', False):
@@ -269,6 +290,30 @@ class ImageProcessorWorker(QThread):
                 metadata.update(star_tokens)
             except Exception as e:
                 app_logger.debug(f"Star detection skipped: {e}")
+
+            # Feed frame to background calibration service (before overlays)
+            allsky_cfg = config.get('allsky_overlay', {})
+            if self._calibration_service and allsky_cfg.get('enabled', False):
+                try:
+                    weather_cfg = config.get('weather', {})
+                    cal_lat = float(weather_cfg.get('latitude', 0) or 0)
+                    cal_lon = float(weather_cfg.get('longitude', 0) or 0)
+                    if cal_lat != 0 or cal_lon != 0:
+                        from datetime import timezone as _tz
+                        self._calibration_service.feed_frame(
+                            img, datetime.now(_tz.utc), cal_lat, cal_lon,
+                        )
+                except Exception as e:
+                    app_logger.debug(f"Calibration feed skipped: {e}")
+
+            # Inject all-sky overlay config into metadata (picked up inside add_overlays)
+            if allsky_cfg.get('enabled', False):
+                weather_cfg = config.get('weather', {})
+                allsky_cfg = dict(allsky_cfg)
+                allsky_cfg['_lat'] = float(weather_cfg.get('latitude', 0) or 0)
+                allsky_cfg['_lon'] = float(weather_cfg.get('longitude', 0) or 0)
+                allsky_cfg['_elevation'] = float(weather_cfg.get('elevation', 0) or 0)
+                metadata['__allsky_config'] = allsky_cfg
 
             # Add overlays using services/processor.py function
             # stretched_for_preview is the clean pre-overlay frame (set at line ~194)
@@ -349,13 +394,17 @@ class ImageProcessor(QObject):
     def set_main_window(self, main_window):
         """Set reference to main window for config access"""
         self._main_window = main_window
-        
+
         # Pass main window to worker for camera access
         self._worker.set_main_window(main_window)
-        
+
         # Pass weather service to worker
         if hasattr(main_window, 'weather_service'):
             self._worker.set_weather_service(main_window.weather_service)
+
+    def set_calibration_service(self, service):
+        """Pass calibration service to worker for background accumulation"""
+        self._worker.set_calibration_service(service)
     
     def start(self):
         """Start the processing worker"""
@@ -436,8 +485,10 @@ class ImageProcessor(QObject):
             'dev_mode': mw.config.get('dev_mode', {'enabled': False, 'raw_folder': 'raw_debug', 'save_histogram_stats': True}),
             'ml_models': mw.config.get('ml_models', {'enabled': False}),
             'ml_contribution': mw.config.get('ml_contribution', {'enabled': False}),
+            'allsky_overlay': mw.config.get('allsky_overlay', {}),
+            'weather': mw.config.get('weather', {}),
         }
-        
+
         return config
     
     def _on_processing_complete(self, img, metadata, output_path):

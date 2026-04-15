@@ -281,7 +281,17 @@ def add_overlays(image_input, overlays, metadata, image_cache=None, weather_serv
             img = img.convert('RGBA')
         
         draw = ImageDraw.Draw(img)
-        
+
+        # All-sky astronomical overlay (constellation lines, planets, grid, etc.)
+        allsky_config = metadata.get('__allsky_config')
+        if allsky_config and allsky_config.get('enabled', False):
+            try:
+                from services.allsky import render_allsky_overlay
+                img = render_allsky_overlay(img, allsky_config, metadata)
+                draw = ImageDraw.Draw(img)  # Refresh draw after compositing
+            except Exception:
+                pass  # Silently skip — logged inside renderer
+
         for overlay in overlays:
             overlay_type = overlay.get('type', 'text')
             
@@ -1140,6 +1150,18 @@ def build_output_filename(pattern, metadata, output_format='PNG'):
     return result
 
 
+def _inject_allsky_metadata(config: dict, metadata: dict) -> None:
+    """Inject __allsky_config into metadata so add_overlays() can pick it up."""
+    allsky_cfg = config.get('allsky_overlay', {})
+    if allsky_cfg.get('enabled', False):
+        weather_cfg = config.get('weather', {})
+        allsky_cfg = dict(allsky_cfg)  # Shallow copy — don't mutate config
+        allsky_cfg['_lat'] = float(weather_cfg.get('latitude', 0) or 0)
+        allsky_cfg['_lon'] = float(weather_cfg.get('longitude', 0) or 0)
+        allsky_cfg['_elevation'] = float(weather_cfg.get('elevation', 0) or 0)
+        metadata['__allsky_config'] = allsky_cfg
+
+
 def process_image(image_path, config, metadata_dict=None, weather_service=None):
     """
     Main processing function:
@@ -1248,9 +1270,13 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
             # Apply MTF stretch
             raw_img = auto_stretch_image(raw_img, auto_stretch_config)
 
+            # Inject all-sky overlay config into metadata for add_overlays()
+            _inject_allsky_metadata(config, metadata)
             # Add overlays to stretched image
             processed_img = add_overlays(raw_img, overlays_to_apply, metadata, weather_service=weather_service)
         else:
+            # Inject all-sky overlay config into metadata for add_overlays()
+            _inject_allsky_metadata(config, metadata)
             # Add overlays to image (no stretch)
             processed_img = add_overlays(image_path, overlays_to_apply, metadata, weather_service=weather_service)
 

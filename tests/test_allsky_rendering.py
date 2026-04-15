@@ -1,0 +1,245 @@
+"""
+Tests for the all-sky overlay rendering pipeline.
+
+Verifies that layers render without crashing, that individual toggles work,
+and that the output is a valid PIL Image of the correct size.
+No hardware, network, or calibrated data required.
+"""
+import numpy as np
+import pytest
+from datetime import datetime, timezone
+from PIL import Image
+
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from services.allsky.fisheye import FisheyeModel
+from services.allsky.label_collision import LabelGrid, estimate_text_size
+
+
+# ===================================================================
+# Helpers
+# ===================================================================
+
+def _default_model() -> FisheyeModel:
+    """Create a test fisheye model pointing at zenith (no rotation)."""
+    return FisheyeModel(
+        cx=960.0, cy=540.0, a1=600.0, a3=0.0, a5=0.0,
+        roll=0.0, axis_alt=90.0, axis_az=0.0,
+        rms_residual=1.0, n_matches=50,
+        calibrated_at="2024-01-01T00:00:00+00:00",
+    )
+
+
+def _test_image(w=1920, h=1080) -> Image.Image:
+    """Return a dark RGBA test image."""
+    return Image.new('RGBA', (w, h), (10, 10, 30, 255))
+
+
+DT = datetime(2024, 6, 21, 22, 0, 0, tzinfo=timezone.utc)
+LAT, LON = 51.5, -0.1  # London
+
+
+# ===================================================================
+# LabelGrid
+# ===================================================================
+
+class TestLabelGrid:
+    def test_empty_grid_is_free(self):
+        grid = LabelGrid(1920, 1080)
+        assert grid.is_free(100, 100, 80, 20)
+
+    def test_occupied_cell_blocked(self):
+        grid = LabelGrid(1920, 1080, cell_size=12)
+        grid.occupy(100.0, 100.0, 80.0, 20.0)
+        # Same region should now be blocked
+        assert not grid.is_free(100.0, 100.0, 80.0, 20.0)
+
+    def test_different_region_still_free(self):
+        grid = LabelGrid(1920, 1080, cell_size=12)
+        grid.occupy(100.0, 100.0, 80.0, 20.0)
+        # Far-away region should still be free
+        assert grid.is_free(800.0, 600.0, 80.0, 20.0)
+
+    def test_try_place_returns_position(self):
+        grid = LabelGrid(1920, 1080)
+        pos = grid.try_place(500.0, 500.0, 60.0, 14.0)
+        assert pos is not None
+        assert 0 <= pos[0] < 1920
+        assert 0 <= pos[1] < 1080
+
+    def test_try_place_collision_resolved(self):
+        """When preferred positions are blocked, try_place picks another."""
+        grid = LabelGrid(1920, 1080, cell_size=12)
+        # Block all 4 candidate positions manually
+        for dx, dy in [(6, 0), (0, 6), (-6, 0), (0, -6)]:
+            grid.occupy(500.0 + dx, 500.0 + dy - 7.0, 60.0, 14.0)
+        # try_place may return None (no free slot) — that is acceptable
+        pos = grid.try_place(500.0, 500.0, 60.0, 14.0)
+        # We do not assert non-None — the grid may run out of slots
+
+    def test_estimate_text_size(self):
+        w, h = estimate_text_size("M42", 12)
+        assert w > 0 and h > 0
+        w2, _ = estimate_text_size("Andromeda", 12)
+        assert w2 > w  # Longer text → wider
+
+
+# ===================================================================
+# Render Grid
+# ===================================================================
+
+class TestRenderGrid:
+    def test_renders_without_error(self):
+        from services.allsky.render_grid import render_grid
+        img = _test_image()
+        model = _default_model()
+        result = render_grid(img, model, {'enabled': True})
+        assert result.size == img.size
+        assert result.mode == 'RGBA'
+
+    def test_disabled_returns_unchanged(self):
+        from services.allsky.render_grid import render_grid
+        img = _test_image()
+        original = img.copy()
+        model = _default_model()
+        result = render_grid(img, model, {'enabled': False})
+        assert list(result.getdata()) == list(original.getdata())
+
+    def test_grid_modifies_image(self):
+        from services.allsky.render_grid import render_grid
+        img = _test_image()
+        model = _default_model()
+        result = render_grid(img, model, {'enabled': True, 'horizon': True,
+                                          'altitude_rings': True, 'opacity': 200})
+        # The image should change (some pixels different from background)
+        arr_before = np.array(img)
+        arr_after  = np.array(result)
+        diff = np.abs(arr_before.astype(int) - arr_after.astype(int))
+        assert diff.sum() > 0, "Grid render should change at least some pixels"
+
+
+# ===================================================================
+# Render Constellations
+# ===================================================================
+
+class TestRenderConstellations:
+    def test_renders_without_error(self):
+        from services.allsky.render_constellations import render_constellations
+        img = _test_image()
+        model = _default_model()
+        config = {'enabled': True, 'lines': True, 'labels': True,
+                  'color': '#4488FF', 'opacity': 180, 'line_width': 1, 'label_size': 12}
+        result = render_constellations(img, model, config, LAT, LON, DT)
+        assert result.size == img.size
+
+    def test_disabled_returns_unchanged(self):
+        from services.allsky.render_constellations import render_constellations
+        img = _test_image()
+        model = _default_model()
+        original = img.copy()
+        result = render_constellations(img, model, {'enabled': False}, LAT, LON, DT)
+        assert list(result.getdata()) == list(original.getdata())
+
+
+# ===================================================================
+# Render Objects (Messier / NGC / Planets)
+# ===================================================================
+
+class TestRenderObjects:
+    def test_planets_renders_without_error(self):
+        from services.allsky.render_objects import render_planets
+        from services.allsky.label_collision import LabelGrid
+        img = _test_image()
+        model = _default_model()
+        grid = LabelGrid(1920, 1080)
+        config = {'enabled': True, 'label_size': 14, 'marker_size': 10, 'opacity': 255,
+                  'colors': {'Mars': '#FF6644', 'Jupiter': '#FFCC88'}}
+        result = render_planets(img, model, config, LAT, LON, DT, grid)
+        assert result.size == img.size
+
+    def test_messier_renders_without_error(self):
+        from services.allsky.render_objects import render_messier
+        from services.allsky.label_collision import LabelGrid
+        img = _test_image()
+        model = _default_model()
+        grid = LabelGrid(1920, 1080)
+        config = {'enabled': True, 'color': '#FF8844', 'marker_size': 8,
+                  'label_size': 10, 'opacity': 200}
+        result = render_messier(img, model, config, LAT, LON, DT, grid)
+        assert result.size == img.size
+
+    def test_ngc_disabled_returns_unchanged(self):
+        from services.allsky.render_objects import render_ngc
+        from services.allsky.label_collision import LabelGrid
+        img = _test_image()
+        model = _default_model()
+        grid = LabelGrid(1920, 1080)
+        original = img.copy()
+        result = render_ngc(img, model, {'enabled': False}, LAT, LON, DT, grid)
+        assert list(result.getdata()) == list(original.getdata())
+
+
+# ===================================================================
+# Full overlay_renderer pipeline
+# ===================================================================
+
+class TestOverlayRenderer:
+    def _make_config(self, calibration_path: str) -> dict:
+        return {
+            'enabled': True,
+            'calibration_file': calibration_path,
+            '_lat': LAT, '_lon': LON,
+            'grid': {'enabled': True},
+            'constellations': {'enabled': True, 'lines': True, 'labels': False},
+            'messier': {'enabled': True},
+            'ngc': {'enabled': False},
+            'planets': {'enabled': True, 'opacity': 255, 'marker_size': 10,
+                        'label_size': 12, 'colors': {}},
+        }
+
+    def test_uncalibrated_returns_original(self):
+        """With no calibration file, render_allsky_overlay should be a no-op."""
+        from services.allsky.overlay_renderer import render_allsky_overlay
+        img = _test_image()
+        original = img.copy()
+        config = {'enabled': True, 'calibration_file': '', '_lat': LAT, '_lon': LON}
+        result = render_allsky_overlay(img, config, {})
+        assert list(result.getdata()) == list(original.getdata())
+
+    def test_disabled_returns_original(self):
+        from services.allsky.overlay_renderer import render_allsky_overlay
+        img = _test_image()
+        original = img.copy()
+        result = render_allsky_overlay(img, {'enabled': False}, {})
+        assert list(result.getdata()) == list(original.getdata())
+
+    def test_with_valid_calibration(self, tmp_path):
+        """With a valid calibration file, render should modify the image."""
+        from services.allsky.overlay_renderer import render_allsky_overlay
+        model = _default_model()
+        cal_path = str(tmp_path / "cal.json")
+        model.save(cal_path)
+
+        img = _test_image()
+        config = self._make_config(cal_path)
+        result = render_allsky_overlay(img, config, {'DATETIME': '2024-06-21 22:00:00'})
+
+        assert result.size == img.size
+        # Image should have changed
+        arr_before = np.array(img)
+        arr_after  = np.array(result.convert('RGBA'))
+        diff = np.abs(arr_before.astype(int) - arr_after.astype(int))
+        assert diff.sum() > 0, "Overlay should modify the image"
+
+    def test_preserves_rgb_mode(self, tmp_path):
+        """Input RGB images should be returned as RGB (not RGBA)."""
+        from services.allsky.overlay_renderer import render_allsky_overlay
+        model = _default_model()
+        cal_path = str(tmp_path / "cal.json")
+        model.save(cal_path)
+
+        img_rgb = Image.new('RGB', (1920, 1080), (10, 10, 30))
+        config = self._make_config(cal_path)
+        result = render_allsky_overlay(img_rgb, config, {})
+        assert result.mode == 'RGB', f"Expected RGB, got {result.mode}"

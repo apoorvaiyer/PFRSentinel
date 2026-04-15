@@ -114,6 +114,14 @@ DEFAULT_CONFIG = {
         "dark_scene_threshold": 0.05  # Median below this triggers dark scene mode (0.0-0.2)
     },
     
+    # Star sharpening — cosmetic unsharp mask applied before overlay rendering
+    "sharpening": {
+        "enabled": False,   # Disabled by default; user opts in
+        "radius": 1.5,      # Gaussian blur radius in pixels (keep <= 2 for stars)
+        "amount": 80,       # Strength on Pillow 0-500 scale (80 = subtle)
+        "threshold": 3,     # Min pixel diff to sharpen; suppresses noise in dark sky
+    },
+
     # ML Models (Beta) - Observatory condition classification
     # These models analyze images to detect roof state and sky conditions
     "ml_models": {
@@ -173,7 +181,8 @@ DEFAULT_CONFIG = {
         "latitude": "",  # Preferred: direct coordinates (e.g., "51.5074")
         "longitude": "",  # Preferred: direct coordinates (e.g., "-0.1278")
         "units": "metric",  # "metric", "imperial", or "standard"
-        "cache_duration": 600  # Cache weather data for 10 minutes
+        "cache_duration": 600,  # Cache weather data for 10 minutes
+        "elevation": "",       # Observer elevation in metres (for refraction)
     },
     
     # Discord alerts
@@ -188,7 +197,8 @@ DEFAULT_CONFIG = {
         "include_latest_image": True,
         "username_override": "",
         "avatar_url": "",
-        "post_timelapse": False       # Post timelapse video when session completes
+        "post_timelapse": False,      # Post timelapse video when session completes
+        "post_calibration": False,    # Post notification when all-sky calibration completes
     },
     
     # All-sky camera settings (for ML training visual reference)
@@ -221,7 +231,49 @@ DEFAULT_CONFIG = {
         "include_overlays": False,     # False = clean frame, True = frame with overlays
         "output_dir": "",              # "" = AppData/PFRSentinel/timelapse/
         "max_videos_to_keep": 30,      # Auto-delete oldest beyond this many days
-    }
+    },
+
+    # Meteor Tracker — CV-based trail detection on each processed frame
+    "meteor": {
+        "enabled": False,
+        "min_length": 100,          # Minimum trail length in pixels
+        "save_detections": True,    # Append events to a JSONL log
+        "log_file": "",             # "" = %LOCALAPPDATA%\PFRSentinel\meteor_detections.jsonl
+        "save_annotated": False,    # Save annotated full-frame copies with detections
+        "annotated_dir": "",        # "" = disabled
+        "exclusion_zones": [],      # [{x,y,w,h,note}] — user-rejected regions
+    },
+
+    # All-sky overlay — astronomical annotations on each frame
+    "allsky_overlay": {
+        "enabled": False,
+        "calibration_file": "",
+        "constellations": {
+            "enabled": True, "lines": True, "labels": True,
+            "color": "#4488FF", "line_width": 1, "label_size": 12, "opacity": 180,
+        },
+        "messier": {
+            "enabled": True, "color": "#FF8844",
+            "marker_size": 8, "label_size": 10, "opacity": 200,
+        },
+        "ngc": {
+            "enabled": False, "min_magnitude": 8.0, "color": "#88FF44",
+            "marker_size": 6, "label_size": 9, "opacity": 150,
+        },
+        "planets": {
+            "enabled": True, "label_size": 14, "marker_size": 10, "opacity": 255,
+            "colors": {
+                "Mercury": "#B0B0B0", "Venus": "#FFFFCC", "Mars": "#FF6644",
+                "Jupiter": "#FFCC88", "Saturn": "#FFDDAA",
+                "Uranus": "#88DDFF", "Neptune": "#4466FF", "Moon": "#FFFFEE",
+            },
+        },
+        "grid": {
+            "enabled": True, "horizon": True, "altitude_rings": True,
+            "altitude_step": 30, "azimuth_lines": True, "cardinal_labels": True,
+            "color": "#336633", "line_width": 1, "label_size": 14, "opacity": 120,
+        },
+    },
 }
 
 class Config:

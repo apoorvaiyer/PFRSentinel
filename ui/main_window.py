@@ -41,8 +41,12 @@ from .panels.overlay_settings import OverlaySettingsPanel
 from .panels.timelapse_panel import TimelapsePanel
 from .panels.settings_panel import SettingsPanel
 from .panels.logs_panel import LogsPanel
+from .panels.allsky_settings import AllSkySettingsPanel
+from .panels.meteor_panel import MeteorPanel
 from .controllers.image_processor import ImageProcessor
 from .controllers.timelapse_controller import TimelapseController
+from .controllers.allsky_controller import AllSkyController
+from .controllers.meteor_controller import MeteorController
 
 
 class MainWindow(QMainWindow):
@@ -84,6 +88,7 @@ class MainWindow(QMainWindow):
         self.web_server = None
         self.weather_service = None
         self.timelapse_controller = None
+        self.meteor_controller = None
         self.system_tray = None  # Set by main_pyside.py when in tray mode
         
         # Initialize weather service from config
@@ -214,11 +219,29 @@ class MainWindow(QMainWindow):
         self.processing_panel = ImageProcessingPanel(self)
         self.overlay_panel = OverlaySettingsPanel(self)
         self.timelapse_panel = TimelapsePanel(self)
+        self.allsky_panel = AllSkySettingsPanel(self)
+        self.meteor_panel = MeteorPanel(self)
         self.logs_panel = LogsPanel(self)
         self.settings_panel = SettingsPanel(self)
 
         # Timelapse controller (owns TimelapseWriter, wired to image processor below)
         self.timelapse_controller = TimelapseController(self)
+
+        # All-sky overlay controller
+        self.allsky_controller = AllSkyController(self)
+        self.allsky_controller.status_changed.connect(self.allsky_panel.set_status)
+        self.allsky_controller.quality_changed.connect(self.allsky_panel.set_quality)
+        self.allsky_controller.settings_changed.connect(self._on_allsky_settings_changed)
+        self.allsky_panel.settings_changed.connect(self._on_allsky_panel_changed)
+
+        # Wire background calibration service to image processor
+        self.image_processor.set_calibration_service(
+            self.allsky_controller.calibration_service,
+        )
+
+        # Meteor tracker controller
+        self.meteor_controller = MeteorController(self)
+        self.meteor_controller.status_updated.connect(self.meteor_panel.update_status)
 
         # Add to stack
         self.inspector_stack.addWidget(self.capture_panel)       # Index 0
@@ -226,8 +249,10 @@ class MainWindow(QMainWindow):
         self.inspector_stack.addWidget(self.processing_panel)    # Index 2
         self.inspector_stack.addWidget(self.overlay_panel)       # Index 3
         self.inspector_stack.addWidget(self.timelapse_panel)     # Index 4
-        self.inspector_stack.addWidget(self.logs_panel)          # Index 5
-        self.inspector_stack.addWidget(self.settings_panel)      # Index 6
+        self.inspector_stack.addWidget(self.allsky_panel)        # Index 5
+        self.inspector_stack.addWidget(self.meteor_panel)        # Index 6
+        self.inspector_stack.addWidget(self.logs_panel)          # Index 7
+        self.inspector_stack.addWidget(self.settings_panel)      # Index 8
         
         # Defer splitter restoration until window is shown
         # This ensures we have accurate available width
@@ -267,6 +292,7 @@ class MainWindow(QMainWindow):
         self.processing_panel.settings_changed.connect(self._on_settings_changed)
         self.overlay_panel.settings_changed.connect(self._on_settings_changed)
         self.timelapse_panel.settings_changed.connect(self._on_settings_changed)
+        self.meteor_panel.settings_changed.connect(self._on_settings_changed)
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
 
         # Reprocess last frame instantly when image processing or overlay settings change
@@ -285,6 +311,15 @@ class MainWindow(QMainWindow):
         )
         self.timelapse_controller.status_updated.connect(
             self.timelapse_panel.update_status
+        )
+
+        # Meteor tracker: image processor → controller → panel status
+        self.image_processor.timelapse_ready.connect(
+            self.meteor_controller.on_frame_ready
+        )
+        # User rejection: panel "Not a Meteor" → controller adds exclusion zone
+        self.meteor_panel.detection_rejected.connect(
+            self.meteor_controller.on_detection_rejected
         )
         
         # RAW16 mode toggle - update camera on the fly if capturing
@@ -706,10 +741,12 @@ class MainWindow(QMainWindow):
             'capture': 0,
             'output': 1,
             'processing': 2,
-            'overlays': 3,  # Show overlay panel, hide live panel
+            'overlays': 3,
             'timelapse': 4,
-            'logs': 5,
-            'settings': 6,  # Settings panel (hide live panel)
+            'allsky': 5,       # All-sky overlay settings
+            'meteor': 6,       # Meteor tracker
+            'logs': 7,
+            'settings': 8,     # Settings panel (hide live panel)
         }
         
         index = section_map.get(section, 0)
@@ -944,6 +981,10 @@ class MainWindow(QMainWindow):
             if self.timelapse_controller:
                 self.timelapse_controller.on_capture_stopped()
 
+            # Reset meteor session counters when capture stops
+            if self.meteor_controller:
+                self.meteor_controller.on_capture_stopped()
+
             # Slower status updates when idle
             self.status_timer.setInterval(1000)
             
@@ -1172,6 +1213,21 @@ class MainWindow(QMainWindow):
                     self.capture_panel.raw16_switch.set_checked(not enabled)
                     self.capture_panel._loading_config = False
     
+    def _on_allsky_panel_changed(self, cfg: dict) -> None:
+        """Panel emitted a settings change — persist to config or trigger calibration."""
+        if cfg.get('_action') == 'calibrate':
+            self.allsky_controller.start_calibration()
+            return
+        # Preserve calibration_file from existing config
+        existing = self.config.get('allsky_overlay', {})
+        cfg['calibration_file'] = existing.get('calibration_file', '')
+        self.config.set('allsky_overlay', cfg)
+        self.save_config()
+
+    def _on_allsky_settings_changed(self) -> None:
+        """Controller saved calibration — reload panel status."""
+        self.allsky_panel.load_from_config(self.config.get('allsky_overlay', {}))
+
     def save_config(self):
         """Save current configuration"""
         # Don't save during config load
@@ -1192,6 +1248,9 @@ class MainWindow(QMainWindow):
             self.processing_panel.load_from_config(self.config)
             self.overlay_panel.load_from_config(self.config)
             self.timelapse_panel.load_from_config(self.config)
+            self.allsky_panel.load_from_config(self.config.get('allsky_overlay', {}))
+            self.meteor_panel.load_from_config(self.config.get('meteor', {}))
+            self.allsky_controller.load_from_config()
             self.settings_panel.load_from_config(self.config)
             
             # Update ML display in live panel based on config
@@ -1659,6 +1718,18 @@ class MainWindow(QMainWindow):
         if self.timelapse_controller:
             try:
                 self.timelapse_controller.shutdown()
+            except Exception:
+                pass
+
+        if self.allsky_controller:
+            try:
+                self.allsky_controller.shutdown()
+            except Exception:
+                pass
+
+        if self.meteor_controller:
+            try:
+                self.meteor_controller.shutdown()
             except Exception:
                 pass
 
