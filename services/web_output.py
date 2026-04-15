@@ -266,9 +266,12 @@ class WebOutputServer:
         try:
             # Downsize if image exceeds the web endpoint size limit
             if len(image_data_bytes) > WEB_IMAGE_MAX_BYTES:
-                image_data_bytes, content_type = self._downsize_image(
-                    image_data_bytes, content_type
-                )
+                result = self._downsize_image(image_data_bytes, content_type)
+                if result is None:
+                    # Downsize failed — keep serving the previous image
+                    app_logger.warning("Web image over 5 MB and downsize failed, keeping previous image")
+                    return
+                image_data_bytes, content_type = result
 
             # PERF-002: Use centralized update method with ETag generation
             ImageHTTPHandler.update_image(
@@ -282,11 +285,12 @@ class WebOutputServer:
             app_logger.error(f"Error updating web server image: {e}")
 
     @staticmethod
-    def _downsize_image(image_data_bytes: bytes, content_type: str) -> tuple:
+    def _downsize_image(image_data_bytes: bytes, content_type: str):
         """Progressively downscale an image until it fits within WEB_IMAGE_MAX_BYTES.
 
         Shrinks by 10% each pass and re-encodes as JPEG (quality 90) to bring
-        the payload under the limit.  Returns (new_bytes, new_content_type).
+        the payload under the limit.  Returns (new_bytes, new_content_type)
+        on success, or None if the image could not be brought under the limit.
         """
         try:
             img = Image.open(io.BytesIO(image_data_bytes))
@@ -311,12 +315,11 @@ class WebOutputServer:
                     )
                     return buf.getvalue(), 'image/jpeg'
 
-            # Exhausted attempts — serve whatever we have at smallest scale
-            app_logger.warning("Web image still above limit after max downscale passes")
-            return buf.getvalue(), 'image/jpeg'
+            app_logger.warning("Web image still above 5 MB after max downscale passes")
+            return None
         except Exception as e:
-            app_logger.warning(f"Web image downsize failed, serving original: {e}")
-            return image_data_bytes, content_type
+            app_logger.warning(f"Web image downsize failed: {e}")
+            return None
     
     def get_url(self):
         """Get the full URL for the image endpoint."""
