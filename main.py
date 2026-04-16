@@ -9,9 +9,12 @@ Supports command-line flags:
   python main_pyside.py --headless              # No GUI (headless mode)
   python main_pyside.py --tray                  # Start minimized to system tray
 """
+import faulthandler
 import sys
 import os
 import argparse
+import threading
+import traceback
 
 # Add project root to path
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -28,6 +31,50 @@ from services.logger import app_logger
 from services.posthog_service import posthog, get_distinct_id, capture_event, is_enabled as posthog_enabled
 from version import __version__
 from app_config import APP_DISPLAY_NAME, APP_SUBTITLE
+
+
+def _install_crash_handlers():
+    """Install global exception handlers so crashes are always logged.
+
+    Without these, unhandled exceptions in threads or the main loop
+    print to stderr (invisible in a PyInstaller build) and the app
+    dies silently with no log entry.
+    """
+    # Enable faulthandler so native segfaults (C extensions, Qt, numpy)
+    # dump a traceback to the crash log instead of vanishing.
+    crash_log_path = os.path.join(
+        os.getenv('APPDATA', '.'), 'PFRSentinel', 'logs', 'crash.log'
+    )
+    os.makedirs(os.path.dirname(crash_log_path), exist_ok=True)
+    _crash_file = open(crash_log_path, 'a')
+    faulthandler.enable(file=_crash_file)
+    # Keep reference alive so file stays open for process lifetime
+    _install_crash_handlers._crash_file = _crash_file
+
+    def _excepthook(exc_type, exc_value, exc_tb):
+        msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        app_logger.error(f"UNHANDLED EXCEPTION (main thread):\n{msg}")
+        try:
+            from services.posthog_service import capture_error
+            capture_error(exc_value, context='unhandled_main_thread')
+        except Exception:
+            pass
+
+    def _threading_excepthook(args):
+        msg = ''.join(traceback.format_exception(
+            args.exc_type, args.exc_value, args.exc_traceback,
+        ))
+        app_logger.error(
+            f"UNHANDLED EXCEPTION (thread '{args.thread.name}'):\n{msg}"
+        )
+        try:
+            from services.posthog_service import capture_error
+            capture_error(args.exc_value, context=f'unhandled_thread_{args.thread.name}')
+        except Exception:
+            pass
+
+    sys.excepthook = _excepthook
+    threading.excepthook = _threading_excepthook
 
 
 def _check_admin_privileges():
@@ -50,7 +97,8 @@ def _check_admin_privileges():
 
 def main():
     """Launch PFR Sentinel with PySide6 Fluent UI"""
-    
+    _install_crash_handlers()
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(
         description=f'{APP_DISPLAY_NAME} - {APP_SUBTITLE} (PySide6 UI)',

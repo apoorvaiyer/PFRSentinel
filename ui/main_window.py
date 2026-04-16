@@ -1150,13 +1150,18 @@ class MainWindow(QMainWindow):
     
     def _poll_logs(self):
         """Poll log queue and update displays"""
-        messages = app_logger.get_messages()
-        if messages:
-            # Update live monitoring mini-log
-            self.live_panel.append_logs(messages)
-            
-            # Update logs panel
-            self.logs_panel.append_logs(messages)
+        try:
+            messages = app_logger.get_messages()
+            if messages:
+                # Update live monitoring mini-log
+                self.live_panel.append_logs(messages)
+
+                # Update logs panel
+                self.logs_panel.append_logs(messages)
+        except Exception as e:
+            # Can't use app_logger here (might be the source of the error)
+            import traceback
+            print(f"_poll_logs crashed: {traceback.format_exc()}", file=sys.stderr)
     
     # =========================================================================
     # SETTINGS
@@ -1226,7 +1231,10 @@ class MainWindow(QMainWindow):
 
     def _on_allsky_settings_changed(self) -> None:
         """Controller saved calibration — reload panel status."""
-        self.allsky_panel.load_from_config(self.config.get('allsky_overlay', {}))
+        try:
+            self.allsky_panel.load_from_config(self.config.get('allsky_overlay', {}))
+        except Exception as e:
+            app_logger.error(f"_on_allsky_settings_changed crashed: {e}")
 
     def save_config(self):
         """Save current configuration"""
@@ -1395,51 +1403,61 @@ class MainWindow(QMainWindow):
     
     def _on_image_processed(self, processed_image, metadata: dict, output_path: str):
         """Handle processed image from image processor"""
-        # Store for preview access
-        self.last_processed_image = output_path
-        self.preview_metadata = metadata
-        
-        # Update preview with FINAL processed image (with overlays)
-        self.live_panel.update_preview(processed_image, metadata)
-        
-        # Check if any output servers are enabled
-        config = self.config
-        output_config = config.get('output', {})
-        discord_config = config.get('discord', {})
-        has_outputs = (
-            output_config.get('webserver_enabled', False) or
-            discord_config.get('enabled', False)
-        )
-        
-        if has_outputs:
-            # Show sending status briefly
-            self.app_bar.set_status('sending')
-            # Push to output servers (web, Discord)
-            self._push_to_output_servers(output_path, processed_image)
-            
-            # After sending, set to waiting if capturing
-            from PySide6.QtCore import QTimer
-            if self.is_capturing:
-                QTimer.singleShot(300, lambda: self.app_bar.set_status('waiting'))
+        try:
+            # Store for preview access
+            self.last_processed_image = output_path
+            self.preview_metadata = metadata
+
+            # Update preview with FINAL processed image (with overlays)
+            self.live_panel.update_preview(processed_image, metadata)
+
+            # Check if any output servers are enabled
+            config = self.config
+            output_config = config.get('output', {})
+            discord_config = config.get('discord', {})
+            has_outputs = (
+                output_config.get('webserver_enabled', False) or
+                discord_config.get('enabled', False)
+            )
+
+            if has_outputs:
+                # Show sending status briefly
+                self.app_bar.set_status('sending')
+                # Push to output servers (web, Discord)
+                self._push_to_output_servers(output_path, processed_image)
+
+                # After sending, set to waiting if capturing
+                from PySide6.QtCore import QTimer
+                if self.is_capturing:
+                    QTimer.singleShot(300, lambda: self.app_bar.set_status('waiting'))
+                else:
+                    QTimer.singleShot(300, lambda: self.app_bar.set_status(None))
             else:
-                QTimer.singleShot(300, lambda: self.app_bar.set_status(None))
-        else:
-            # No outputs, go to waiting if capturing
-            if self.is_capturing:
-                self.app_bar.set_status('waiting')
-            else:
-                self.app_bar.set_status(None)
-        
-        app_logger.debug(f"Image processed: {os.path.basename(output_path)}")
+                # No outputs, go to waiting if capturing
+                if self.is_capturing:
+                    self.app_bar.set_status('waiting')
+                else:
+                    self.app_bar.set_status(None)
+
+            app_logger.debug(f"Image processed: {os.path.basename(output_path)}")
+        except Exception as e:
+            app_logger.error(f"_on_image_processed crashed: {e}")
+            import traceback
+            app_logger.error(traceback.format_exc())
     
     def _on_preview_ready(self, preview_image, hist_data: dict):
         """Handle histogram data from image processor (RAW histogram)"""
-        # Update histogram with pre-calculated RAW histogram data
-        if hist_data:
-            app_logger.debug(f"Histogram data received: r={len(hist_data.get('r', []))}, auto_exposure={hist_data.get('auto_exposure')}, target={hist_data.get('target_brightness')}")
-            self.live_panel.histogram.update_from_data(hist_data)
-        else:
-            app_logger.warning("No histogram data received from processor")
+        try:
+            # Update histogram with pre-calculated RAW histogram data
+            if hist_data:
+                app_logger.debug(f"Histogram data received: r={len(hist_data.get('r', []))}, auto_exposure={hist_data.get('auto_exposure')}, target={hist_data.get('target_brightness')}")
+                self.live_panel.histogram.update_from_data(hist_data)
+            else:
+                app_logger.warning("No histogram data received from processor")
+        except Exception as e:
+            app_logger.error(f"_on_preview_ready crashed: {e}")
+            import traceback
+            app_logger.error(traceback.format_exc())
     
     def _on_processing_error(self, error_msg: str):
         """Handle processing error"""

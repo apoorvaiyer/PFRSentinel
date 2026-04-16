@@ -49,6 +49,7 @@ class MeteorController(QObject):
     def __init__(self, main_window):
         super().__init__(main_window)
         self._main_window = main_window
+        self._lock = threading.Lock()  # Guards shared state accessed by daemon threads
 
         self._session_frames: int = 0
         self._session_detections: int = 0
@@ -82,7 +83,8 @@ class MeteorController(QObject):
             self._previous_frame = None  # invalidate diff chain
             return
 
-        self._session_frames += 1
+        with self._lock:
+            self._session_frames += 1
         current = clean_image.copy()
 
         # --- Cooldown gate ---
@@ -201,14 +203,16 @@ class MeteorController(QObject):
         if cfg.get("save_annotated", False):
             self._save_annotated(original_image, detections, cfg, timestamp)
 
-        self._session_detections += len(detections)
-        self._last_detection_time = timestamp
+        with self._lock:
+            self._session_detections += len(detections)
+            self._last_detection_time = timestamp
 
-        new_list = ([event] + self._recent_events)[:_MAX_RECENT_EVENTS]
-        evicted = self._recent_events[_MAX_RECENT_EVENTS - 1:]
+            new_list = ([event] + self._recent_events)[:_MAX_RECENT_EVENTS]
+            evicted = self._recent_events[_MAX_RECENT_EVENTS - 1:]
+            self._recent_events = new_list
+
         for old in evicted:
             self._delete_thumbnail(old.get("thumbnail_path", ""))
-        self._recent_events = new_list
 
         app_logger.info(
             f"Meteor: {len(detections)} detection(s), "
@@ -258,10 +262,11 @@ class MeteorController(QObject):
         4. Remove event from history and delete its thumbnail.
         5. Emit updated status so the panel rebuilds immediately.
         """
-        event = next(
-            (e for e in self._recent_events if e.get("timestamp") == timestamp),
-            None,
-        )
+        with self._lock:
+            event = next(
+                (e for e in self._recent_events if e.get("timestamp") == timestamp),
+                None,
+            )
         if not event:
             return
 
@@ -287,9 +292,10 @@ class MeteorController(QObject):
 
         # Remove from history
         self._delete_thumbnail(event.get("thumbnail_path", ""))
-        self._recent_events = [
-            e for e in self._recent_events if e.get("timestamp") != timestamp
-        ]
+        with self._lock:
+            self._recent_events = [
+                e for e in self._recent_events if e.get("timestamp") != timestamp
+            ]
 
         app_logger.info(
             f"Meteor: rejection saved — zone added at "
@@ -305,9 +311,11 @@ class MeteorController(QObject):
         if self._tracker:
             self._tracker.flush()  # expire any pending series
             self._tracker = None
-        self._session_frames = 0
-        self._session_detections = 0
-        self._last_detection_time = None
+        with self._lock:
+            self._session_frames = 0
+            self._session_detections = 0
+            self._last_detection_time = None
+            self._recent_events = []
         self._previous_frame = None
         self._last_detection_ts = 0.0
         self._sky_circle = None
@@ -326,12 +334,13 @@ class MeteorController(QObject):
     # ------------------------------------------------------------------ #
 
     def get_status(self) -> dict:
-        return {
-            "session_frames":     self._session_frames,
-            "session_detections": self._session_detections,
-            "last_detection_time": self._last_detection_time,
-            "recent_events":      list(self._recent_events),
-        }
+        with self._lock:
+            return {
+                "session_frames":     self._session_frames,
+                "session_detections": self._session_detections,
+                "last_detection_time": self._last_detection_time,
+                "recent_events":      list(self._recent_events),
+            }
 
     def _emit_status(self):
         self.status_updated.emit(self.get_status())
