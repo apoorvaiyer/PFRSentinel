@@ -205,10 +205,16 @@ class SettingsPanel(QScrollArea):
         self.lon_input.setPlaceholderText("Longitude")
         self.lon_input.textChanged.connect(self._on_weather_changed)
         coord_row.addWidget(self.lon_input)
-        
+
+        self.elevation_input = LineEdit()
+        self.elevation_input.setPlaceholderText("Elevation (m)")
+        self.elevation_input.setMaximumWidth(120)
+        self.elevation_input.textChanged.connect(self._on_weather_changed)
+        coord_row.addWidget(self.elevation_input)
+
         coord_widget = QWidget()
         coord_widget.setLayout(coord_row)
-        weather_card.add_row("Coordinates", coord_widget, "Alternative to location name")
+        weather_card.add_row("Coordinates", coord_widget, "Alternative to location name (elevation for refraction correction)")
         
         # Units
         self.units_combo = ComboBox()
@@ -326,6 +332,7 @@ class SettingsPanel(QScrollArea):
             weather['location'] = self.location_input.text()
             weather['latitude'] = self.lat_input.text()
             weather['longitude'] = self.lon_input.text()
+            weather['elevation'] = self.elevation_input.text()
             units_text = self.units_combo.currentText()
             weather['units'] = 'imperial' if 'imperial' in units_text else 'metric'
             self.main_window.config.set('weather', weather)
@@ -416,6 +423,7 @@ class SettingsPanel(QScrollArea):
             self.location_input.setText(weather.get('location', ''))
             self.lat_input.setText(str(weather.get('latitude', '')))
             self.lon_input.setText(str(weather.get('longitude', '')))
+            self.elevation_input.setText(str(weather.get('elevation', '')))
             
             units = weather.get('units', 'metric')
             idx = 1 if units == 'imperial' else 0
