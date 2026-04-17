@@ -1,15 +1,15 @@
 """
 Meteor Detection Storage
 Appends detection events to a JSONL log file (one JSON object per line).
-Also saves annotated 300×300 thumbnail crops for display in the UI.
+Also saves plain 300×300 thumbnail crops for display in the UI — the
+highlight overlay is drawn dynamically in the UI so the raw streak can
+always be inspected underneath.
 """
 import json
 import os
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List
 
-import cv2
-import numpy as np
 from PIL import Image
 
 from .detector import MeteorDetection
@@ -55,21 +55,50 @@ def log_detections(
         pass
 
 
+def log_event(log_path: str, payload: dict) -> None:
+    """Append a free-form event (e.g. confirmation) to the detection log."""
+    if not log_path:
+        return
+    parent = os.path.dirname(log_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    try:
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload) + "\n")
+    except OSError:
+        pass
+
+
 def save_thumbnail(
     image: Image.Image,
     detection: MeteorDetection,
     thumb_dir: str,
     timestamp: str,
     size: int = 300,
-) -> str:
+) -> Dict[str, object]:
     """
-    Crop a *size*×*size* region centred on *detection* from *image*, draw the
-    detection line in green, and save it as a JPEG.
+    Crop a *size*×*size* region centred on *detection* from *image* and save
+    it as a JPEG. No annotation is baked in — the UI draws the highlight
+    overlay on top so the raw streak remains inspectable.
 
-    Returns the saved file path, or an empty string on failure.
+    Returns a dict with the saved path plus crop offset and crop-local line
+    coordinates so the UI can draw the overlay at the right position:
+
+        {
+          "path": str,            # empty on failure
+          "thumb_left": int, "thumb_top": int, "thumb_size": int,
+          "line_x1": int, "line_y1": int, "line_x2": int, "line_y2": int,
+          "length_px": int,
+        }
     """
+    empty: Dict[str, object] = {
+        "path": "",
+        "thumb_left": 0, "thumb_top": 0, "thumb_size": size,
+        "line_x1": 0, "line_y1": 0, "line_x2": 0, "line_y2": 0,
+        "length_px": int(round(detection.length)),
+    }
     if not thumb_dir:
-        return ""
+        return empty
     try:
         os.makedirs(thumb_dir, exist_ok=True)
 
@@ -77,7 +106,6 @@ def save_thumbnail(
         mid_y = (detection.y1 + detection.y2) // 2
         half = size // 2
 
-        # Crop bounds clamped to image
         left   = max(0, mid_x - half)
         top    = max(0, mid_y - half)
         right  = min(image.width,  mid_x + half)
@@ -91,27 +119,21 @@ def save_thumbnail(
             padded.paste(crop, (0, 0))
             crop = padded
 
-        # Draw detection line offset to crop coordinates
-        arr = np.array(crop)
-        bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
         lx1 = max(0, min(size - 1, detection.x1 - left))
         ly1 = max(0, min(size - 1, detection.y1 - top))
         lx2 = max(0, min(size - 1, detection.x2 - left))
         ly2 = max(0, min(size - 1, detection.y2 - top))
-        cv2.line(bgr, (lx1, ly1), (lx2, ly2), (0, 255, 0), 2)
-        mid_crop_x = (lx1 + lx2) // 2
-        mid_crop_y = max(0, (ly1 + ly2) // 2 - 8)
-        cv2.putText(
-            bgr, f"{detection.length:.0f}px",
-            (mid_crop_x, mid_crop_y),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1,
-        )
-        annotated = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
 
         safe_ts = timestamp.replace(":", "-").replace("T", "_")
         path = os.path.join(thumb_dir, f"meteor_{safe_ts}.jpg")
-        annotated.save(path, "JPEG", quality=90)
-        return path
+        crop.save(path, "JPEG", quality=90)
+
+        return {
+            "path": path,
+            "thumb_left": left, "thumb_top": top, "thumb_size": size,
+            "line_x1": lx1, "line_y1": ly1, "line_x2": lx2, "line_y2": ly2,
+            "length_px": int(round(detection.length)),
+        }
 
     except Exception:
-        return ""
+        return empty

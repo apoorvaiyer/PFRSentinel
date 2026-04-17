@@ -23,7 +23,7 @@ from services.meteor.detector import (
     compute_frame_difference, apply_sky_circle_mask,
     estimate_adaptive_threshold, check_speed_plausibility,
 )
-from services.meteor.storage import log_detections, save_thumbnail
+from services.meteor.storage import log_detections, log_event, save_thumbnail
 from services.meteor.mask import (
     zone_from_detection, zones_from_config, zones_to_config, ExclusionZone,
 )
@@ -180,17 +180,32 @@ class MeteorController(QObject):
         timestamp = datetime.now().isoformat(timespec="seconds")
         best = max(detections, key=lambda d: d.length)
 
-        thumb_path = save_thumbnail(
+        thumb_info = save_thumbnail(
             original_image, best,
             thumb_dir=self._resolve_thumb_dir(),
             timestamp=timestamp,
         )
 
+        annotated_path = ""
+        if cfg.get("save_annotated", False):
+            annotated_path = self._save_annotated(
+                original_image, detections, cfg, timestamp)
+
         event = {
             "timestamp":      timestamp,
             "count":          len(detections),
             "max_length":     round(best.length, 1),
-            "thumbnail_path": thumb_path,
+            "thumbnail_path": thumb_info.get("path", ""),
+            "annotated_path": annotated_path,
+            "confirmed":      False,
+            "thumb_left":     thumb_info.get("thumb_left", 0),
+            "thumb_top":      thumb_info.get("thumb_top", 0),
+            "thumb_size":     thumb_info.get("thumb_size", 300),
+            "line_x1":        thumb_info.get("line_x1", 0),
+            "line_y1":        thumb_info.get("line_y1", 0),
+            "line_x2":        thumb_info.get("line_x2", 0),
+            "line_y2":        thumb_info.get("line_y2", 0),
+            "length_px":      thumb_info.get("length_px", int(round(best.length))),
             "best_x1": best.x1, "best_y1": best.y1,
             "best_x2": best.x2, "best_y2": best.y2,
             "img_w":   original_image.width,
@@ -199,9 +214,6 @@ class MeteorController(QObject):
 
         if cfg.get("save_detections", True):
             log_detections(self._resolve_log_path(cfg), detections)
-
-        if cfg.get("save_annotated", False):
-            self._save_annotated(original_image, detections, cfg, timestamp)
 
         with self._lock:
             self._session_detections += len(detections)
@@ -212,7 +224,7 @@ class MeteorController(QObject):
             self._recent_events = new_list
 
         for old in evicted:
-            self._delete_thumbnail(old.get("thumbnail_path", ""))
+            self._evict_event_files(old)
 
         app_logger.info(
             f"Meteor: {len(detections)} detection(s), "
@@ -236,17 +248,21 @@ class MeteorController(QObject):
         detections: List[MeteorDetection],
         cfg: dict,
         timestamp: str,
-    ):
+    ) -> str:
+        """Save the full-frame annotated image and return its path ("" on failure)."""
         annotated_dir = cfg.get("annotated_dir", "").strip()
         if not annotated_dir:
-            return
+            return ""
         try:
             os.makedirs(annotated_dir, exist_ok=True)
             annotated = annotate_image(image, detections)
             fname = f"meteor_{timestamp.replace(':', '-')}.jpg"
-            annotated.save(os.path.join(annotated_dir, fname), "JPEG", quality=90)
+            path = os.path.join(annotated_dir, fname)
+            annotated.save(path, "JPEG", quality=90)
+            return path
         except Exception as exc:
             app_logger.error(f"Meteor: could not save annotated image: {exc}")
+            return ""
 
     # ------------------------------------------------------------------ #
     #  Rejection                                                           #
@@ -290,8 +306,8 @@ class MeteorController(QObject):
         self._main_window.config.set("meteor", updated_cfg)
         self._main_window.config.save()
 
-        # Remove from history
-        self._delete_thumbnail(event.get("thumbnail_path", ""))
+        # Remove from history (delete both thumbnail and full annotated frame)
+        self._evict_event_files(event)
         with self._lock:
             self._recent_events = [
                 e for e in self._recent_events if e.get("timestamp") != timestamp
@@ -304,6 +320,67 @@ class MeteorController(QObject):
         self._emit_status()
 
     # ------------------------------------------------------------------ #
+    #  Confirmation                                                         #
+    # ------------------------------------------------------------------ #
+
+    def on_detection_confirmed(self, timestamp: str):
+        """
+        User marked an event as a real meteor.
+
+        Moves the thumbnail (and full annotated frame if present) into a
+        ``confirmed/`` subdirectory so future evictions don't delete them,
+        marks the event ``confirmed=True`` so the card shows a Confirmed
+        badge, and appends a record to the JSONL log for persistence.
+        """
+        with self._lock:
+            event = next(
+                (e for e in self._recent_events if e.get("timestamp") == timestamp),
+                None,
+            )
+        if not event or event.get("confirmed"):
+            return
+
+        new_thumb = self._move_to_confirmed(event.get("thumbnail_path", ""))
+        new_annotated = self._move_to_confirmed(event.get("annotated_path", ""))
+
+        with self._lock:
+            for e in self._recent_events:
+                if e.get("timestamp") == timestamp:
+                    e["confirmed"] = True
+                    if new_thumb:
+                        e["thumbnail_path"] = new_thumb
+                    if new_annotated:
+                        e["annotated_path"] = new_annotated
+                    break
+
+        cfg = self._get_config()
+        if cfg.get("save_detections", True):
+            log_event(self._resolve_log_path(cfg), {
+                "event": "confirmed",
+                "timestamp": timestamp,
+                "thumbnail": new_thumb or event.get("thumbnail_path", ""),
+                "annotated": new_annotated or event.get("annotated_path", ""),
+            })
+
+        app_logger.info(f"Meteor: confirmed detection at {timestamp}")
+        self._emit_status()
+
+    @staticmethod
+    def _move_to_confirmed(path: str) -> str:
+        """Move *path* into a sibling ``confirmed/`` folder; return the new path."""
+        if not path or not os.path.isfile(path):
+            return ""
+        try:
+            parent = os.path.dirname(path)
+            confirmed_dir = os.path.join(parent, "confirmed")
+            os.makedirs(confirmed_dir, exist_ok=True)
+            new_path = os.path.join(confirmed_dir, os.path.basename(path))
+            os.replace(path, new_path)
+            return new_path
+        except OSError:
+            return ""
+
+    # ------------------------------------------------------------------ #
     #  Lifecycle                                                           #
     # ------------------------------------------------------------------ #
 
@@ -312,10 +389,14 @@ class MeteorController(QObject):
             self._tracker.flush()  # expire any pending series
             self._tracker = None
         with self._lock:
+            old_events = list(self._recent_events)
             self._session_frames = 0
             self._session_detections = 0
             self._last_detection_time = None
             self._recent_events = []
+        # Clean up any unconfirmed files lingering from this session
+        for ev in old_events:
+            self._evict_event_files(ev)
         self._previous_frame = None
         self._last_detection_ts = 0.0
         self._sky_circle = None
@@ -402,9 +483,17 @@ class MeteorController(QObject):
         return os.path.join(os.getenv("LOCALAPPDATA", ""), APP_DATA_FOLDER)
 
     @staticmethod
-    def _delete_thumbnail(path: str):
+    def _delete_file(path: str):
         if path and os.path.isfile(path):
             try:
                 os.remove(path)
             except OSError:
                 pass
+
+    def _evict_event_files(self, event: dict):
+        """Delete thumbnail + full annotated frame for an unconfirmed event.
+        Confirmed events keep their files (they live in confirmed/ subdirs)."""
+        if event.get("confirmed"):
+            return
+        self._delete_file(event.get("thumbnail_path", ""))
+        self._delete_file(event.get("annotated_path", ""))

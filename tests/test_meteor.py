@@ -693,42 +693,56 @@ class TestThumbnail:
     def test_thumbnail_created(self, tmp_path):
         img = _with_line(50, 128, 300, 128)
         det = MeteorDetection(50, 128, 300, 128, 250.0, 0.0)
-        path = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:00")
-        assert path and os.path.isfile(path)
+        info = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:00")
+        assert info["path"] and os.path.isfile(info["path"])
 
     def test_thumbnail_is_jpeg(self, tmp_path):
         img = _with_line(50, 128, 300, 128)
         det = MeteorDetection(50, 128, 300, 128, 250.0, 0.0)
-        path = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:01")
-        assert path.endswith(".jpg")
+        info = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:01")
+        assert info["path"].endswith(".jpg")
 
     def test_thumbnail_size_is_300x300(self, tmp_path):
         img = _with_line(50, 128, 300, 128, width=1024, height=1024)
         det = MeteorDetection(50, 128, 300, 128, 250.0, 0.0)
-        path = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:02")
-        saved = Image.open(path)
+        info = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:02")
+        saved = Image.open(info["path"])
         assert saved.size == (300, 300)
 
     def test_thumbnail_empty_dir_is_noop(self):
         img = _with_line(50, 128, 300, 128)
         det = MeteorDetection(50, 128, 300, 128, 250.0, 0.0)
-        result = save_thumbnail(img, det, "", "2026-04-13T21:00:03")
-        assert result == ""
+        info = save_thumbnail(img, det, "", "2026-04-13T21:00:03")
+        assert info["path"] == ""
 
     def test_thumbnail_near_edge_does_not_crash(self, tmp_path):
         """Detection close to image edge — crop should be padded, not error."""
         img = _blank(300, 300)
         det = MeteorDetection(5, 5, 50, 50, 64.0, 45.0)
-        path = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:04")
-        assert path and os.path.isfile(path)
-        saved = Image.open(path)
+        info = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:04")
+        assert info["path"] and os.path.isfile(info["path"])
+        saved = Image.open(info["path"])
         assert saved.size == (300, 300)
 
-    def test_thumbnail_has_green_annotation(self, tmp_path):
-        """The saved thumbnail should contain green pixels from the drawn line."""
+    def test_thumbnail_has_no_baked_in_annotation(self, tmp_path):
+        """Thumbnails are saved CLEAN so the streak can be inspected. The UI
+        draws the highlight overlay on top dynamically."""
         img = _blank(512, 512, fill=10)
         det = MeteorDetection(100, 256, 400, 256, 300.0, 0.0)
-        path = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:05")
-        saved = np.array(Image.open(path))
-        # Green channel should be elevated somewhere
-        assert saved[:, :, 1].max() > 100, "Thumbnail should contain green annotation"
+        info = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:05")
+        saved = np.array(Image.open(info["path"]))
+        # Green channel should match the uniform background — no line drawn in.
+        assert saved[:, :, 1].max() < 50, \
+            "Thumbnail should NOT contain baked-in green annotation"
+
+    def test_thumbnail_returns_overlay_coords(self, tmp_path):
+        """The returned dict should carry crop-local line coords for the UI."""
+        img = _blank(1024, 1024, fill=10)
+        det = MeteorDetection(400, 512, 600, 512, 200.0, 0.0)
+        info = save_thumbnail(img, det, str(tmp_path), "2026-04-13T21:00:06")
+        assert info["thumb_size"] == 300
+        # Midpoint is (500, 512) → crop left=350, top=362; line becomes
+        # (50, 150) → (250, 150) in crop-local coords.
+        assert info["line_x1"] == 50 and info["line_y1"] == 150
+        assert info["line_x2"] == 250 and info["line_y2"] == 150
+        assert info["length_px"] == 200

@@ -321,6 +321,10 @@ class MainWindow(QMainWindow):
         self.meteor_panel.detection_rejected.connect(
             self.meteor_controller.on_detection_rejected
         )
+        # User confirmation: panel "Confirm Meteor" → controller preserves files
+        self.meteor_panel.detection_confirmed.connect(
+            self.meteor_controller.on_detection_confirmed
+        )
         
         # RAW16 mode toggle - update camera on the fly if capturing
         self.capture_panel.raw16_mode_changed.connect(self._on_raw16_mode_changed)
