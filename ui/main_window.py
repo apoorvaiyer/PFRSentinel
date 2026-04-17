@@ -860,6 +860,20 @@ class MainWindow(QMainWindow):
 
         # Send Discord notification
         self._send_discord_error(f"Camera Error: {error_msg}")
+
+    def _on_camera_capture_stopped(self):
+        """Handle controller capture_stopped signal.
+
+        Fires when the capture loop has terminated on its own (fatal error).
+        Mirrors the state changes that stop_capture() performs, so the UI
+        (AppBar buttons, tray menu Start/Stop enablement, status chips) stays
+        consistent with reality instead of claiming we're still capturing.
+        """
+        if not self.is_capturing:
+            return  # Already stopped via normal path — nothing to reconcile
+
+        app_logger.warning("Capture ended unexpectedly — syncing UI state")
+        self.stop_capture()
     
     def _send_discord_shutdown(self):
         """Send Discord shutdown notification if enabled"""
@@ -1065,6 +1079,10 @@ class MainWindow(QMainWindow):
             self.camera_controller.calibration_status.connect(self.on_calibration_status)
             # Connect error signal to send Discord alerts
             self.camera_controller.error.connect(self._on_camera_error)
+            # When the capture loop terminates itself (fatal error), sync the
+            # main window state so the AppBar, tray menu, etc. don't keep
+            # pretending capture is running.
+            self.camera_controller.capture_stopped.connect(self._on_camera_capture_stopped)
         
         self.camera_controller.start_capture()
         
