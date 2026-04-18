@@ -124,6 +124,93 @@ class TestCameraUtilities:
         assert exposure_s == 0.1
 
 
+class TestRecoveryRaces:
+    """Regression tests for USB recovery race conditions — run without hardware."""
+
+    def _make_connection(self, asi_mock):
+        """Build a CameraConnection with its zwoasi module mocked out."""
+        from services.camera_connection import CameraConnection
+        conn = CameraConnection(sdk_path=None, logger=lambda _: None)
+        conn.asi = asi_mock
+        return conn
+
+    def test_detect_cameras_tolerates_enumeration_race(self):
+        """
+        Regression for the 08:57:50 production log: SDK reported 2 cameras but
+        list_cameras() returned only the 462MM. The old code raised
+        `list index out of range` on index 1. The fix snapshots list_cameras
+        once, retries, and trusts the list when they disagree.
+        """
+        asi = MagicMock()
+        asi.get_num_cameras.return_value = 2
+        # Stays short across all retries (race never clears) — code should
+        # still return the one camera it can see, without raising.
+        asi.list_cameras.return_value = ['ZWO ASI462MM']
+
+        conn = self._make_connection(asi)
+        with patch('time.sleep'):
+            result = conn.detect_cameras()
+
+        assert len(result) == 1
+        assert result[0]['name'] == 'ZWO ASI462MM'
+
+    def test_detect_cameras_recovers_after_retry(self):
+        """
+        SDK race resolves on the 2nd retry: first list_cameras call is short,
+        second returns both cameras. Expect the final enumeration to see both.
+        """
+        asi = MagicMock()
+        asi.get_num_cameras.return_value = 2
+        asi.list_cameras.side_effect = [
+            ['ZWO ASI462MM'],                      # 1st call (race)
+            ['ZWO ASI462MM', 'ZWO ASI676MC'],      # 2nd call (settled)
+            ['ZWO ASI462MM', 'ZWO ASI676MC'],      # defensive
+        ]
+
+        conn = self._make_connection(asi)
+        with patch('time.sleep'):
+            result = conn.detect_cameras()
+
+        assert len(result) == 2
+        names = {c['name'] for c in result}
+        assert names == {'ZWO ASI462MM', 'ZWO ASI676MC'}
+
+    def test_wait_for_stable_detection_requires_two_consecutive_polls(self):
+        """
+        Detection-settle loop: target flickers in/out/in. Only after two
+        consecutive polls see it at the same index does the helper return
+        that index. Guards against `Invalid ID` when opening the camera
+        too fast after disable/enable.
+        """
+        asi = MagicMock()
+        conn = self._make_connection(asi)
+
+        detections = [
+            [],                                                                # not yet
+            [{'index': 0, 'name': 'ZWO ASI676MC'}],                            # first sighting
+            [{'index': 0, 'name': 'ZWO ASI676MC'}],                            # stable!
+        ]
+
+        with patch.object(conn, 'detect_cameras', side_effect=detections), \
+                patch('time.sleep'):
+            idx = conn._wait_for_stable_detection('ZWO ASI676MC', timeout_sec=10, poll_interval=0.01)
+
+        assert idx == 0
+
+    def test_wait_for_stable_detection_times_out_cleanly(self):
+        """If the target never shows up, the helper must return without raising."""
+        asi = MagicMock()
+        conn = self._make_connection(asi)
+
+        # Always empty
+        with patch.object(conn, 'detect_cameras', return_value=[]), \
+                patch('time.sleep'), \
+                patch('time.time', side_effect=[0, 0, 1, 2, 11, 12, 13]):
+            idx = conn._wait_for_stable_detection('ZWO ASI676MC', timeout_sec=10, poll_interval=0.01)
+
+        assert idx is None
+
+
 @pytest.mark.requires_camera
 class TestPhysicalCamera:
     """Tests that require actual camera hardware"""

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QFont
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, SpinBox, LineEdit,
@@ -27,10 +27,15 @@ from ..components.cards import SettingsCard, SwitchRow, CollapsibleCard
 class DetectionCard(CardWidget):
     """
     One card per detection event.
-    Shows a 300×300 annotated thumbnail, metadata, and a "Not a Meteor" button.
+
+    Shows a 300×300 clean thumbnail with a toggleable green highlight overlay,
+    metadata, a "Confirm Meteor" button (keeps the files on disk in a
+    ``confirmed/`` subdir) and a "Not a Meteor" button (deletes thumbnail +
+    full annotated frame and adds an exclusion zone).
     """
 
-    reject_clicked = Signal(str)  # timestamp
+    reject_clicked = Signal(str)   # timestamp
+    confirm_clicked = Signal(str)  # timestamp
 
     _THUMB_SIZE = 300
     _PLACEHOLDER_STYLE = f"background-color: #1a1a2e; border: 1px solid #333;"
@@ -38,6 +43,10 @@ class DetectionCard(CardWidget):
     def __init__(self, event: dict, parent=None):
         super().__init__(parent)
         self._timestamp = event.get("timestamp", "")
+        self._confirmed = bool(event.get("confirmed"))
+        self._clean_pix: QPixmap | None = None
+        self._highlight_pix: QPixmap | None = None
+        self._highlight_on = True
         self._setup_ui(event)
 
     def _setup_ui(self, event: dict):
@@ -46,26 +55,28 @@ class DetectionCard(CardWidget):
         outer.setSpacing(Spacing.base)
 
         # --- Thumbnail ---
-        thumb_lbl = QLabel()
-        thumb_lbl.setFixedSize(self._THUMB_SIZE, self._THUMB_SIZE)
-        thumb_lbl.setAlignment(Qt.AlignCenter)
+        self._thumb_lbl = QLabel()
+        self._thumb_lbl.setFixedSize(self._THUMB_SIZE, self._THUMB_SIZE)
+        self._thumb_lbl.setAlignment(Qt.AlignCenter)
         thumb_path = event.get("thumbnail_path", "")
         if thumb_path and os.path.isfile(thumb_path):
-            pix = QPixmap(thumb_path).scaled(
+            clean = QPixmap(thumb_path).scaled(
                 self._THUMB_SIZE, self._THUMB_SIZE,
                 Qt.KeepAspectRatio, Qt.SmoothTransformation,
             )
-            thumb_lbl.setPixmap(pix)
+            self._clean_pix = clean
+            self._highlight_pix = self._build_highlight_pixmap(clean, event)
+            self._thumb_lbl.setPixmap(self._highlight_pix or clean)
         else:
-            thumb_lbl.setStyleSheet(self._PLACEHOLDER_STYLE)
-            thumb_lbl.setText("No image")
-            thumb_lbl.setStyleSheet(
+            self._thumb_lbl.setStyleSheet(self._PLACEHOLDER_STYLE)
+            self._thumb_lbl.setText("No image")
+            self._thumb_lbl.setStyleSheet(
                 self._PLACEHOLDER_STYLE
                 + f" color: {Colors.text_muted}; font-size: 12px;"
             )
-        outer.addWidget(thumb_lbl)
+        outer.addWidget(self._thumb_lbl)
 
-        # --- Metadata + button ---
+        # --- Metadata + buttons ---
         meta_layout = QVBoxLayout()
         meta_layout.setSpacing(Spacing.xs)
 
@@ -82,17 +93,91 @@ class DetectionCard(CardWidget):
         desc_lbl.setStyleSheet(f"color: {Colors.text_secondary};")
         meta_layout.addWidget(desc_lbl)
 
+        # --- Show/hide highlight toggle (only useful when we have a clean pixmap) ---
+        if self._highlight_pix is not None:
+            self._toggle_btn = PushButton("Hide Highlight")
+            self._toggle_btn.setIcon(FluentIcon.VIEW)
+            self._toggle_btn.setToolTip(
+                "Show or hide the green line so you can see the streak underneath"
+            )
+            self._toggle_btn.clicked.connect(self._on_toggle_highlight)
+            meta_layout.addWidget(self._toggle_btn)
+
         meta_layout.addStretch()
 
-        reject_btn = PushButton("Not a Meteor")
-        reject_btn.setIcon(mdi('close'))
-        reject_btn.clicked.connect(lambda: self.reject_clicked.emit(self._timestamp))
-        reject_btn.setToolTip(
-            "Mark as a false positive — this region will be excluded from future detection"
-        )
-        meta_layout.addWidget(reject_btn)
+        if self._confirmed:
+            confirmed_badge = BodyLabel("\u2713  Confirmed Meteor")
+            confirmed_badge.setStyleSheet(
+                "color: #3ac46a; font-weight: 600; padding: 6px 0;"
+            )
+            meta_layout.addWidget(confirmed_badge)
+        else:
+            confirm_btn = PushButton("Confirm Meteor")
+            confirm_btn.setIcon(FluentIcon.ACCEPT)
+            confirm_btn.clicked.connect(
+                lambda: self.confirm_clicked.emit(self._timestamp))
+            confirm_btn.setToolTip(
+                "Mark as a real meteor — files are preserved in a 'confirmed' folder"
+            )
+            meta_layout.addWidget(confirm_btn)
+
+            reject_btn = PushButton("Not a Meteor")
+            reject_btn.setIcon(FluentIcon.CLOSE)
+            reject_btn.clicked.connect(
+                lambda: self.reject_clicked.emit(self._timestamp))
+            reject_btn.setToolTip(
+                "Mark as a false positive — this region will be excluded from future detection"
+            )
+            meta_layout.addWidget(reject_btn)
 
         outer.addLayout(meta_layout, 1)
+
+    def _build_highlight_pixmap(self, clean: QPixmap, event: dict) -> QPixmap | None:
+        """Paint the green line + length label on a copy of the clean pixmap.
+
+        Coordinates are translated from the saved 300px crop space to the
+        displayed label size (typically 1:1, but scaled if KeepAspectRatio
+        shrank the image)."""
+        thumb_size = int(event.get("thumb_size", self._THUMB_SIZE)) or self._THUMB_SIZE
+        line = (
+            int(event.get("line_x1", 0)), int(event.get("line_y1", 0)),
+            int(event.get("line_x2", 0)), int(event.get("line_y2", 0)),
+        )
+        if line == (0, 0, 0, 0):
+            return None
+
+        scale = clean.width() / thumb_size if thumb_size else 1.0
+        x1, y1, x2, y2 = (int(v * scale) for v in line)
+
+        pix = QPixmap(clean)
+        painter = QPainter(pix)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            pen = QPen(QColor(0, 255, 0), 2)
+            painter.setPen(pen)
+            painter.drawLine(x1, y1, x2, y2)
+            length_px = int(event.get("length_px", event.get("max_length", 0)))
+            if length_px:
+                font = QFont()
+                font.setPointSize(9)
+                painter.setFont(font)
+                mid_x = (x1 + x2) // 2
+                mid_y = max(10, (y1 + y2) // 2 - 6)
+                painter.drawText(mid_x, mid_y, f"{length_px}px")
+        finally:
+            painter.end()
+        return pix
+
+    def _on_toggle_highlight(self):
+        if self._clean_pix is None:
+            return
+        self._highlight_on = not self._highlight_on
+        if self._highlight_on and self._highlight_pix is not None:
+            self._thumb_lbl.setPixmap(self._highlight_pix)
+            self._toggle_btn.setText("Hide Highlight")
+        else:
+            self._thumb_lbl.setPixmap(self._clean_pix)
+            self._toggle_btn.setText("Show Highlight")
 
 
 # ------------------------------------------------------------------ #
@@ -112,7 +197,8 @@ class MeteorPanel(QScrollArea):
     """
 
     settings_changed  = Signal()
-    detection_rejected = Signal(str)  # timestamp of rejected event
+    detection_rejected = Signal(str)   # timestamp of rejected event
+    detection_confirmed = Signal(str)  # timestamp of confirmed event
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -393,6 +479,7 @@ class MeteorPanel(QScrollArea):
         for event in events[:10]:
             card = DetectionCard(event, self._events_container)
             card.reject_clicked.connect(self.detection_rejected.emit)
+            card.confirm_clicked.connect(self.detection_confirmed.emit)
             self._events_layout.addWidget(card)
 
     # ------------------------------------------------------------------ #

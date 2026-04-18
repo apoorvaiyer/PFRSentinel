@@ -354,10 +354,27 @@ class CameraControllerQt(QObject):
         if self.main_window:
             self.main_window.on_image_captured(pil_image, metadata)
     
-    def _on_camera_error(self, error_msg):
-        """Callback from ZWOCamera on errors"""
+    def _on_camera_error(self, error_msg, is_fatal: bool = False):
+        """Callback from ZWOCamera on errors.
+
+        Args:
+            error_msg: Human-readable error description.
+            is_fatal: True when the capture loop has terminated and cannot
+                recover on its own. In that case we must drop our own
+                is_capturing flag and emit capture_stopped so the UI (AppBar,
+                tray menu) doesn't keep pretending capture is running.
+        """
         app_logger.error(f"Camera error: {error_msg}")
         self.error.emit(error_msg)
+
+        if is_fatal:
+            app_logger.error("Camera error is fatal — tearing down capture state for UI sync")
+            # Mirror stop_capture()'s state reset, but without touching the
+            # camera (the loop already exited and cleanup ran).
+            self.is_capturing = False
+            self.is_connected = False
+            self.zwo_camera = None
+            self.capture_stopped.emit()
     
     def _on_calibration_status(self, is_calibrating: bool):
         """Callback from ZWOCamera when calibration status changes

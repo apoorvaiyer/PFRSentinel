@@ -115,7 +115,12 @@ class MainWindow(QMainWindow):
         
         # Start periodic updates
         self._start_timers()
-        
+
+        # Check admin privilege once at startup — without it, the USB
+        # disable/enable recovery step is dead weight. Warn the user so
+        # they don't silently lose that capability.
+        self._check_admin_privileges()
+
         # Initialize update checker (checks 24h after startup to be rate-limit friendly)
         self._init_update_checker()
         
@@ -327,6 +332,10 @@ class MainWindow(QMainWindow):
         # User rejection: panel "Not a Meteor" → controller adds exclusion zone
         self.meteor_panel.detection_rejected.connect(
             self.meteor_controller.on_detection_rejected
+        )
+        # User confirmation: panel "Confirm Meteor" → controller preserves files
+        self.meteor_panel.detection_confirmed.connect(
+            self.meteor_controller.on_detection_confirmed
         )
         
         # RAW16 mode toggle - update camera on the fly if capturing
@@ -577,11 +586,130 @@ class MainWindow(QMainWindow):
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._update_status)
         self.status_timer.start(1000)  # 1 second default
-        
+
         # Log polling timer
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._poll_logs)
         self.log_timer.start(250)  # 250ms for responsive logs
+
+        # Capture-thread watchdog: detects wedged SDK calls where the loop
+        # is "running" but no frames are arriving. Runs on the main Qt
+        # thread so it can't be blocked by the capture thread's wedge.
+        self.watchdog_timer = QTimer(self)
+        self.watchdog_timer.timeout.connect(self._check_capture_watchdog)
+        self.watchdog_timer.start(60_000)  # 60s
+        self._watchdog_alerted = False
+
+    def _check_admin_privileges(self):
+        """Warn once at startup if the app lacks Administrator rights.
+
+        The USB Device Manager disable/enable recovery step requires admin.
+        Previously this was only logged deep inside a failed recovery chain,
+        by which point the user was already wondering why recovery didn't
+        work. Surface it at startup instead.
+        """
+        import sys
+        if sys.platform != 'win32':
+            return  # Only Windows uses the Device Manager API
+
+        try:
+            import ctypes
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return  # Couldn't even check — silently skip
+
+        if is_admin:
+            app_logger.info("✓ Running with Administrator privileges — full USB recovery available")
+            return
+
+        app_logger.warning(
+            "⚠ Not running as Administrator. USB Device Manager recovery "
+            "(disable/enable) will be skipped if a ZWO camera gets stuck in "
+            "a bad USB state. To enable full recovery, right-click the PFR "
+            "Sentinel shortcut → Properties → Compatibility → 'Run as administrator'."
+        )
+        self._notify(
+            "Running without Admin — USB recovery is limited. See logs.",
+            "warning",
+        )
+        # Fire a Discord notification if configured so the user hears about
+        # it even when the app is running minimised in the tray.
+        try:
+            self._send_discord_error(
+                "Started without Administrator privileges — USB recovery is limited."
+            )
+        except Exception:
+            pass
+
+    def _check_capture_watchdog(self):
+        """Detect a wedged capture loop.
+
+        If the UI says we're capturing but no frames have arrived in 3× the
+        capture interval (and we're not inside scheduled off-peak hours or
+        long-retry mode), the SDK call is probably wedged. We can't unwedge
+        it from here, but we can:
+
+          1. Log a loud warning.
+          2. Fire the on_error callback once (→ Discord alert).
+          3. Flip the camera's is_capturing flag so when the SDK call
+             finally returns (many ZWO SDK calls have internal timeouts),
+             the capture thread exits cleanly via the fatal-exit path.
+        """
+        if not self.is_capturing or not self.camera_controller:
+            self._watchdog_alerted = False
+            return
+
+        cam = getattr(self.camera_controller, 'zwo_camera', None)
+        if not cam:
+            self._watchdog_alerted = False
+            return
+
+        # Skip if we're in a known non-capturing state
+        if getattr(cam, 'is_capturing', False) is False:
+            self._watchdog_alerted = False
+            return
+
+        last_frame = getattr(cam, '_last_frame_time', None)
+        if last_frame is None:
+            return
+
+        import time as _time
+        interval = getattr(cam, 'capture_interval', 5.0) or 5.0
+        # Threshold: 3× capture interval or 60s, whichever is larger.
+        # Also needs a floor of (exposure + 10s) to avoid false positives
+        # on long exposures.
+        exposure_sec = getattr(cam, 'exposure_seconds', 0.0) or 0.0
+        threshold = max(3 * interval, 60.0, exposure_sec + 10.0)
+        stale_for = _time.time() - last_frame
+
+        if stale_for < threshold:
+            self._watchdog_alerted = False
+            return
+
+        # Skip if capture thread has flagged off-peak / long-retry state via
+        # the existing status callback (best-effort check).
+        if getattr(cam, 'long_retry_mode_public', False):
+            return
+
+        if not self._watchdog_alerted:
+            self._watchdog_alerted = True
+            app_logger.error(
+                f"⚠ Capture watchdog: no frames for {stale_for:.0f}s "
+                f"(threshold {threshold:.0f}s) — capture loop may be wedged"
+            )
+            # Force the capture thread to exit on its next SDK return.
+            cam.is_capturing = False
+            # Fire Discord alert / UI update.
+            try:
+                self.camera_controller._on_camera_error(
+                    f"Capture wedged — no frames for {int(stale_for)}s",
+                    is_fatal=True,
+                )
+            except TypeError:
+                # Older signature fallback
+                self.camera_controller._on_camera_error(
+                    f"Capture wedged — no frames for {int(stale_for)}s"
+                )
     
     def _init_update_checker(self):
         """Initialize the update checker with automatic checks."""
@@ -907,6 +1035,20 @@ class MainWindow(QMainWindow):
 
         # Send Discord notification
         self._send_discord_error(f"Camera Error: {error_msg}")
+
+    def _on_camera_capture_stopped(self):
+        """Handle controller capture_stopped signal.
+
+        Fires when the capture loop has terminated on its own (fatal error).
+        Mirrors the state changes that stop_capture() performs, so the UI
+        (AppBar buttons, tray menu Start/Stop enablement, status chips) stays
+        consistent with reality instead of claiming we're still capturing.
+        """
+        if not self.is_capturing:
+            return  # Already stopped via normal path — nothing to reconcile
+
+        app_logger.warning("Capture ended unexpectedly — syncing UI state")
+        self.stop_capture()
     
     def _send_discord_shutdown(self):
         """Send Discord shutdown notification if enabled"""
@@ -1112,6 +1254,10 @@ class MainWindow(QMainWindow):
             self.camera_controller.calibration_status.connect(self.on_calibration_status)
             # Connect error signal to send Discord alerts
             self.camera_controller.error.connect(self._on_camera_error)
+            # When the capture loop terminates itself (fatal error), sync the
+            # main window state so the AppBar, tray menu, etc. don't keep
+            # pretending capture is running.
+            self.camera_controller.capture_stopped.connect(self._on_camera_capture_stopped)
         
         self.camera_controller.start_capture()
         
@@ -1742,6 +1888,8 @@ class MainWindow(QMainWindow):
             self.status_timer.stop()
         if hasattr(self, 'log_timer') and self.log_timer:
             self.log_timer.stop()
+        if hasattr(self, 'watchdog_timer') and self.watchdog_timer:
+            self.watchdog_timer.stop()
         
         # Stop update checker
         if hasattr(self, 'update_checker') and self.update_checker:

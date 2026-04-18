@@ -26,11 +26,18 @@ DIGCF_ALLCLASSES = 0x00000004
 INVALID_HANDLE_VALUE = -1
 ERROR_NO_MORE_ITEMS = 259
 
-# Device restart/eject constants  
+# Device restart/eject constants
 CR_SUCCESS = 0x00000000
 CM_LOCATE_DEVNODE_NORMAL = 0x00000000
 CM_LOCATE_DEVNODE_PHANTOM = 0x00000001  # Find disabled/phantom device nodes
 CM_REENUMERATE_NORMAL = 0x00000000
+
+# CM_Get_DevNode_Status flags — Windows needs to finish driver binding before
+# the camera is openable via the SDK. DN_STARTED indicates the driver has
+# reported the device as started; that's when zwoasi.Camera() stops returning
+# "Invalid ID" after a disable/enable cycle.
+DN_STARTED = 0x00000008
+DN_HAS_PROBLEM = 0x00000400
 
 # ZWO Camera USB identifiers
 ZWO_USB_VID = 0x03C3  # ZWO Vendor ID
@@ -108,35 +115,12 @@ def reset_zwo_camera_usb(camera_name: Optional[str] = None, logger=None) -> bool
         return False
     
     log(f"=== Attempting USB Device Reset for: {camera_name} ===")
-    
+
     try:
-        # Try to use SDK to get actual camera list first
-        # This gives us the real camera names to search for in Device Manager
-        try:
-            import zwoasi as asi
-            asi.init('ASICamera2.dll')
-            num_cameras = asi.get_num_cameras()
-            if num_cameras > 0:
-                camera_list = asi.list_cameras()
-                log(f"ZWO SDK reports {num_cameras} camera(s): {camera_list}")
-                
-                # Use SDK camera names to search Windows Device Manager
-                for cam_name in camera_list:
-                    if camera_name and camera_name not in cam_name:
-                        continue  # Skip if looking for specific camera
-                    
-                    if _reset_device_by_description(cam_name, logger):
-                        log(f"✓ Reset successful for: {cam_name}")
-                        return True
-                
-                log("⚠ SDK found cameras but Device Manager reset failed")
-                log("  This may require Administrator privileges")
-                return False
-        except Exception as sdk_err:
-            log(f"⚠ SDK check failed: {sdk_err}")
-            log("Trying direct Device Manager search...")
-        
-        # Fallback: Search Device Manager directly
+        # The SDK's view of connected cameras may not include the target
+        # (that's typically *why* we're resetting). Always search Device
+        # Manager directly — it sees devices that are present but not yet
+        # bound / in a bad state.
         zwo_devices = _find_zwo_usb_devices(logger=logger)
         
         if not zwo_devices:
@@ -510,13 +494,70 @@ def disable_enable_zwo_camera_usb(camera_name: str,
         success = True
 
     if success:
-        log("Waiting 3 seconds for driver initialization...")
-        time.sleep(3)
-        log("\u2713 USB disable/enable cycle complete")
+        # Poll CM_Get_DevNode_Status until the driver reports the device as
+        # started. A flat sleep of 3s is not enough on ZWO USB3 cameras —
+        # they typically need 5-10s. Cap at 15s to avoid hanging forever.
+        log("Waiting for driver to finish binding (poll DN_STARTED, max 15s)...")
+        if _wait_for_devnode_started(new_devinst.value, timeout_sec=15, logger=logger):
+            log("\u2713 USB disable/enable cycle complete (driver bound)")
+        else:
+            log("\u26a0 Driver did not report DN_STARTED within timeout — "
+                "continuing anyway, reconnect will retry")
     else:
         log("\u2717 USB disable/enable failed for all devices")
 
     return success
+
+
+def _wait_for_devnode_started(devinst: int, timeout_sec: int = 15,
+                               poll_interval: float = 1.0,
+                               logger=None) -> bool:
+    """
+    Poll CM_Get_DevNode_Status until the device reports DN_STARTED.
+
+    Windows binds the USB driver asynchronously after re-enable. Until the
+    driver is fully bound, the ZWO SDK returns "Invalid ID" on open. This
+    wait ensures we don't race ahead of Windows.
+
+    Args:
+        devinst: Device instance handle (from CM_Locate_DevNodeW)
+        timeout_sec: Max seconds to wait
+        poll_interval: Seconds between polls
+        logger: Optional logger callback
+
+    Returns:
+        True if DN_STARTED observed, False on timeout or problem state.
+    """
+    def log(msg):
+        if logger:
+            logger(msg)
+
+    status = wintypes.ULONG(0)
+    problem = wintypes.ULONG(0)
+    deadline = time.time() + timeout_sec
+
+    while time.time() < deadline:
+        result = cfgmgr32.CM_Get_DevNode_Status(
+            ctypes.byref(status),
+            ctypes.byref(problem),
+            devinst,
+            0
+        )
+        if result == CR_SUCCESS:
+            if status.value & DN_HAS_PROBLEM:
+                log(f"  \u26a0 Device has problem code 0x{problem.value:X}")
+                return False
+            if status.value & DN_STARTED:
+                elapsed = timeout_sec - (deadline - time.time())
+                log(f"  \u2713 Driver reported DN_STARTED after {elapsed:.1f}s")
+                return True
+        try:
+            time.sleep(poll_interval)
+        except OSError:
+            return False
+
+    log(f"  \u26a0 DN_STARTED not observed within {timeout_sec}s")
+    return False
 
 
 def is_usb_reset_available() -> bool:
