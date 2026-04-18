@@ -309,14 +309,8 @@ class ImageProcessorWorker(QThread):
                 except Exception as e:
                     app_logger.debug(f"Calibration feed skipped: {e}")
 
-            # Inject all-sky overlay config into metadata (picked up inside add_overlays)
-            if allsky_cfg.get('enabled', False):
-                weather_cfg = config.get('weather', {})
-                allsky_cfg = dict(allsky_cfg)
-                allsky_cfg['_lat'] = float(weather_cfg.get('latitude', 0) or 0)
-                allsky_cfg['_lon'] = float(weather_cfg.get('longitude', 0) or 0)
-                allsky_cfg['_elevation'] = float(weather_cfg.get('elevation', 0) or 0)
-                metadata['__allsky_config'] = allsky_cfg
+            from services.processor import _inject_allsky_metadata
+            _inject_allsky_metadata(config, metadata)
 
             # Add overlays using services/processor.py function
             # stretched_for_preview is the clean pre-overlay frame (set at line ~194)

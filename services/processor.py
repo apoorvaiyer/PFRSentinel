@@ -1151,15 +1151,19 @@ def build_output_filename(pattern, metadata, output_format='PNG'):
 
 
 def _inject_allsky_metadata(config: dict, metadata: dict) -> None:
-    """Inject __allsky_config into metadata so add_overlays() can pick it up."""
+    """Inject __allsky_config into metadata, gated by is_observing_window."""
     allsky_cfg = config.get('allsky_overlay', {})
-    if allsky_cfg.get('enabled', False):
-        weather_cfg = config.get('weather', {})
-        allsky_cfg = dict(allsky_cfg)  # Shallow copy — don't mutate config
-        allsky_cfg['_lat'] = float(weather_cfg.get('latitude', 0) or 0)
-        allsky_cfg['_lon'] = float(weather_cfg.get('longitude', 0) or 0)
-        allsky_cfg['_elevation'] = float(weather_cfg.get('elevation', 0) or 0)
-        metadata['__allsky_config'] = allsky_cfg
+    if not allsky_cfg.get('enabled', False):
+        return
+    from .observing_window import is_observing_window
+    if not is_observing_window(config, metadata, feature="All-sky overlay"):
+        return
+    weather_cfg = config.get('weather', {})
+    allsky_cfg = dict(allsky_cfg)
+    allsky_cfg['_lat'] = float(weather_cfg.get('latitude', 0) or 0)
+    allsky_cfg['_lon'] = float(weather_cfg.get('longitude', 0) or 0)
+    allsky_cfg['_elevation'] = float(weather_cfg.get('elevation', 0) or 0)
+    metadata['__allsky_config'] = allsky_cfg
 
 
 def process_image(image_path, config, metadata_dict=None, weather_service=None):

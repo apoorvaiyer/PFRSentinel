@@ -118,7 +118,7 @@ DEFAULT_CONFIG = {
 
     # Star sharpening — cosmetic unsharp mask applied before overlay rendering
     "sharpening": {
-        "enabled": true,   # Disabled by default; user opts in
+        "enabled": True,   # Disabled by default; user opts in
         "radius": 1.5,      # Gaussian blur radius in pixels (keep <= 2 for stars)
         "amount": 80,       # Strength on Pillow 0-500 scale (80 = subtle)
         "threshold": 3,     # Min pixel diff to sharpen; suppresses noise in dark sky
