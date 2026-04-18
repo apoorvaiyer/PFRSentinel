@@ -12,16 +12,34 @@ Algorithm:
 Dependencies: scipy (must be available; removed from PyInstaller excludes).
 """
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Tuple, Optional, Dict
-import logging
+
+from services.logger import app_logger as log
+
+# Pre-import scipy submodules at module level so background threads
+# never trigger a first-time import (causes segfault in PyInstaller).
+_scipy_import_error: Optional[str] = None
+try:
+    from scipy.spatial.distance import cdist as _cdist
+    from scipy.optimize import least_squares as _least_squares
+except Exception as _e:
+    _cdist = None
+    _least_squares = None
+    _scipy_import_error = f"{type(_e).__name__}: {_e}"
+    log.error(f"scipy import failed at module load: {_scipy_import_error}")
 
 from .star_centroid import detect_stars, estimate_sky_circle
 from .fisheye import FisheyeModel
 from .catalogs import get_bright_stars
 from .coords import radec_to_altaz
+from .calibration_validate import (
+    score_matches_with_spread,
+    validate_bright_anchors,
+    validate_lens_polynomial,
+    warn_sky_coverage,
+)
 
-log = logging.getLogger(__name__)
 
 
 def calibrate(
@@ -59,7 +77,7 @@ def calibrate(
         CalibrationError on insufficient matches or poor fit.
     """
     if dt is None:
-        dt = datetime.utcnow()
+        dt = datetime.now(timezone.utc)
 
     # --- Step 1: Auto-detect sky circle, then detect stars inside it ---
     # estimate_sky_circle is called once here so both detection and the
@@ -147,9 +165,39 @@ def calibrate(
             "Frame may not be a clear-sky all-sky image."
         )
 
-    _warn_sky_coverage(model)
+    # --- Step 6: Sanity-check the fit ---
+    # Two independent guards — both must pass, or we fall through to the
+    # triangle-hash fallback:
+    #   (a) lens polynomial within physical range — rejects cases where the
+    #       optimiser bent the radial curve to fit a wrong orientation.
+    #   (b) the brightest N anchors actually land on detected stars —
+    #       rejects spurious density-noise fits that look fine on average
+    #       but miss Sirius/Vega/etc. by 100+ px.
+    poly_ok, poly_msg = validate_lens_polynomial(model)
+    anch_ok, anch_msg = validate_bright_anchors(model, above_horizon, detected)
+    if not (poly_ok and anch_ok):
+        reason = "; ".join(m for ok, m in ((poly_ok, poly_msg), (anch_ok, anch_msg)) if not ok)
+        log.warning(
+            f"Grid calibration failed sanity check: {reason}. "
+            "Falling through to triangle-hash fallback."
+        )
+        try:
+            from .triangle_match import triangle_calibrate
+            return triangle_calibrate(
+                image, lat_deg, lon_deg, dt,
+                detected=detected, above_horizon=above_horizon,
+                sky_cx=_sky_cx, sky_cy=_sky_cy, sky_radius=_sky_r,
+                min_matches=min_matches, max_residual_px=max_residual_px,
+            )
+        except CalibrationError as e:
+            raise CalibrationError(
+                f"Grid fit failed sanity check ({reason}); "
+                f"triangle-hash fallback also failed: {e}"
+            )
+    log.info(f"Sanity checks passed: {poly_msg}; {anch_msg}")
 
-    from datetime import timezone
+    warn_sky_coverage(model)
+
     model.calibrated_at = datetime.now(timezone.utc).isoformat()
     log.info(f"Calibration succeeded: {model}")
     return model
@@ -207,7 +255,7 @@ def _find_best_initial_model(
 
     best_matches: List[Tuple] = []
     best_model: Optional[FisheyeModel] = None
-    best_score = -1
+    best_score = -1.0
 
     for east_left in east_left_candidates:
         for a1 in a1_candidates:
@@ -222,16 +270,18 @@ def _find_best_initial_model(
                             east_left=east_left,
                         )
                         matches = _brightness_match(detected, above_horizon, model, tol_px=50.0)
-                        score = len(matches)
+                        score = score_matches_with_spread(matches)
                         if score > best_score:
                             best_score = score
                             best_matches = matches
                             best_model = model
 
-            log.debug(f"  east_left={east_left} a1={a1:.1f}: {best_score} matches (best so far)")
+            log.debug(f"  east_left={east_left} a1={a1:.1f}: best score={best_score:.1f} "
+                      f"({len(best_matches)} matches)")
 
     mirror_str = "east=LEFT (FITS)" if best_model.east_left else "east=RIGHT (photo)"
-    log.info(f"Initial grid search complete: best={best_score} matches, "
+    log.info(f"Initial grid search complete: best score={best_score:.1f} "
+             f"({len(best_matches)} matches), "
              f"a1={best_model.a1:.1f}, axis_alt={best_model.axis_alt:.1f}, "
              f"axis_az={best_model.axis_az:.1f}, {mirror_str}")
 
@@ -247,7 +297,7 @@ def _find_best_initial_model(
         best_model, best_matches, best_score, detected, above_horizon, tol_px=50.0
     )
     log.info(f"  Roll sweep: best roll={np.degrees(best_model.roll):.1f}°, "
-             f"{best_score} matches")
+             f"score={best_score:.1f} ({len(best_matches)} matches)")
 
     return best_model, best_matches
 
@@ -255,14 +305,14 @@ def _find_best_initial_model(
 def _roll_sweep(
     model: FisheyeModel,
     current_matches: list,
-    current_score: int,
+    current_score: float,
     detected: list,
     above_horizon: list,
     tol_px: float,
 ) -> tuple:
     """
     Sweep 16 roll angles (0° – 337.5°) on a fixed base model and return
-    whichever roll produces the most star matches.
+    whichever roll produces the best spread-weighted score.
 
     Roll is degenerate with axis_az when axis_alt=90 in a single image, but
     the sweep still ensures the iterative fit starts from the right basin.
@@ -282,7 +332,7 @@ def _roll_sweep(
             roll=roll_r,
         )
         matches = _brightness_match(detected, above_horizon, candidate, tol_px=tol_px)
-        score = len(matches)
+        score = score_matches_with_spread(matches)
         if score > best_score:
             best_score = score
             best_matches = matches
@@ -356,10 +406,9 @@ def _brightness_match(
     cat_xy = np.array([(cx, cy) for _, _, (cx, cy), _, _ in projected])
 
     # All-pairs distance matrix  (D × C)
-    try:
-        from scipy.spatial.distance import cdist
-        dists = cdist(det_xy, cat_xy)
-    except ImportError:
+    if _cdist is not None:
+        dists = _cdist(det_xy, cat_xy)
+    else:
         diff = det_xy[:, np.newaxis, :] - cat_xy[np.newaxis, :, :]
         dists = np.sqrt(np.sum(diff * diff, axis=2))
 
@@ -406,13 +455,22 @@ def _iterative_fit(
     matches, model, lat, lon, dt, above_horizon, detected, min_matches, max_residual
 ):
     """Iterative fit with scipy.optimize.least_squares."""
-    try:
-        from scipy.optimize import least_squares
-    except ImportError:
-        raise CalibrationError("scipy is required for calibration. Install scipy>=1.10.0.")
+    if _least_squares is None:
+        detail = f" (import error: {_scipy_import_error})" if _scipy_import_error else ""
+        raise CalibrationError(
+            f"scipy is required for calibration. Install scipy>=1.10.0.{detail}"
+        )
 
     # east_left is discrete — fixed from grid search, not part of continuous optimisation.
     east_left = model.east_left
+
+    # Physical prior: real fisheye lenses have modest-negative a3 (barrel
+    # distortion correction). Seeding a3=0 gives the optimiser no hint and
+    # lets it drift into unphysical positive territory when prunings shrink
+    # the match set. -30 is a conservative prior that still allows the fit
+    # to recover a3 in roughly [-80, 0] for real lenses.
+    if abs(model.a3) < 1e-6:
+        model.a3 = -30.0
 
     for iteration in range(8):
         params = np.array([
@@ -432,11 +490,15 @@ def _iterative_fit(
             return res
 
         try:
-            result = least_squares(
+            # a3/a5 bounds tightened to physical range for fisheye lenses.
+            # Wide-open bounds let the optimiser bend the polynomial to fit
+            # a handful of zenith-region stars while abandoning far-from-axis
+            # ones; the residual RMS looks fine but the sky is rotated wrong.
+            result = _least_squares(
                 residuals, params,
                 bounds=(
-                    [50,  50,  50,  -1e4, -1e6, -np.pi, 45.0,   0.0],
-                    [4000, 4000, 2000, 1e4,  1e6,  np.pi, 90.0, 360.0],
+                    [50,   50,   50,   -100.0, -1500.0, -np.pi, 45.0,   0.0],
+                    [4000, 4000, 2000,   25.0,   500.0,  np.pi, 90.0, 360.0],
                 ),
                 method='trf',
                 max_nfev=8000,
@@ -490,40 +552,6 @@ def _params_to_model(p, east_left: bool = True) -> FisheyeModel:
         roll=p[5], axis_alt=p[6], axis_az=p[7],
         east_left=east_left,
     )
-
-
-def _warn_sky_coverage(model: FisheyeModel) -> None:
-    """
-    Log a warning when calibration stars are clustered in a narrow azimuth
-    arc.  A single-quadrant fit extrapolates poorly to the rest of the sky.
-
-    Uses the matched_stars attribute written by _iterative_fit.
-    """
-    stars = getattr(model, 'matched_stars', None)
-    if not stars or len(stars) < 4:
-        return
-
-    az_list = [s['az'] for s in stars]
-    # Convert azimuths to unit vectors on the circle and find the angular spread.
-    # Simple check: if all stars lie within a 90° arc, warn.
-    az_r = np.radians(az_list)
-    mean_x = float(np.mean(np.cos(az_r)))
-    mean_y = float(np.mean(np.sin(az_r)))
-    # Resultant vector length ≈ 1 → stars tightly clustered; ≈ 0 → well spread.
-    R = np.hypot(mean_x, mean_y)
-    if R > 0.85:   # roughly < 30° azimuth spread
-        mean_az = np.degrees(np.arctan2(mean_y, mean_x)) % 360
-        log.warning(
-            f"Calibration warning: matched stars are clustered within a narrow "
-            f"azimuth arc (R={R:.2f}, mean az≈{mean_az:.0f}°). "
-            "Cross-sky accuracy may be poor. Consider using multi-image calibration "
-            "or manually adding anchor stars in other quadrants."
-        )
-    elif R > 0.65:  # roughly < 60° spread
-        log.info(
-            f"Calibration note: matched stars cover a limited azimuth arc (R={R:.2f}). "
-            "Accuracy may degrade toward unsampled sky regions."
-        )
 
 
 def _compute_rms(matches, model) -> float:

@@ -108,15 +108,26 @@ class HeadlessRunner:
     def _load_config(self):
         """Load and validate configuration"""
         self.config.load()
-        
+
+        cam_name = self.config.get('zwo_selected_camera_name', '') or self.config.get('zwo_camera_name', '')
+        profile = self._active_profile()
+
         # Log key settings
         self._log(f"  SDK Path: {self.config.get('zwo_sdk_path')}")
-        self._log(f"  Camera: {self.config.get('zwo_camera_name', 'Default')}")
-        self._log(f"  Exposure: {self.config.get('zwo_exposure_ms', 100)}ms")
-        self._log(f"  Gain: {self.config.get('zwo_gain', 100)}")
+        self._log(f"  Camera: {cam_name or 'Default'}")
+        self._log(f"  Exposure: {profile.get('exposure_ms', 100)}ms")
+        self._log(f"  Gain: {profile.get('gain', 100)}")
         self._log(f"  Interval: {self.config.get('zwo_interval', 5.0)}s")
         self._log(f"  Output Mode: {self.config.get('output', {}).get('mode', 'file')}")
         self._log(f"  Output Dir: {self.config.get('output_directory')}")
+
+    def _active_profile(self) -> dict:
+        """Return the active camera's profile, or DEFAULT_CAMERA_PROFILE if no camera selected."""
+        from services.config import DEFAULT_CAMERA_PROFILE
+        cam_name = self.config.get('zwo_selected_camera_name', '') or self.config.get('zwo_camera_name', '')
+        if not cam_name:
+            return dict(DEFAULT_CAMERA_PROFILE)
+        return self.config.get_camera_profile(cam_name) or dict(DEFAULT_CAMERA_PROFILE)
     
     def _start_webserver(self):
         """Start web server for image output"""
@@ -145,23 +156,25 @@ class HeadlessRunner:
                 self._log(f"ERROR: SDK not found at: {sdk_path}")
                 return False
             
-            # Get camera settings from config
-            exposure_ms = self.config.get('zwo_exposure_ms', 100.0)
+            # Get camera settings from the active camera's profile.
+            from services.config import DEFAULT_CAMERA_PROFILE
+            profile = self._active_profile()
+            exposure_ms = profile.get('exposure_ms', DEFAULT_CAMERA_PROFILE['exposure_ms'])
             exposure_sec = exposure_ms / 1000.0
-            
+
             self.zwo_camera = ZWOCamera(
                 sdk_path=sdk_path,
                 camera_index=self.config.get('zwo_selected_camera', 0),
                 camera_name=self.config.get('zwo_camera_name'),
                 exposure_sec=exposure_sec,
-                gain=self.config.get('zwo_gain', 100),
-                white_balance_r=self.config.get('zwo_wb_r', 75),
-                white_balance_b=self.config.get('zwo_wb_b', 99),
-                offset=self.config.get('zwo_offset', 20),
-                flip=self.config.get('zwo_flip', 0),
+                gain=profile.get('gain', DEFAULT_CAMERA_PROFILE['gain']),
+                white_balance_r=profile.get('wb_r', DEFAULT_CAMERA_PROFILE['wb_r']),
+                white_balance_b=profile.get('wb_b', DEFAULT_CAMERA_PROFILE['wb_b']),
+                offset=profile.get('offset', DEFAULT_CAMERA_PROFILE['offset']),
+                flip=profile.get('flip', DEFAULT_CAMERA_PROFILE['flip']),
                 auto_exposure=self.config.get('zwo_auto_exposure', False),
-                max_exposure_sec=self.config.get('zwo_max_exposure_ms', 30000) / 1000.0,
-                bayer_pattern=self.config.get('zwo_bayer_pattern', 'BGGR'),
+                max_exposure_sec=profile.get('max_exposure_ms', DEFAULT_CAMERA_PROFILE['max_exposure_ms']) / 1000.0,
+                bayer_pattern=profile.get('bayer_pattern', DEFAULT_CAMERA_PROFILE['bayer_pattern']),
                 wb_mode=self.config.get('white_balance', {}).get('mode', 'asi_auto'),
                 wb_config=self.config.get('white_balance', {}),
                 scheduled_capture_enabled=self.config.get('scheduled_capture_enabled', False),

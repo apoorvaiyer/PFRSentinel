@@ -14,7 +14,8 @@ Required packages (from requirements.txt):
 
 EXCLUDED (ML/dev packages - NOT bundled):
 - torch, torchvision (use ONNX models instead)
-- scikit-learn, scipy, matplotlib, astropy
+- scikit-learn, matplotlib, astropy
+(scipy IS bundled — required for all-sky fisheye calibration)
 """
 
 import sys
@@ -143,6 +144,14 @@ except Exception as e:
     print(f"[WARN] backoff: {e}")
     backoff_datas, backoff_binaries, backoff_hiddenimports = [], [], []
 
+# --- scipy (all-sky lens calibration: optimize + spatial.distance + stats) ---
+try:
+    scipy_datas, scipy_binaries, scipy_hiddenimports = collect_all('scipy')
+    print(f"[OK] scipy: {len(scipy_datas)} datas, {len(scipy_hiddenimports)} imports")
+except Exception as e:
+    print(f"[WARN] scipy: {e}")
+    scipy_datas, scipy_binaries, scipy_hiddenimports = [], [], []
+
 # --- onnxruntime (ML inference - lightweight, minimal collection) ---
 try:
     # Only collect onnxruntime core, not all the tools/transformers
@@ -234,9 +243,7 @@ hiddenimports = [
     'more_itertools', 'autocommand',
     'platformdirs',
     
-    # --- Scipy (calibration) ---
-    'scipy', 'scipy.optimize', 'scipy.optimize._lsq', 'scipy.optimize.minpack2',
-    'scipy._lib', 'scipy._lib._util',
+    # --- Scipy (calibration) — full collection via collect_all above ---
 
     # --- All-sky overlay modules ---
     'services.allsky', 'services.allsky.coords', 'services.allsky.catalogs',
@@ -259,7 +266,7 @@ hiddenimports = [
     # --- ML modules ---
     'ml', 'ml.roof_classifier', 'ml.sky_classifier',
     'onnxruntime',
-] + fluent_hiddenimports + requests_hiddenimports + jaraco_hiddenimports + pystray_hiddenimports + platformdirs_hiddenimports + onnx_hiddenimports + posthog_hiddenimports + backoff_hiddenimports
+] + fluent_hiddenimports + requests_hiddenimports + jaraco_hiddenimports + pystray_hiddenimports + platformdirs_hiddenimports + onnx_hiddenimports + posthog_hiddenimports + backoff_hiddenimports + scipy_hiddenimports
 
 # ============================================================================
 # ANALYSIS
@@ -268,8 +275,8 @@ hiddenimports = [
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=fluent_binaries + requests_binaries + jaraco_binaries + pystray_binaries + platformdirs_binaries + onnx_binaries + xml_binaries + posthog_binaries + backoff_binaries,
-    datas=added_files + fluent_datas + requests_datas + jaraco_datas + pystray_datas + platformdirs_datas + onnx_datas + posthog_datas + backoff_datas,
+    binaries=fluent_binaries + requests_binaries + jaraco_binaries + pystray_binaries + platformdirs_binaries + onnx_binaries + xml_binaries + posthog_binaries + backoff_binaries + scipy_binaries,
+    datas=added_files + fluent_datas + requests_datas + jaraco_datas + pystray_datas + platformdirs_datas + onnx_datas + posthog_datas + backoff_datas + scipy_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -291,9 +298,11 @@ a = Analysis(
         'tkinter', 'tk', 'tcl', '_tkinter',
         'ttkbootstrap',  # Old UI framework
         'IPython', 'jupyter', 'notebook',
-        'pytest', 'unittest', 'doctest',
+        'pytest', 'doctest',
+        # 'unittest' is NOT excluded — scipy imports it internally at runtime
         'setuptools', 'wheel', 'pip', 'distutils',
-        'lib2to3', 'pydoc', 'xmlrpc',
+        'lib2to3',
+        # 'pydoc', 'xmlrpc' — used transitively by scipy stdlib imports
         
         # === Exclude unused PySide6 modules ===
         'PySide6.QtNetwork',

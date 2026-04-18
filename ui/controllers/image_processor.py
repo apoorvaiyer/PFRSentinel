@@ -320,10 +320,29 @@ class ImageProcessorWorker(QThread):
 
             # Add overlays using services/processor.py function
             # stretched_for_preview is the clean pre-overlay frame (set at line ~194)
-            img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
+            # When timelapse wants overlays but explicitly excludes all-sky, render twice:
+            # once without all-sky for the timelapse sink, once with for the main output.
+            timelapse_cfg = config.get('timelapse', {})
+            needs_timelapse_no_allsky = (
+                '__allsky_config' in metadata
+                and timelapse_cfg.get('enabled', False)
+                and timelapse_cfg.get('include_overlays', False)
+                and not timelapse_cfg.get('include_allsky_overlay', False)
+            )
+            if needs_timelapse_no_allsky:
+                metadata_no_allsky = dict(metadata)
+                metadata_no_allsky.pop('__allsky_config', None)
+                img_for_timelapse = add_overlays(
+                    img.copy(), overlays, metadata_no_allsky,
+                    weather_service=self._weather_service,
+                )
+                img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
+            else:
+                img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
+                img_for_timelapse = img
 
             # Emit both versions for timelapse (controller picks based on include_overlays setting)
-            self.timelapse_ready.emit(stretched_for_preview, img)
+            self.timelapse_ready.emit(stretched_for_preview, img_for_timelapse)
 
             # Generate output path
             session = metadata.get('session', datetime.now().strftime('%Y-%m-%d'))

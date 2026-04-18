@@ -10,13 +10,14 @@ from PySide6.QtCore import Qt, Signal
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit,
-    SpinBox, DoubleSpinBox, SwitchButton, FluentIcon, ColorPickerButton
+    SpinBox, DoubleSpinBox, SwitchButton, ColorPickerButton
 )
 from PySide6.QtGui import QColor
 
 import os
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..theme.icons import mdi
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard
 
 
@@ -71,7 +72,7 @@ class OutputSettingsPanel(QScrollArea):
         dir_row.addWidget(self.output_dir_input, 1)
         
         browse_btn = PushButton("Browse")
-        browse_btn.setIcon(FluentIcon.FOLDER)
+        browse_btn.setIcon(mdi('folder-outline'))
         browse_btn.clicked.connect(self._browse_output_dir)
         dir_row.addWidget(browse_btn)
         
@@ -101,7 +102,7 @@ class OutputSettingsPanel(QScrollArea):
         layout.addWidget(file_card)
         
         # === WEB SERVER ===
-        web_card = CollapsibleCard("Web Server", FluentIcon.GLOBE)
+        web_card = CollapsibleCard("Web Server", mdi('web'))
         
         self.web_enabled_switch = SwitchRow(
             "Enable Web Server",
@@ -132,7 +133,7 @@ class OutputSettingsPanel(QScrollArea):
         layout.addWidget(web_card)
         
         # === DISCORD ===
-        discord_card = CollapsibleCard("Discord Integration", FluentIcon.CHAT)
+        discord_card = CollapsibleCard("Discord Integration", mdi('webhook'))
         
         self.discord_enabled_switch = SwitchRow(
             "Enable Discord Alerts",
@@ -231,7 +232,7 @@ class OutputSettingsPanel(QScrollArea):
         test_row.setSpacing(Spacing.sm)
         
         self.test_discord_btn = PushButton("Test Webhook")
-        self.test_discord_btn.setIcon(FluentIcon.SEND)
+        self.test_discord_btn.setIcon(mdi('send'))
         self.test_discord_btn.clicked.connect(self._test_discord)
         test_row.addWidget(self.test_discord_btn)
         
@@ -246,7 +247,7 @@ class OutputSettingsPanel(QScrollArea):
         layout.addWidget(discord_card)
 
         # === CLEANUP ===
-        cleanup_card = CollapsibleCard("Storage Cleanup", FluentIcon.DELETE)
+        cleanup_card = CollapsibleCard("Storage Cleanup", mdi('broom'))
         
         self.cleanup_enabled_switch = SwitchRow(
             "Enable Auto Cleanup",

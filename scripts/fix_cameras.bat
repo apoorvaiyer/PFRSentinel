@@ -1,16 +1,14 @@
 @echo off
-REM Emergency Camera SDK Reset Script Launcher
+REM Camera Settings Reset Script Launcher
+REM Runs fix_cameras.py with proper Python environment
 
 echo ================================================================
-echo PFR Sentinel - Emergency Camera SDK Reset
+echo PFR Sentinel - Camera Settings Reset
 echo ================================================================
 echo.
-echo This script will reset ALL ZWO cameras to factory defaults.
-echo Use this to fix SDK contamination issues.
-echo.
-echo CLOSE ALL CAMERA APPLICATIONS FIRST!
-echo.
-pause
+
+REM cd to project root (this .bat lives in scripts/)
+cd /d "%~dp0\.."
 
 REM Check if virtual environment exists
 if exist "venv\Scripts\activate.bat" (
@@ -22,8 +20,8 @@ if exist "venv\Scripts\activate.bat" (
     echo.
 )
 
-REM Run the reset script
-python reset_camera_sdk.py
+REM Run the fix script
+python scripts\fix_cameras.py
 set EXIT_CODE=%ERRORLEVEL%
 
 echo.

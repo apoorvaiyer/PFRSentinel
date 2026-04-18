@@ -8,7 +8,7 @@ Quick reference for adding PostHog analytics events to PFR Sentinel.
 
 ## Setup
 
-PostHog is initialized in [`services/posthog_service.py`](../services/posthog_service.py).
+PostHog is initialized in [`services/posthog_service.py`](../../services/posthog_service.py).
 
 ### Preferred helpers (handles distinct_id + error swallowing)
 

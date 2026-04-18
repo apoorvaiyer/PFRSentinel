@@ -6,7 +6,7 @@ import io
 import json
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from PIL import Image
 from .logger import app_logger
 from app_config import APP_DISPLAY_NAME
@@ -148,7 +148,7 @@ class DiscordAlerts:
                 "title": title,
                 "description": description,
                 "color": self.get_color_int(),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             # Add footer based on level
@@ -507,7 +507,7 @@ Latest sky capture from {APP_DISPLAY_NAME}."""
                 "title": title,
                 "description": description,
                 "color": self.get_color_int(),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "footer": {"text": "✅ SUCCESS"},
             }
 

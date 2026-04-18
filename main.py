@@ -42,10 +42,7 @@ def _install_crash_handlers():
     """
     # Enable faulthandler so native segfaults (C extensions, Qt, numpy)
     # dump a traceback to the crash log instead of vanishing.
-    crash_log_path = os.path.join(
-        os.getenv('APPDATA', '.'), 'PFRSentinel', 'logs', 'crash.log'
-    )
-    os.makedirs(os.path.dirname(crash_log_path), exist_ok=True)
+    crash_log_path = str(app_logger.log_dir / 'crash.log')
     _crash_file = open(crash_log_path, 'a')
     faulthandler.enable(file=_crash_file)
     # Keep reference alive so file stays open for process lifetime

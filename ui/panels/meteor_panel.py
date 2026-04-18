@@ -12,10 +12,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QFont
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
-    PushButton, SpinBox, FluentIcon, LineEdit,
+    PushButton, SpinBox, LineEdit,
 )
 
 from ..theme.tokens import Colors, Spacing, Layout
+from ..theme.icons import mdi
 from ..components.cards import SettingsCard, SwitchRow, CollapsibleCard
 
 
@@ -247,7 +248,7 @@ class MeteorPanel(QScrollArea):
         layout.addWidget(card)
 
     def _build_detection_card(self, layout: QVBoxLayout):
-        card = CollapsibleCard("Detection Settings", FluentIcon.ZOOM_IN)
+        card = CollapsibleCard("Detection Settings", mdi('radar'))
 
         self._min_length_spin = SpinBox()
         self._min_length_spin.setRange(10, 500)
@@ -314,7 +315,7 @@ class MeteorPanel(QScrollArea):
         layout.addWidget(card)
 
     def _build_logging_card(self, layout: QVBoxLayout):
-        card = CollapsibleCard("Logging", FluentIcon.FOLDER)
+        card = CollapsibleCard("Logging", mdi('file-document-outline'))
 
         self._save_detections_switch = SwitchRow(
             "Save Detection Log", "Append each detected event to a JSONL file"
@@ -354,7 +355,7 @@ class MeteorPanel(QScrollArea):
         edit.textChanged.connect(self._on_settings_changed)
         row.addWidget(edit, 1)
         btn = PushButton("Browse")
-        btn.setIcon(FluentIcon.FOLDER)
+        btn.setIcon(mdi('folder-outline'))
         btn.clicked.connect(browse_callback)
         row.addWidget(btn)
         return edit, container
@@ -411,7 +412,7 @@ class MeteorPanel(QScrollArea):
         return w
 
     def _build_events_card(self, layout: QVBoxLayout):
-        self._events_card = CollapsibleCard("Recent Detections", FluentIcon.HISTORY)
+        self._events_card = CollapsibleCard("Recent Detections", mdi('history'))
 
         self._events_container = QWidget()
         self._events_layout = QVBoxLayout(self._events_container)

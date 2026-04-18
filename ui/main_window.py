@@ -10,13 +10,14 @@ from PySide6.QtCore import Qt, Signal, QSize, QTimer
 from PySide6.QtGui import QIcon, QAction
 from qfluentwidgets import (
     FluentWindow, NavigationInterface, NavigationItemPosition,
-    FluentIcon, setTheme, Theme, setThemeColor, isDarkTheme,
+    setTheme, Theme, setThemeColor, isDarkTheme,
     NavigationWidget, PushButton, ToolButton, SplitFluentWindow
 )
 
 import os
 import random
 import sys
+import traceback
 
 # Add parent directory for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -316,6 +317,12 @@ class MainWindow(QMainWindow):
         )
         self.timelapse_controller.status_updated.connect(
             self.timelapse_panel.update_status
+        )
+        self.timelapse_controller.finalizing_started.connect(
+            self._on_timelapse_finalizing_started
+        )
+        self.timelapse_controller.finalizing_finished.connect(
+            self._on_timelapse_finalizing_finished
         )
 
         # Meteor tracker: image processor → controller → panel status
@@ -927,6 +934,46 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _on_timelapse_finalizing_started(self):
+        self._notify("Finalizing timelapse video…", "info")
+
+    def _on_timelapse_finalizing_finished(self, session_path: str):
+        name = os.path.basename(session_path) if session_path else 'timelapse'
+        self._notify(f"Timelapse saved: {name}", "info")
+
+    def _wait_for_timelapse_finalization(self, timeout_sec: float = 75.0):
+        """Show a non-cancelable progress dialog while the timelapse finalizes.
+
+        ffmpeg's +faststart rewrite can take 10–40 s on a long session; killing
+        it mid-rewrite truncates the mp4. We block the close with a visible
+        dialog rather than letting the window vanish silently.
+        """
+        if not self.timelapse_controller or not self.timelapse_controller.is_finalizing():
+            return
+
+        from PySide6.QtWidgets import QProgressDialog
+        import time as _time
+
+        dlg = QProgressDialog(
+            "Saving timelapse video, please wait…",
+            None,   # no cancel button
+            0, 0,   # indeterminate
+            self,
+        )
+        dlg.setWindowTitle("PFR Sentinel")
+        dlg.setWindowModality(Qt.ApplicationModal)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.show()
+        QApplication.processEvents()
+
+        deadline = _time.monotonic() + timeout_sec
+        while self.timelapse_controller.is_finalizing() and _time.monotonic() < deadline:
+            QApplication.processEvents()
+            _time.sleep(0.1)
+
+        dlg.close()
+
     def _validate_config_on_startup(self):
         """Run config validation and log any warnings."""
         try:
@@ -1306,7 +1353,6 @@ class MainWindow(QMainWindow):
                 self.logs_panel.append_logs(messages)
         except Exception as e:
             # Can't use app_logger here (might be the source of the error)
-            import traceback
             print(f"_poll_logs crashed: {traceback.format_exc()}", file=sys.stderr)
     
     # =========================================================================
@@ -1588,7 +1634,6 @@ class MainWindow(QMainWindow):
             app_logger.debug(f"Image processed: {os.path.basename(output_path)}")
         except Exception as e:
             app_logger.error(f"_on_image_processed crashed: {e}")
-            import traceback
             app_logger.error(traceback.format_exc())
     
     def _on_preview_ready(self, preview_image, hist_data: dict):
@@ -1602,7 +1647,6 @@ class MainWindow(QMainWindow):
                 app_logger.warning("No histogram data received from processor")
         except Exception as e:
             app_logger.error(f"_on_preview_ready crashed: {e}")
-            import traceback
             app_logger.error(traceback.format_exc())
     
     def _on_processing_error(self, error_msg: str):
@@ -1883,6 +1927,7 @@ class MainWindow(QMainWindow):
 
         if self.timelapse_controller:
             try:
+                self._wait_for_timelapse_finalization()
                 self.timelapse_controller.shutdown()
             except Exception:
                 pass

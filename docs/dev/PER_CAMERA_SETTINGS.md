@@ -80,8 +80,8 @@ The ROI is NOT configurable per camera because:
 ## Camera Fix Script
 
 ### Files Created
-- **`fix_cameras.py`** - Python script to reset all cameras
-- **`fix_cameras.bat`** - Windows batch launcher (activates venv automatically)
+- **`scripts/fix_cameras.py`** - Python script to reset all cameras
+- **`scripts/fix_cameras.bat`** - Windows batch launcher (activates venv automatically, handles cwd)
 
 ### What the Script Does
 1. **Backs up** current `config.json` with timestamp
@@ -99,10 +99,10 @@ The ROI is NOT configurable per camera because:
 ### Usage
 ```bash
 # Close PFRSentinel first!
-fix_cameras.bat
+scripts\fix_cameras.bat
 
-# Or run directly:
-python fix_cameras.py
+# Or run directly from the project root:
+python scripts\fix_cameras.py
 ```
 
 ### What You'll See
@@ -168,7 +168,7 @@ After implementing changes, test:
 - [ ] Start capture with Camera B, verify correct settings applied
 - [ ] Switch back to Camera A, verify gain is still 150
 - [ ] Check `config.json` - should have separate profiles for each camera
-- [ ] Run `fix_cameras.py` - should detect all cameras and create profiles
+- [ ] Run `scripts/fix_cameras.py` - should detect all cameras and create profiles
 - [ ] Restart PFRSentinel - profiles should persist
 
 ## Technical Notes

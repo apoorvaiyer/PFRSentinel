@@ -16,10 +16,11 @@ from PySide6.QtGui import QColor
 from qfluentwidgets import (
     PushButton, SwitchButton, SpinBox,
     CardWidget, CaptionLabel, BodyLabel, SubtitleLabel,
-    FluentIcon,
 )
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..theme.icons import mdi
+from ..components.cards import CollapsibleCard
 
 
 def _section_card(title: str) -> tuple:
@@ -233,6 +234,7 @@ class AllSkySettingsPanel(QScrollArea):
         self._build_calibration_card()
         self._build_master_toggle()
         self._build_constellations_card()
+        self._build_bright_stars_card()
         self._build_messier_card()
         self._build_ngc_card()
         self._build_planets_card()
@@ -267,7 +269,7 @@ class AllSkySettingsPanel(QScrollArea):
         self._status_label.setWordWrap(True)
         vl.addWidget(self._status_label)
 
-        self._calibrate_btn = PushButton("Calibrate Now", icon=FluentIcon.SYNC)
+        self._calibrate_btn = PushButton("Calibrate Now", icon=mdi('refresh'))
         self._calibrate_btn.clicked.connect(self._on_calibrate_clicked)
         vl.addWidget(self._calibrate_btn)
 
@@ -282,47 +284,61 @@ class AllSkySettingsPanel(QScrollArea):
         self._layout.addWidget(card)
 
     def _build_constellations_card(self):
-        card, vl = _section_card("Constellations")
+        card = CollapsibleCard("Constellations", mdi('vector-polyline'))
         self._con_enabled = LayerToggleRow("Show constellations", default=True)
         self._con_lines = LayerToggleRow("Lines", default=True)
         self._con_labels = LayerToggleRow("Labels", default=True)
         for row in (self._con_enabled, self._con_lines, self._con_labels):
             row.toggled.connect(self._on_setting_changed)
-            vl.addWidget(row)
+            card.add_widget(row)
         self._con_color = ColorPaletteRow('#4488FF')
         self._con_color.color_changed.connect(self._on_setting_changed)
-        vl.addWidget(self._con_color)
+        card.add_widget(self._con_color)
+        self._layout.addWidget(card)
+
+    def _build_bright_stars_card(self):
+        card = CollapsibleCard("Bright Stars", mdi('star-four-points'))
+        self._stars_enabled = LayerToggleRow("Show named bright stars", default=False)
+        self._stars_enabled.toggled.connect(self._on_setting_changed)
+        card.add_widget(self._stars_enabled)
+        self._stars_max_mag = self._spin_row_in(card, "Max magnitude", 1, 5, 3, 1)
+        self._stars_bayer = LayerToggleRow("Use Bayer designation when unnamed", default=False)
+        self._stars_bayer.toggled.connect(self._on_setting_changed)
+        card.add_widget(self._stars_bayer)
+        self._stars_color = ColorPaletteRow('#FFDD44')
+        self._stars_color.color_changed.connect(self._on_setting_changed)
+        card.add_widget(self._stars_color)
         self._layout.addWidget(card)
 
     def _build_messier_card(self):
-        card, vl = _section_card("Messier Objects")
+        card = CollapsibleCard("Messier Objects", mdi('blur'))
         self._messier_enabled = LayerToggleRow("Show Messier objects", default=True)
         self._messier_enabled.toggled.connect(self._on_setting_changed)
-        vl.addWidget(self._messier_enabled)
+        card.add_widget(self._messier_enabled)
         self._messier_color = ColorPaletteRow('#FF8844')
         self._messier_color.color_changed.connect(self._on_setting_changed)
-        vl.addWidget(self._messier_color)
+        card.add_widget(self._messier_color)
         self._layout.addWidget(card)
 
     def _build_ngc_card(self):
-        card, vl = _section_card("NGC/IC Objects")
+        card = CollapsibleCard("NGC/IC Objects", mdi('telescope'))
         self._ngc_enabled = LayerToggleRow("Show NGC objects (mag filtered)", default=False)
         self._ngc_enabled.toggled.connect(self._on_setting_changed)
-        vl.addWidget(self._ngc_enabled)
-        self._ngc_max_mag = self._spin_row(vl, "Max magnitude", 5, 12, 8, 1)
+        card.add_widget(self._ngc_enabled)
+        self._ngc_max_mag = self._spin_row_in(card, "Max magnitude", 5, 12, 8, 1)
         self._ngc_color = ColorPaletteRow('#88FF44')
         self._ngc_color.color_changed.connect(self._on_setting_changed)
-        vl.addWidget(self._ngc_color)
+        card.add_widget(self._ngc_color)
         self._layout.addWidget(card)
 
     def _build_planets_card(self):
-        card, vl = _section_card("Planets & Moon")
+        card = CollapsibleCard("Planets & Moon", mdi('orbit'))
         self._planets_enabled = LayerToggleRow("Show planets & Moon", default=True)
         self._planets_enabled.toggled.connect(self._on_setting_changed)
-        vl.addWidget(self._planets_enabled)
+        card.add_widget(self._planets_enabled)
         self._planets_color = ColorPaletteRow('#FFFFCC')
         self._planets_color.color_changed.connect(self._on_setting_changed)
-        vl.addWidget(self._planets_color)
+        card.add_widget(self._planets_color)
         self._layout.addWidget(card)
 
     def _spin_row(self, layout, label: str, min_v: int, max_v: int,
@@ -336,6 +352,16 @@ class AllSkySettingsPanel(QScrollArea):
         spin.valueChanged.connect(self._on_setting_changed)
         row.addWidget(spin)
         layout.addLayout(row)
+        return spin
+
+    def _spin_row_in(self, card: CollapsibleCard, label: str, min_v: int, max_v: int,
+                     default: int, step: int) -> SpinBox:
+        spin = SpinBox()
+        spin.setRange(min_v, max_v)
+        spin.setValue(default)
+        spin.setSingleStep(step)
+        spin.valueChanged.connect(self._on_setting_changed)
+        card.add_row(label, spin)
         return spin
 
     # ------------------------------------------------------------------
@@ -364,6 +390,12 @@ class AllSkySettingsPanel(QScrollArea):
         self._con_lines.set_checked(con.get('lines', True))
         self._con_labels.set_checked(con.get('labels', True))
         self._con_color.set_color(con.get('color', '#4488FF'))
+
+        stars = c.get('bright_stars', {})
+        self._stars_enabled.set_checked(stars.get('enabled', False))
+        self._stars_max_mag.setValue(int(round(float(stars.get('max_magnitude', 3)))))
+        self._stars_bayer.set_checked(stars.get('bayer_fallback', False))
+        self._stars_color.set_color(stars.get('color', '#FFDD44'))
 
         messier = c.get('messier', {})
         self._messier_enabled.set_checked(messier.get('enabled', True))
@@ -397,6 +429,13 @@ class AllSkySettingsPanel(QScrollArea):
                 'labels': self._con_labels.is_checked(),
                 'color': self._con_color.selected_color(),
                 'line_width': 2, 'label_size': 12, 'opacity': 180,
+            },
+            'bright_stars': {
+                'enabled': self._stars_enabled.is_checked(),
+                'max_magnitude': float(self._stars_max_mag.value()),
+                'bayer_fallback': self._stars_bayer.is_checked(),
+                'color': self._stars_color.selected_color(),
+                'label_size': 11, 'opacity': 220,
             },
             'messier': {
                 'enabled': self._messier_enabled.is_checked(),

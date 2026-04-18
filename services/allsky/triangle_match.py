@@ -5,7 +5,6 @@ Geometric hashing of star triangle shapes (astrometry.net-inspired,
 adapted for fisheye).  Called automatically when the grid search in
 calibration.py fails.  Works with as few as 4-5 detected stars.
 """
-import logging
 import math
 import time as _time
 import numpy as np
@@ -13,6 +12,16 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from itertools import combinations
 from typing import List, Optional, Tuple
+
+from services.logger import app_logger as log
+
+# Pre-import scipy at module level so background threads never trigger
+# a first-time import (causes segfault in PyInstaller builds).
+try:
+    from scipy.stats import binom as _binom
+except Exception as _e:
+    _binom = None
+    log.error(f"scipy.stats import failed in triangle_match: {type(_e).__name__}: {_e}")
 
 from .fisheye import FisheyeModel
 from .calibration import (
@@ -23,8 +32,10 @@ from .calibration import (
 )
 from .star_centroid import detect_stars, estimate_sky_circle
 from .catalogs import get_bright_stars
-
-log = logging.getLogger(__name__)
+from .calibration_validate import (
+    validate_bright_anchors,
+    validate_lens_polynomial,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -37,6 +48,8 @@ MAX_DET_STARS = 12        # brightest detected stars used for triplets
 MAX_HYPOTHESES = 500      # early-stop after scoring this many
 MIN_SCORE = 4             # minimum matches for a useful hypothesis
 MAX_CAT_MAG = 5.5         # faintest catalog star in index
+MAX_CAT_STARS = 150       # hard cap on catalog stars indexed — C(N,3) is cubic,
+                          # 150 stars → ~550k triplets (~1s), 1500 → ~560M (~10 min)
 MATCH_PROB_THRESHOLD = 1e-3   # binomial false-positive probability threshold
 
 
@@ -275,12 +288,13 @@ def _match_probability(
     p = n_catalog * radius^2 (fraction of image covered by match discs).
     Subtracts 3 degrees of freedom for the rotation estimate.
     """
-    from scipy.stats import binom
+    if _binom is None:
+        return 1.0  # Cannot compute without scipy — assume plausible
     p_single = min(n_catalog_projected * match_radius_fraction ** 2, 1.0)
     if p_single <= 0 or n_matches <= 0:
         return 1.0
     effective = max(n_matches - 3, 0)
-    return float(binom.sf(effective - 1, n_detected, p_single))
+    return float(_binom.sf(effective - 1, n_detected, p_single))
 
 
 # ---------------------------------------------------------------------------
@@ -471,10 +485,12 @@ def triangle_calibrate(
         above_horizon.sort(key=lambda x: x[0]['vmag'])
 
     # --- Build triangle index from bright visible stars ---
+    # Cap catalog size: C(N,3) is cubic. above_horizon is already sorted
+    # brightest-first by caller, so slicing keeps the top anchors.
     bright_ah = [
         (s, a, z) for s, a, z in above_horizon
         if s.get('vmag', 99) <= MAX_CAT_MAG
-    ]
+    ][:MAX_CAT_STARS]
     if len(bright_ah) < 4:
         raise CalibrationError(
             "Triangle match: fewer than 4 bright catalog stars above horizon."
@@ -487,14 +503,19 @@ def triangle_calibrate(
     dec_arr = np.array([s['dec_deg'] for s in catalog_stars])
     sep_matrix = _angular_sep_matrix(ra_arr, dec_arr)
 
+    log.info(f"Triangle index: building for {len(catalog_stars)} stars "
+             f"(capped from {sum(1 for s, _, _ in above_horizon if s.get('vmag', 99) <= MAX_CAT_MAG)})")
+    t_idx = _time.monotonic()
     index = TriangleIndex(sep_matrix)
     n_triplets = index.build()
-    log.info(f"Triangle index: {len(catalog_stars)} stars, "
+    log.info(f"Triangle index: built in {_time.monotonic() - t_idx:.1f}s — "
              f"{n_triplets} triplets, {len(index._table)} bins")
 
     a1_est = sky_radius / (np.pi / 2.0)
 
     # --- Try both image orientations ---
+    log.info("Triangle hypothesis search: starting")
+    t_hyp = _time.monotonic()
     overall_best = None
     for east_left in (True, False):
         model, score, matches, prob = _generate_and_score(
@@ -504,6 +525,8 @@ def triangle_calibrate(
         if model is not None:
             if overall_best is None or prob < overall_best[3]:
                 overall_best = (model, score, matches, prob)
+    log.info(f"Triangle hypothesis search: done in "
+             f"{_time.monotonic() - t_hyp:.1f}s")
 
     if overall_best is None or overall_best[1] < min_matches:
         found = overall_best[1] if overall_best else 0
@@ -529,7 +552,16 @@ def triangle_calibrate(
             f"exceeds limit {max_residual_px}px."
         )
 
+    poly_ok, poly_msg = validate_lens_polynomial(model)
+    anch_ok, anch_msg = validate_bright_anchors(model, above_horizon, detected)
+    if not (poly_ok and anch_ok):
+        reason = "; ".join(
+            m for ok, m in ((poly_ok, poly_msg), (anch_ok, anch_msg)) if not ok
+        )
+        raise CalibrationError(f"Triangle match failed sanity check: {reason}")
+
     elapsed = _time.monotonic() - t0
     model.calibrated_at = datetime.now(timezone.utc).isoformat()
-    log.info(f"Triangle calibration succeeded: {model}, {elapsed:.1f}s")
+    log.info(f"Triangle calibration succeeded: {model}, {elapsed:.1f}s "
+             f"({poly_msg}; {anch_msg})")
     return model

@@ -10,11 +10,10 @@ import json
 import csv
 import re
 import os
-import logging
 import numpy as np
 from typing import List, Dict, Optional
 
-log = logging.getLogger(__name__)
+from services.logger import app_logger as log
 
 # ---------------------------------------------------------------------------
 # Resource path helper

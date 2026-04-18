@@ -93,12 +93,12 @@ Note: Camera may be stuck in bad USB state requiring physical disconnect.
 
 ## Testing
 
-### Test Script: `test_usb_reset.py`
+### Test Script: `scripts/dev/test_usb_reset.py`
 
 Quick verification that USB reset works:
 
 ```powershell
-python test_usb_reset.py
+python scripts\dev\test_usb_reset.py
 ```
 
 Output shows:
@@ -168,5 +168,5 @@ USB device reset may require Administrator privileges depending on Windows secur
 - `services/usb_reset_win.py` - USB reset implementation (NEW)
 - `services/camera_connection.py` - Integration with reconnect logic (MODIFIED)
 - `services/zwo_camera.py` - Enhanced error messages (MODIFIED)
-- `test_usb_reset.py` - Test utility (NEW)
-- `docs/CAMERA_USB_RESET.md` - This documentation (NEW)
+- `scripts/dev/test_usb_reset.py` - Test utility (NEW)
+- `docs/dev/CAMERA_USB_RESET.md` - This documentation (NEW)

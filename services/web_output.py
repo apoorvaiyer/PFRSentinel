@@ -12,7 +12,11 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
+from PIL import Image
 from .logger import app_logger
+
+# Maximum image size served by the web endpoint (5 MB)
+WEB_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
 
 class ImageHTTPHandler(BaseHTTPRequestHandler):
@@ -273,7 +277,10 @@ class WebOutputServer:
     def update_image(self, image_path, image_data_bytes, metadata=None, content_type='image/jpeg'):
         """
         Update the latest image to serve.
-        
+
+        If the image exceeds WEB_IMAGE_MAX_BYTES (5 MB), it is progressively
+        downsized to fit within the limit before being served.
+
         Args:
             image_path: Path to the saved image file (for reference)
             image_data_bytes: Image data as bytes (JPEG or PNG)
@@ -282,8 +289,17 @@ class WebOutputServer:
         """
         if not self.running:
             return
-        
+
         try:
+            # Downsize if image exceeds the web endpoint size limit
+            if len(image_data_bytes) > WEB_IMAGE_MAX_BYTES:
+                result = self._downsize_image(image_data_bytes, content_type)
+                if result is None:
+                    # Downsize failed — keep serving the previous image
+                    app_logger.warning("Web image over 5 MB and downsize failed, keeping previous image")
+                    return
+                image_data_bytes, content_type = result
+
             # PERF-002: Use centralized update method with ETag generation
             ImageHTTPHandler.update_image(
                 image_data=image_data_bytes,
@@ -294,6 +310,57 @@ class WebOutputServer:
             app_logger.debug(f"Web server updated with new image: {os.path.basename(image_path)} ({len(image_data_bytes)} bytes, {content_type})")
         except Exception as e:
             app_logger.error(f"Error updating web server image: {e}")
+
+    @staticmethod
+    def _downsize_image(image_data_bytes: bytes, content_type: str):
+        """Downscale an image to fit within WEB_IMAGE_MAX_BYTES.
+
+        Estimates the initial scale from the ratio of target to actual file
+        size (file size ~ pixel count, so scale = sqrt(target / actual)),
+        then refines with a few extra passes if JPEG compression doesn't
+        hit the estimate exactly.  Returns (new_bytes, new_content_type)
+        on success, or None if the image could not be brought under the limit.
+        """
+        import math
+
+        try:
+            img = Image.open(io.BytesIO(image_data_bytes))
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+
+            original_size = len(image_data_bytes)
+
+            # First pass: estimate scale from byte ratio
+            # file_size ∝ width × height ∝ scale², so scale = sqrt(target / actual)
+            # Use 0.85× target as headroom since JPEG isn't perfectly linear
+            scale = math.sqrt((WEB_IMAGE_MAX_BYTES * 0.85) / original_size)
+            scale = min(scale, 0.99)  # Always shrink at least a little
+
+            for attempt in range(5):
+                new_w = max(1, int(img.width * scale))
+                new_h = max(1, int(img.height * scale))
+                resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+                buf = io.BytesIO()
+                resized.save(buf, format='JPEG', quality=90)
+                result_size = buf.tell()
+
+                if result_size <= WEB_IMAGE_MAX_BYTES:
+                    app_logger.info(
+                        f"Web image downsized: {original_size / (1024*1024):.1f} MB → "
+                        f"{result_size / (1024*1024):.1f} MB "
+                        f"({new_w}x{new_h}, attempt {attempt + 1})"
+                    )
+                    return buf.getvalue(), 'image/jpeg'
+
+                # Refine: adjust scale based on how far off we are
+                scale *= math.sqrt((WEB_IMAGE_MAX_BYTES * 0.85) / result_size)
+
+            app_logger.warning("Web image still above 5 MB after downscale attempts")
+            return None
+        except Exception as e:
+            app_logger.warning(f"Web image downsize failed: {e}")
+            return None
     
     def get_url(self):
         """Get the full URL for the image endpoint."""

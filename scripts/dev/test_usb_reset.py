@@ -12,8 +12,8 @@ Usage:
 import sys
 import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add project root (parent of scripts/dev) to path so we can import services.*
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from services.usb_reset_win import reset_zwo_camera_usb, is_usb_reset_available, _find_zwo_usb_devices
 

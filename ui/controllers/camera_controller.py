@@ -190,71 +190,22 @@ class CameraControllerQt(QObject):
             # Get camera profile (creates default if doesn't exist)
             profile = self.config.get_camera_profile(clean_camera_name)
             
-            if profile:
-                app_logger.info(f"Loading settings from camera profile: {clean_camera_name}")
-                app_logger.debug(f"Profile contents: {profile}")
+            # `get_camera_profile` always returns a dict (seeded with DEFAULT_CAMERA_PROFILE
+            # on first access), so no legacy-global fallback is needed here.
+            app_logger.info(f"Loading settings from camera profile: {clean_camera_name}")
+            app_logger.debug(f"Profile contents: {profile}")
 
-                # Merge profile with global config: profile values take priority,
-                # but if a profile value is still at its default and the global
-                # config has a different (user-customized) value, use the global.
-                # This prevents auto-created profiles from overwriting user settings.
-                _defaults = {
-                    'exposure_ms': 100.0, 'gain': 100, 'max_exposure_ms': 30000.0,
-                    'target_brightness': 100, 'wb_r': 75, 'wb_b': 99,
-                    'offset': 20, 'flip': 0, 'bayer_pattern': 'BGGR'
-                }
-                _global_map = {k: f'zwo_{k}' for k in _defaults}
+            from services.config import DEFAULT_CAMERA_PROFILE
+            exposure_ms = profile.get('exposure_ms', DEFAULT_CAMERA_PROFILE['exposure_ms'])
+            gain = profile.get('gain', DEFAULT_CAMERA_PROFILE['gain'])
+            max_exposure_ms = profile.get('max_exposure_ms', DEFAULT_CAMERA_PROFILE['max_exposure_ms'])
+            target_brightness = profile.get('target_brightness', DEFAULT_CAMERA_PROFILE['target_brightness'])
+            wb_r = profile.get('wb_r', DEFAULT_CAMERA_PROFILE['wb_r'])
+            wb_b = profile.get('wb_b', DEFAULT_CAMERA_PROFILE['wb_b'])
+            offset = profile.get('offset', DEFAULT_CAMERA_PROFILE['offset'])
+            flip = profile.get('flip', DEFAULT_CAMERA_PROFILE['flip'])
+            bayer_pattern = profile.get('bayer_pattern', DEFAULT_CAMERA_PROFILE['bayer_pattern'])
 
-                def _pick(key):
-                    """Pick profile value unless it's at default and global differs."""
-                    pval = profile.get(key, _defaults[key])
-                    gval = self.config.get(_global_map[key], _defaults[key])
-                    if pval == _defaults[key] and gval != _defaults[key]:
-                        app_logger.info(
-                            f"Profile '{key}' is default ({pval}), "
-                            f"using global config value ({gval}) instead"
-                        )
-                        # Also update the profile so it stays in sync
-                        profile[key] = gval
-                        return gval
-                    return pval
-
-                exposure_ms = _pick('exposure_ms')
-                gain = _pick('gain')
-                max_exposure_ms = _pick('max_exposure_ms')
-                target_brightness = _pick('target_brightness')
-                wb_r = _pick('wb_r')
-                wb_b = _pick('wb_b')
-                offset = _pick('offset')
-                flip = _pick('flip')
-                bayer_pattern = _pick('bayer_pattern')
-
-                # Save merged profile back so future loads are correct
-                self.config.save_camera_profile(clean_camera_name, profile)
-
-                # Sync merged values to global config for UI display
-                self.config.set('zwo_exposure_ms', exposure_ms)
-                self.config.set('zwo_gain', gain)
-                self.config.set('zwo_max_exposure_ms', max_exposure_ms)
-                self.config.set('zwo_target_brightness', target_brightness)
-                self.config.set('zwo_wb_r', wb_r)
-                self.config.set('zwo_wb_b', wb_b)
-                self.config.set('zwo_offset', offset)
-                self.config.set('zwo_flip', flip)
-                self.config.set('zwo_bayer_pattern', bayer_pattern)
-            else:
-                # Fallback to global settings if profile doesn't exist
-                app_logger.warning(f"No profile found for {clean_camera_name}, using global settings")
-                exposure_ms = self.config.get('zwo_exposure_ms', 100.0)
-                gain = self.config.get('zwo_gain', 100)
-                max_exposure_ms = self.config.get('zwo_max_exposure_ms', 30000.0)
-                target_brightness = self.config.get('zwo_target_brightness', 100)
-                wb_r = self.config.get('zwo_wb_r', 75)
-                wb_b = self.config.get('zwo_wb_b', 99)
-                offset = self.config.get('zwo_offset', 20)
-                flip = self.config.get('zwo_flip', 0)
-                bayer_pattern = self.config.get('zwo_bayer_pattern', 'BGGR')
-            
             # Auto exposure is GLOBAL (algorithm setting, not camera-specific)
             auto_exposure = self.config.get('zwo_auto_exposure', False)
             # ============================================================================
@@ -448,17 +399,18 @@ class CameraControllerQt(QObject):
             if '(Index:' in camera_name:
                 camera_name = camera_name.split('(Index:')[0].strip()
 
-            # Get settings from camera profile (with fallback to global config)
-            profile = self.config.get_camera_profile(camera_name) if camera_name else {}
+            # Get settings from camera profile (seeded with defaults on first access)
+            from services.config import DEFAULT_CAMERA_PROFILE
+            profile = self.config.get_camera_profile(camera_name) if camera_name else dict(DEFAULT_CAMERA_PROFILE)
 
             # --- Exposure & Gain ---
-            exposure_ms = profile.get('exposure_ms', self.config.get('zwo_exposure_ms', 100.0))
-            gain = profile.get('gain', self.config.get('zwo_gain', 100))
+            exposure_ms = profile.get('exposure_ms', DEFAULT_CAMERA_PROFILE['exposure_ms'])
+            gain = profile.get('gain', DEFAULT_CAMERA_PROFILE['gain'])
 
-            # --- Auto-exposure ---
-            auto_exposure = profile.get('auto_exposure', self.config.get('zwo_auto_exposure', False))
-            target_brightness = profile.get('target_brightness', self.config.get('zwo_target_brightness', 100))
-            max_exposure_ms = profile.get('max_exposure_ms', self.config.get('zwo_max_exposure_ms', 30000.0))
+            # --- Auto-exposure --- (auto_exposure itself is GLOBAL, not per-camera)
+            auto_exposure = self.config.get('zwo_auto_exposure', False)
+            target_brightness = profile.get('target_brightness', DEFAULT_CAMERA_PROFILE['target_brightness'])
+            max_exposure_ms = profile.get('max_exposure_ms', DEFAULT_CAMERA_PROFILE['max_exposure_ms'])
 
             self.zwo_camera.auto_exposure = auto_exposure
             self.zwo_camera.target_brightness = target_brightness
@@ -504,7 +456,7 @@ class CameraControllerQt(QObject):
             )
 
             # --- Offset (black level) — push to SDK ---
-            offset = profile.get('offset', self.config.get('zwo_offset', 20))
+            offset = profile.get('offset', DEFAULT_CAMERA_PROFILE['offset'])
             self.zwo_camera.offset = offset
             if self.zwo_camera.camera and self.zwo_camera.asi:
                 try:
@@ -515,7 +467,7 @@ class CameraControllerQt(QObject):
                     app_logger.debug(f"Could not set offset live: {e}")
 
             # --- Flip — push to SDK ---
-            flip = profile.get('flip', self.config.get('zwo_flip', 0))
+            flip = profile.get('flip', DEFAULT_CAMERA_PROFILE['flip'])
             if flip != self.zwo_camera.flip:
                 self.zwo_camera.flip = flip
                 if self.zwo_camera.camera and self.zwo_camera.asi:
@@ -527,7 +479,7 @@ class CameraControllerQt(QObject):
                         app_logger.debug(f"Could not set flip live: {e}")
 
             # --- Bayer pattern (software-side, no SDK call) ---
-            bayer = profile.get('bayer_pattern', self.config.get('zwo_bayer_pattern', 'BGGR'))
+            bayer = profile.get('bayer_pattern', DEFAULT_CAMERA_PROFILE['bayer_pattern'])
             self.zwo_camera.bayer_pattern = bayer
 
             # --- Scheduled capture ---

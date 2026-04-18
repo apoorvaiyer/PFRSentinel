@@ -16,11 +16,12 @@ from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QFont, QPen, QBrush
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit,
-    SpinBox, CheckBox, FluentIcon, TableWidget, Slider,
+    SpinBox, CheckBox, TableWidget, Slider,
     SwitchButton
 )
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..theme.icons import mdi
 from ..components.cards import FormRow, SwitchRow
 
 
@@ -176,19 +177,19 @@ class OverlaySettingsPanel(QWidget):
         btn_row.setSpacing(Spacing.md)
         
         self.add_btn = PrimaryPushButton("Add")
-        self.add_btn.setIcon(FluentIcon.ADD)
+        self.add_btn.setIcon(mdi('plus'))
         self.add_btn.setFixedWidth(90)
         self.add_btn.clicked.connect(self._show_add_menu)
         btn_row.addWidget(self.add_btn)
         
         self.dup_btn = PushButton("Duplicate")
-        self.dup_btn.setIcon(FluentIcon.COPY)
+        self.dup_btn.setIcon(mdi('content-copy'))
         self.dup_btn.setFixedWidth(115)
         self.dup_btn.clicked.connect(self._duplicate_overlay)
         btn_row.addWidget(self.dup_btn)
         
         self.del_btn = PushButton("Delete")
-        self.del_btn.setIcon(FluentIcon.DELETE)
+        self.del_btn.setIcon(mdi('delete-outline'))
         self.del_btn.setFixedWidth(90)
         self.del_btn.clicked.connect(self._delete_overlay)
         btn_row.addWidget(self.del_btn)
@@ -712,12 +713,12 @@ class OverlaySettingsPanel(QWidget):
         btn_row.setSpacing(Spacing.sm)
         
         self.apply_btn = PrimaryPushButton("Apply Changes")
-        self.apply_btn.setIcon(FluentIcon.ACCEPT)
+        self.apply_btn.setIcon(mdi('check'))
         self.apply_btn.clicked.connect(self._apply_changes)
         btn_row.addWidget(self.apply_btn)
         
         self.reset_btn = PushButton("Reset")
-        self.reset_btn.setIcon(FluentIcon.SYNC)
+        self.reset_btn.setIcon(mdi('refresh'))
         self.reset_btn.clicked.connect(self._reset_editor)
         btn_row.addWidget(self.reset_btn)
         
@@ -853,7 +854,7 @@ class OverlaySettingsPanel(QWidget):
         path_row.addWidget(self.image_path_edit, 1)
         
         browse_btn = PushButton("Browse")
-        browse_btn.setIcon(FluentIcon.FOLDER)
+        browse_btn.setIcon(mdi('folder-outline'))
         browse_btn.clicked.connect(self._browse_image)
         path_row.addWidget(browse_btn)
         
@@ -973,9 +974,9 @@ class OverlaySettingsPanel(QWidget):
         """Show menu to add text, image, or compass overlay"""
         from qfluentwidgets import RoundMenu, Action
         menu = RoundMenu(parent=self)
-        menu.addAction(Action(FluentIcon.FONT, "Add Text Overlay", triggered=self._add_text_overlay))
-        menu.addAction(Action(FluentIcon.PHOTO, "Add Image Overlay", triggered=self._add_image_overlay))
-        menu.addAction(Action(FluentIcon.CALORIES, "Add Compass Rose", triggered=self._add_compass_overlay))
+        menu.addAction(Action(mdi('format-text'), "Add Text Overlay", triggered=self._add_text_overlay))
+        menu.addAction(Action(mdi('image-outline'), "Add Image Overlay", triggered=self._add_image_overlay))
+        menu.addAction(Action(mdi('compass-outline'), "Add Compass Rose", triggered=self._add_compass_overlay))
 
         # Show below the button
         pos = self.add_btn.mapToGlobal(self.add_btn.rect().bottomLeft())
