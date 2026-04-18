@@ -27,11 +27,20 @@ Algorithm
 
 Dependencies: scipy (same as single-image calibration).
 """
-import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 import numpy as np
+
+from services.logger import app_logger as log
+
+# Pre-import scipy at module level so background threads never trigger
+# a first-time import (causes segfault in PyInstaller builds).
+try:
+    from scipy.optimize import least_squares as _least_squares
+except Exception as _e:
+    _least_squares = None
+    log.error(f"scipy.optimize import failed in multi_calibrate: {type(_e).__name__}: {_e}")
 
 from .star_centroid import detect_stars, estimate_sky_circle
 from .fisheye import FisheyeModel
@@ -46,8 +55,10 @@ from .calibration import (
     _compute_rms,
     calibrate,
 )
-
-log = logging.getLogger(__name__)
+from .calibration_validate import (
+    validate_bright_anchors,
+    validate_lens_polynomial,
+)
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -105,9 +116,24 @@ def refine_from_detections(
             f"Refinement residual {rms:.1f}px exceeds limit {max_residual_px}px."
         )
 
-    from datetime import timezone
+    # Sanity checks — multi-image fits over a short span (minutes) can
+    # converge to non-physical basins where roll + polynomial + axis_alt
+    # collude to satisfy all frames simultaneously without matching the
+    # real sky. Guard with lens-polynomial physics + bright-anchor hit rate
+    # on the most recent frame.
+    poly_ok, poly_msg = validate_lens_polynomial(model)
+    latest = frames[-1]
+    anch_ok, anch_msg = validate_bright_anchors(
+        model, latest['above_horizon'], latest['detected'],
+    )
+    if not (poly_ok and anch_ok):
+        reason = "; ".join(
+            m for ok, m in ((poly_ok, poly_msg), (anch_ok, anch_msg)) if not ok
+        )
+        raise CalibrationError(f"Refinement failed sanity check: {reason}")
+
     model.calibrated_at = datetime.now(timezone.utc).isoformat()
-    log.info(f"Refinement succeeded: {model}")
+    log.info(f"Refinement succeeded: {model} ({poly_msg}; {anch_msg})")
     return model
 
 
@@ -279,9 +305,7 @@ def _joint_iterative_fit(
     degenerate local minimum — the sky-circle centre is a hard physical
     constraint that orientation/polynomial parameters cannot compensate for.
     """
-    try:
-        from scipy.optimize import least_squares
-    except ImportError:
+    if _least_squares is None:
         raise CalibrationError("scipy is required for calibration.")
 
     # Anchor cx/cy within cx_range/cy_range of the seed model.
@@ -311,13 +335,14 @@ def _joint_iterative_fit(
             return res
 
         try:
-            result = least_squares(
+            # a3/a5 bounds match single-image fit: physical fisheye range.
+            result = _least_squares(
                 residuals, params,
                 bounds=(
                     [seed_cx - cx_range, seed_cy - cy_range,
-                     50,  -1e4, -1e6, -np.pi, 45.0, -180.0],
+                     50,  -100.0, -1500.0, -np.pi, 45.0, -180.0],
                     [seed_cx + cx_range, seed_cy + cy_range,
-                     2000, 1e4,  1e6,  np.pi, 90.0,  540.0],
+                     2000,   25.0,   500.0,  np.pi, 90.0,  540.0],
                 ),
                 method='trf',
                 max_nfev=12000,

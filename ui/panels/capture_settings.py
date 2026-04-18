@@ -11,13 +11,14 @@ from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit,
     SpinBox, DoubleSpinBox, SwitchButton,
-    SegmentedWidget, FluentIcon, InfoBar, InfoBarPosition,
+    SegmentedWidget, InfoBar, InfoBarPosition,
     TimePicker
 )
 
 import os
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..theme.icons import mdi
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard, ClickSlider
 
 
@@ -139,7 +140,7 @@ class CaptureSettingsPanel(QScrollArea):
         dir_row.addWidget(self.watch_dir_input, 1)
         
         browse_btn = PushButton("Browse")
-        browse_btn.setIcon(FluentIcon.FOLDER)
+        browse_btn.setIcon(mdi('folder-outline'))
         browse_btn.clicked.connect(self._browse_watch_dir)
         dir_row.addWidget(browse_btn)
         
@@ -183,7 +184,7 @@ class CaptureSettingsPanel(QScrollArea):
         sdk_row.addWidget(self.sdk_path_input, 1)
         
         sdk_browse = PushButton("Browse")
-        sdk_browse.setIcon(FluentIcon.FOLDER)
+        sdk_browse.setIcon(mdi('folder-outline'))
         sdk_browse.clicked.connect(self._browse_sdk)
         sdk_row.addWidget(sdk_browse)
         
@@ -201,7 +202,7 @@ class CaptureSettingsPanel(QScrollArea):
         camera_row.addWidget(self.camera_combo, 1)
         
         self.detect_btn = PushButton("Detect")
-        self.detect_btn.setIcon(FluentIcon.SYNC)
+        self.detect_btn.setIcon(mdi('refresh'))
         self.detect_btn.clicked.connect(self._on_detect_cameras)
         camera_row.addWidget(self.detect_btn)
         
@@ -248,7 +249,7 @@ class CaptureSettingsPanel(QScrollArea):
         layout.addWidget(exposure_card)
         
         # === AUTO EXPOSURE ===
-        auto_card = CollapsibleCard("Auto Exposure", FluentIcon.BRIGHTNESS)
+        auto_card = CollapsibleCard("Auto Exposure", mdi('camera-iris'))
         
         self.auto_exp_switch = SwitchRow(
             "Enable Auto Exposure",
@@ -290,7 +291,7 @@ class CaptureSettingsPanel(QScrollArea):
         layout.addWidget(auto_card)
         
         # === SCHEDULED CAPTURE ===
-        schedule_card = CollapsibleCard("Scheduled Capture", FluentIcon.CALENDAR)
+        schedule_card = CollapsibleCard("Scheduled Capture", mdi('calendar-clock'))
         
         self.schedule_switch = SwitchRow(
             "Enable Scheduled Capture",
@@ -333,7 +334,7 @@ class CaptureSettingsPanel(QScrollArea):
         layout.addWidget(schedule_card)
         
         # === WHITE BALANCE MODE ===
-        wb_card = CollapsibleCard("White Balance", FluentIcon.PALETTE)
+        wb_card = CollapsibleCard("White Balance", mdi('palette'))
         
         # Mode selector
         self.wb_mode_combo = ComboBox()
@@ -405,7 +406,7 @@ class CaptureSettingsPanel(QScrollArea):
         layout.addWidget(wb_card)
         
         # === ADVANCED CAMERA ===
-        advanced_card = CollapsibleCard("Advanced Settings", FluentIcon.SETTING)
+        advanced_card = CollapsibleCard("Advanced Settings", mdi('tune-variant'))
         
         # Offset
         self.offset_spin = SpinBox()
@@ -740,19 +741,30 @@ class CaptureSettingsPanel(QScrollArea):
             
             # Camera settings
             self.sdk_path_input.setText(config.get('zwo_sdk_path', ''))
-            
+
+            # Per-camera settings live in camera_profiles[active]; fall back to
+            # DEFAULT_CAMERA_PROFILE when no camera has been selected yet.
+            from services.config import DEFAULT_CAMERA_PROFILE
+            active_name = config.get('zwo_selected_camera_name', '') or config.get('zwo_camera_name', '')
+            profile = (
+                self.main_window.config.get_camera_profile(active_name)
+                if active_name else dict(DEFAULT_CAMERA_PROFILE)
+            )
+
             # Exposure (stored in ms, displayed in s)
-            exposure_ms = config.get('zwo_exposure_ms', 100.0)
+            exposure_ms = profile.get('exposure_ms', DEFAULT_CAMERA_PROFILE['exposure_ms'])
             self.exposure_spin.setValue(exposure_ms / 1000.0)
-            
-            self.gain_spin.setValue(config.get('zwo_gain', 100))
+
+            self.gain_spin.setValue(profile.get('gain', DEFAULT_CAMERA_PROFILE['gain']))
             self.interval_spin.setValue(config.get('zwo_interval', 5.0))
-            
-            # Auto exposure
+
+            # Auto exposure (GLOBAL toggle, not per-camera)
             auto_exp_enabled = config.get('zwo_auto_exposure', False)
             self.auto_exp_switch.set_checked(auto_exp_enabled)
-            self.target_brightness_slider.setValue(config.get('zwo_target_brightness', 100))
-            max_exp_ms = config.get('zwo_max_exposure_ms', 30000.0)
+            self.target_brightness_slider.setValue(
+                profile.get('target_brightness', DEFAULT_CAMERA_PROFILE['target_brightness'])
+            )
+            max_exp_ms = profile.get('max_exposure_ms', DEFAULT_CAMERA_PROFILE['max_exposure_ms'])
             self.max_exposure_spin.setValue(max_exp_ms / 1000.0)
             # Set initial visibility
             if auto_exp_enabled:
@@ -795,13 +807,13 @@ class CaptureSettingsPanel(QScrollArea):
                 self.manual_wb_settings.hide()
                 self.gray_world_settings.hide()
             
-            # Advanced
-            self.wb_r_slider.setValue(config.get('zwo_wb_r', 75))
-            self.wb_b_slider.setValue(config.get('zwo_wb_b', 99))
-            self.offset_spin.setValue(config.get('zwo_offset', 20))
-            self.flip_combo.setCurrentIndex(config.get('zwo_flip', 0))
-            
-            bayer = config.get('zwo_bayer_pattern', 'BGGR')
+            # Advanced (per-camera — read from profile)
+            self.wb_r_slider.setValue(profile.get('wb_r', DEFAULT_CAMERA_PROFILE['wb_r']))
+            self.wb_b_slider.setValue(profile.get('wb_b', DEFAULT_CAMERA_PROFILE['wb_b']))
+            self.offset_spin.setValue(profile.get('offset', DEFAULT_CAMERA_PROFILE['offset']))
+            self.flip_combo.setCurrentIndex(profile.get('flip', DEFAULT_CAMERA_PROFILE['flip']))
+
+            bayer = profile.get('bayer_pattern', DEFAULT_CAMERA_PROFILE['bayer_pattern'])
             patterns = ["BGGR", "RGGB", "GRBG", "GBRG"]
             if bayer in patterns:
                 self.bayer_combo.setCurrentIndex(patterns.index(bayer))

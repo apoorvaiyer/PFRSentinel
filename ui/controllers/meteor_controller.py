@@ -49,7 +49,8 @@ class MeteorController(QObject):
     def __init__(self, main_window):
         super().__init__(main_window)
         self._main_window = main_window
-        self._lock = threading.Lock()  # Guards shared state accessed by daemon threads
+        self._lock = threading.Lock()  # Detection threads and Qt timer both touch counters/events
+        self._detection_semaphore = threading.Semaphore(1)  # Drop frames if detection is slower than capture
 
         self._session_frames: int = 0
         self._session_detections: int = 0
@@ -119,6 +120,10 @@ class MeteorController(QObject):
         elif not cfg.get("multi_frame_confirm", False):
             self._tracker = None
 
+        # Non-blocking: skip this frame if a detection is already running
+        if not self._detection_semaphore.acquire(blocking=False):
+            return
+
         threading.Thread(
             target=self._run_detection,
             args=(diff_image, current, cfg),
@@ -172,6 +177,8 @@ class MeteorController(QObject):
 
         except Exception as exc:
             app_logger.error(f"Meteor detection error: {exc}")
+        finally:
+            self._detection_semaphore.release()
 
     def _report_detections(self, detections: List[MeteorDetection],
                            original_image: Image.Image, cfg: dict):
@@ -380,9 +387,12 @@ class MeteorController(QObject):
     def _get_exposure_sec(self) -> float:
         """Return current exposure time in seconds, or 0 if unavailable."""
         try:
-            ms = float(self._main_window.config.get("zwo_exposure_ms", 0))
+            cfg = self._main_window.config
+            cam_name = cfg.get("zwo_selected_camera_name", "") or cfg.get("zwo_camera_name", "")
+            profile = cfg.get_camera_profile(cam_name) if cam_name else {}
+            ms = float(profile.get("exposure_ms", 0))
             return ms / 1000.0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, AttributeError):
             return 0.0
 
     def _get_config(self) -> dict:

@@ -187,10 +187,12 @@ def render_messier(
         if not _is_sky_visible(gray, x, y):
             continue
 
-        tw, th = estimate_text_size(label, label_size)
+        common = (obj.get('name') or '').strip()
+        display = f"{common} ({label})" if common else label
+        tw, th = estimate_text_size(display, label_size)
         pos = label_grid.try_place(float(x), float(y), tw, th)
         if pos is not None:
-            draw.text(pos, label, fill=label_color, font=font)
+            draw.text(pos, display, fill=label_color, font=font)
 
     return Image.alpha_composite(img, overlay)
 
@@ -253,8 +255,8 @@ def render_ngc(
         if not _is_sky_visible(gray, x, y):
             continue
 
-        common = obj.get('name', '')
-        display = common if common else oid
+        common = (obj.get('name') or '').strip()
+        display = f"{common} ({oid})" if common else oid
         tw, th = estimate_text_size(display, label_size)
         pos = label_grid.try_place(float(x), float(y), tw, th)
         if pos is not None:

@@ -30,36 +30,36 @@ class TestConfigPersistence:
     def test_config_save_and_load(self, temp_config):
         """Test that config is saved and can be reloaded"""
         config = Config(temp_config)
-        
-        # Modify a value
-        config.set('zwo_exposure_ms', 5000.0)
-        config.set('zwo_gain', 150)
+
+        # Modify globals that survive round-trip (per-camera settings belong in profiles now)
+        config.set('zwo_interval', 7.5)
+        config.set('capture_mode', 'camera')
         config.save()
-        
+
         # Create new config instance to load
         config2 = Config(temp_config)
-        
-        assert config2.get('zwo_exposure_ms') == 5000.0
-        assert config2.get('zwo_gain') == 150
+
+        assert config2.get('zwo_interval') == 7.5
+        assert config2.get('capture_mode') == 'camera'
     
     def test_config_merge_preserves_new_defaults(self, temp_config):
         """Test that new default keys are added when loading old config"""
         # Create an old-style config with missing keys
         old_config = {
             'capture_mode': 'camera',
-            'zwo_exposure_ms': 100.0
+            'zwo_interval': 10.0,
             # Missing many new keys
         }
-        
+
         with open(temp_config, 'w') as f:
             json.dump(old_config, f)
-        
+
         config = Config(temp_config)
-        
+
         # Old values should be preserved
         assert config.get('capture_mode') == 'camera'
-        assert config.get('zwo_exposure_ms') == 100.0
-        
+        assert config.get('zwo_interval') == 10.0
+
         # New default keys should be added
         assert 'output' in config.data
         assert 'discord' in config.data
@@ -226,10 +226,11 @@ class TestConfigValidation:
             'output_format',
             'overlays',
             'output',
-            'zwo_exposure_ms',
-            'zwo_gain'
+            'zwo_interval',
+            'zwo_auto_exposure',
+            'camera_profiles',
         ]
-        
+
         for key in required_keys:
             assert key in DEFAULT_CONFIG, f"Missing required key: {key}"
     

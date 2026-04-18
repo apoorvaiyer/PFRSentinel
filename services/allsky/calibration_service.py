@@ -19,7 +19,6 @@ Thread safety:
   - _RefineWorker runs in its own QThread.
 """
 import copy
-import logging
 import os
 import threading
 import time
@@ -28,12 +27,14 @@ from typing import List, Optional
 
 from PySide6.QtCore import QObject, Signal, QThread
 
+from services.logger import app_logger as log
+
 from .star_centroid import detect_stars, estimate_sky_circle
 from .fisheye import FisheyeModel
 from .catalogs import get_bright_stars
 from .coords import radec_to_altaz
-
-log = logging.getLogger(__name__)
+from .calibration import calibrate, CalibrationError
+from .multi_calibrate import refine_from_detections
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -43,6 +44,7 @@ MAX_BUFFER = 60             # rolling buffer capacity (frame dicts)
 MIN_FRAMES = 3              # minimum frames before attempting refinement
 MIN_SPAN_MINUTES = 5.0      # minimum time span across buffered frames
 REFINE_COOLDOWN_S = 120     # seconds between refinement attempts
+INITIAL_COOLDOWN_S = 180    # seconds between initial single-image cal attempts
 MAX_RESIDUAL_PX = 20.0      # max accepted median residual (pixels)
 
 
@@ -137,7 +139,6 @@ class _RefineWorker(QThread):
 
     def run(self):
         try:
-            from .multi_calibrate import refine_from_detections
             model = refine_from_detections(
                 self._frames,
                 self._seed,
@@ -163,7 +164,6 @@ class _InitialCalWorker(QThread):
 
     def run(self):
         try:
-            from .calibration import calibrate
             model = calibrate(
                 self._image, self._lat, self._lon, dt=self._dt,
                 min_matches=6,
@@ -200,6 +200,7 @@ class CalibrationService(QObject):
         self._model: Optional[FisheyeModel] = None
         self._quality = 'none'
         self._last_refine_time = 0.0
+        self._last_initial_attempt_time = 0.0
         self._refine_worker: Optional[_RefineWorker] = None
         self._initial_worker: Optional[_InitialCalWorker] = None
         self._pending_initial = None   # (image, dt, lat, lon) awaiting cal
@@ -251,6 +252,12 @@ class CalibrationService(QObject):
 
         # ------ No model yet: queue for initial single-image cal ------
         if self._model is None:
+            # Cooldown guard: initial cal is expensive (~30s on slow hardware)
+            # and failures on a dense star field with no good fit will spin
+            # the CPU if retried every frame. Back off on repeated failures.
+            now = time.monotonic()
+            if now - self._last_initial_attempt_time < INITIAL_COOLDOWN_S:
+                return
             if self._pending_initial is None and (
                 self._initial_worker is None
                 or not self._initial_worker.isRunning()
@@ -391,6 +398,7 @@ class CalibrationService(QObject):
             return
 
         image, dt, lat, lon = self._pending_initial
+        self._last_initial_attempt_time = time.monotonic()
         log.info("CalibrationService: starting initial single-image calibration")
         self.status_changed.emit("Auto-calibrating\u2026")
 
@@ -420,8 +428,14 @@ class CalibrationService(QObject):
 
     def _on_initial_failed(self, error: str) -> None:
         self._pending_initial = None
-        log.warning(f"Initial auto-calibration failed: {error}")
-        self.status_changed.emit(f"Auto-calibration failed: {error}")
+        log.warning(
+            f"Initial auto-calibration failed: {error}. "
+            f"Next attempt allowed in {INITIAL_COOLDOWN_S}s."
+        )
+        # Short message for the panel — full detail stays in the log.
+        self.status_changed.emit(
+            f"Auto-calibration failed — will retry in {INITIAL_COOLDOWN_S // 60} min. (See logs)"
+        )
 
     # ------------------------------------------------------------------
     # Multi-image refinement results

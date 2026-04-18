@@ -8,16 +8,39 @@ Manages:
   - Signals to panel for status updates
 """
 import os
-import logging
 from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal, QThread, QTimer
 
+from services.logger import app_logger as log
+
 if TYPE_CHECKING:
     from ui.main_window import MainWindow
 
-log = logging.getLogger(__name__)
+
+def _short_cal_error(error_msg: str) -> str:
+    """Summarise a calibration error into a one-line UI status.
+
+    The raw CalibrationError messages embed diagnostic detail (per-star
+    pixel misses, fallback chaining) that's useful in the log but too
+    noisy for the small status label on the AllSky panel.
+    """
+    lower = error_msg.lower()
+    if 'bright-anchor' in lower or 'bright anchors' in lower:
+        return ("Calibration rejected — star alignment was off. "
+                "Try again on a clearer night or check lat/lon. (See logs)")
+    if 'triangle match' in lower and 'failed' in lower:
+        return "Calibration failed — couldn't match star patterns. (See logs)"
+    if 'need' in lower and 'star' in lower:
+        return "Calibration failed — not enough stars detected. (See logs)"
+    if 'scipy' in lower:
+        return "Calibration failed — internal dependency error. (See logs)"
+    # Generic fallback: first ~100 chars, trimmed at a sensible break
+    short = error_msg.split('.')[0].split(';')[0].split('(')[0].strip()
+    if len(short) > 120:
+        short = short[:117] + '…'
+    return f"Calibration failed — {short}. (See logs)"
 
 
 class CalibrationWorker(QThread):
@@ -91,17 +114,25 @@ class AllSkyController(QObject):
         """
         Begin background calibration.
 
-        If image is None, uses the most recent camera frame from the
-        capture controller.
+        If image is None, uses the most recent raw frame cached by
+        MainWindow (set for both Watch mode and Camera mode).
         """
+        log.info("Calibrate Now clicked")
         if self._worker and self._worker.isRunning():
-            log.warning("Calibration already in progress")
+            log.warning("Calibrate Now ignored — calibration already in progress")
+            self.status_changed.emit("Calibration already in progress…")
             return
 
         if image is None:
-            image = self._get_latest_frame()
+            image, source = self._get_latest_frame()
+            if image is not None:
+                log.info(f"Calibrate Now using image from {source}")
 
         if image is None:
+            log.warning(
+                "Calibrate Now: no image available. Start capture (Camera mode) "
+                "or wait for the watcher to process a frame (Watch mode)."
+            )
             self.status_changed.emit("No image available — start capture first.")
             return
 
@@ -110,10 +141,12 @@ class AllSkyController(QObject):
         dt = datetime.now(timezone.utc)
 
         if lat == 0.0 and lon == 0.0:
+            log.warning("Calibrate Now: lat/lon not configured (both zero)")
             self.status_changed.emit(
                 "Warning: lat/lon not configured. Set in Output > Weather Settings."
             )
 
+        log.info(f"Calibrate Now starting worker (lat={lat}, lon={lon}, dt={dt.isoformat()})")
         self.status_changed.emit("Calibrating… detecting stars")
         self._worker = CalibrationWorker(image, lat, lon, dt, parent=self)
         self._worker.progress.connect(self.status_changed)
@@ -191,8 +224,8 @@ class AllSkyController(QObject):
         self._notify_discord(info)
 
     def _on_calibration_failed(self, error_msg: str) -> None:
-        self.status_changed.emit(f"Calibration failed: {error_msg}")
         log.warning(f"All-sky calibration failed: {error_msg}")
+        self.status_changed.emit(_short_cal_error(error_msg))
 
     def _update_status(self) -> None:
         """Load existing model and emit current status."""
@@ -238,15 +271,40 @@ class AllSkyController(QObject):
         self.settings_changed.emit()
 
     def _get_latest_frame(self):
-        """Try to get the last captured PIL Image from the camera controller."""
+        """Return (image, source_description) for the most recent frame.
+
+        Tries, in order:
+          1. MainWindow._cached_raw_image — set for BOTH Watch and Camera
+             modes whenever a raw frame arrives. Primary source.
+          2. CameraController._last_frame — legacy fallback (may not exist).
+          3. MainWindow.last_processed_image — path on disk to the last
+             saved output image. Loaded as a PIL image.
+
+        Returns (None, '') if nothing is available.
+        """
+        cached = getattr(self._mw, '_cached_raw_image', None)
+        if cached is not None:
+            return cached, "cached raw frame"
+
         try:
             from ui.controllers.camera_controller import CameraController
             for child in self._mw.children():
                 if isinstance(child, CameraController):
-                    return getattr(child, '_last_frame', None)
-        except Exception:
-            pass
-        return None
+                    frame = getattr(child, '_last_frame', None)
+                    if frame is not None:
+                        return frame, "camera controller"
+        except Exception as e:
+            log.debug(f"Camera controller probe failed: {e}")
+
+        output_path = getattr(self._mw, 'last_processed_image', None)
+        if output_path and os.path.isfile(output_path):
+            try:
+                from PIL import Image as PILImage
+                return PILImage.open(output_path).copy(), f"disk ({output_path})"
+            except Exception as e:
+                log.debug(f"Could not load last processed image: {e}")
+
+        return None, ""
 
     def _notify_discord(self, info: dict) -> None:
         try:

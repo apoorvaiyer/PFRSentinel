@@ -36,6 +36,18 @@ ALLSKY_OVERLAY_DEFAULTS = {
         "label_size": 9,
         "opacity": 150,
     },
+    "bright_stars": {
+        "enabled": False,
+        # Upper magnitude cutoff — BSC5 stars dimmer than this are skipped
+        # before they enter the global top_n ranking. 2.5 ≈ Polaris brightness.
+        "max_magnitude": 2.5,
+        # If a star has no proper name, fall back to "<Bayer> <Const>"
+        # (e.g. "α Ori"). Off by default — unnamed catalog entries get skipped.
+        "bayer_fallback": False,
+        "color": "#FFEEAA",
+        "label_size": 11,
+        "opacity": 220,
+    },
     "planets": {
         "enabled": True,
         "color": "",

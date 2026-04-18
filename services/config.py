@@ -7,6 +7,18 @@ import threading
 from utils_paths import resource_path, get_exe_dir
 from app_config import APP_DATA_FOLDER, DEFAULT_OUTPUT_SUBFOLDER
 
+DEFAULT_CAMERA_PROFILE = {
+    "exposure_ms": 100.0,
+    "gain": 100,
+    "max_exposure_ms": 30000.0,
+    "target_brightness": 100,
+    "wb_r": 75,
+    "wb_b": 99,
+    "offset": 20,
+    "flip": 0,
+    "bayer_pattern": "BGGR",
+}
+
 DEFAULT_CONFIG = {
     # UI appearance
     "ui_accent": "iris",   # accent theme: iris | nebula | aurora | solar | nova | forest
@@ -66,19 +78,9 @@ DEFAULT_CONFIG = {
         # }
     },
     
-    # Global camera settings (DEPRECATED: kept for backward compatibility, use camera_profiles instead)
-    "zwo_exposure_ms": 100.0,  # milliseconds (100ms default)
-    "zwo_gain": 100,
-    "zwo_interval": 5.0,
-    "zwo_auto_exposure": False,
-    "zwo_max_exposure_ms": 30000.0,  # milliseconds (30 seconds default)
-    "zwo_target_brightness": 100,  # Target mean brightness (0-255) for auto exposure
-    "zwo_wb_r": 75,
-    "zwo_wb_b": 99,
-    "zwo_auto_wb": False,
-    "zwo_offset": 20,
-    "zwo_flip": 0,  # 0=None, 1=Horizontal, 2=Vertical, 3=Both
-    "zwo_bayer_pattern": "BGGR",  # "RGGB", "BGGR", "GRBG", "GBRG"
+    # Global camera settings (NOT per-camera — apply to the whole capture loop)
+    "zwo_interval": 5.0,          # seconds between captures
+    "zwo_auto_exposure": False,   # auto-exposure algorithm enabled (global toggle)
     
     # Scheduled capture settings
     "scheduled_capture_enabled": False,
@@ -116,7 +118,7 @@ DEFAULT_CONFIG = {
     
     # Star sharpening — cosmetic unsharp mask applied before overlay rendering
     "sharpening": {
-        "enabled": False,   # Disabled by default; user opts in
+        "enabled": True,
         "radius": 1.5,      # Gaussian blur radius in pixels (keep <= 2 for stars)
         "amount": 80,       # Strength on Pillow 0-500 scale (80 = subtle)
         "threshold": 3,     # Min pixel diff to sharpen; suppresses noise in dark sky
@@ -229,6 +231,7 @@ DEFAULT_CONFIG = {
         "video_crf": 23,               # H.264 CRF quality (0-51, lower=better, 23=default)
         "video_preset": "fast",        # ffmpeg preset (ultrafast/fast/medium/slow)
         "include_overlays": False,     # False = clean frame, True = frame with overlays
+        "include_allsky_overlay": False,  # Only applies when include_overlays=True: bake all-sky stars/constellations into timelapse
         "output_dir": "",              # "" = AppData/PFRSentinel/timelapse/
         "max_videos_to_keep": 30,      # Auto-delete oldest beyond this many days
     },
@@ -481,6 +484,12 @@ class Config:
                 try:
                     with open(self.config_path, 'r') as f:
                         loaded = json.load(f)
+
+                        # Migrate legacy per-camera zwo_* keys into camera_profiles[active].
+                        # Idempotent — safe no-op once the config is already clean.
+                        from .config_migrate import migrate_legacy_camera_keys
+                        loaded = migrate_legacy_camera_keys(loaded)
+
                         # Merge with defaults to ensure new keys exist
                         config = DEFAULT_CONFIG.copy()
 
@@ -603,20 +612,11 @@ class Config:
         profiles = self.data.get('camera_profiles', {})
         
         if camera_name not in profiles:
-            # Create new profile from current global settings (migration path)
-            # NOTE: auto_exposure is NOT in profiles - it's a global algorithm setting
-            # NOTE: auto_wb is NOT in profiles - white balance mode stored in global white_balance config
-            profiles[camera_name] = {
-                'exposure_ms': self.data.get('zwo_exposure_ms', 100.0),
-                'gain': self.data.get('zwo_gain', 100),
-                'max_exposure_ms': self.data.get('zwo_max_exposure_ms', 30000.0),
-                'target_brightness': self.data.get('zwo_target_brightness', 100),
-                'wb_r': self.data.get('zwo_wb_r', 75),
-                'wb_b': self.data.get('zwo_wb_b', 99),
-                'offset': self.data.get('zwo_offset', 20),
-                'flip': self.data.get('zwo_flip', 0),
-                'bayer_pattern': self.data.get('zwo_bayer_pattern', 'BGGR')
-            }
+            # Seed a new profile with safe hardcoded defaults.
+            # NOTE: auto_exposure is NOT in profiles — it's a global algorithm setting.
+            # NOTE: white-balance *mode* is stored in global `white_balance` config; only
+            #       the manual wb_r/wb_b calibration values are per-camera.
+            profiles[camera_name] = dict(DEFAULT_CAMERA_PROFILE)
             self.data['camera_profiles'] = profiles
             self.save()
             from .logger import app_logger

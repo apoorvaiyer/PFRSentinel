@@ -16,7 +16,7 @@ One pass only — no stacking, no PSF estimation, no spatially varying kernels.
 
 ## Enabling
 
-Set `sharpening.enabled` to `true` in `%APPDATA%\PFRSentinel\config.json`. The section is present in `DEFAULT_CONFIG` and will be created automatically on first launch:
+Enabled by default for new installs. To toggle, edit `sharpening.enabled` in `%APPDATA%\PFRSentinel\config.json`. The section is present in `DEFAULT_CONFIG` and will be created automatically on first launch:
 
 ```json
 "sharpening": {
@@ -33,7 +33,7 @@ Set `sharpening.enabled` to `true` in `%APPDATA%\PFRSentinel\config.json`. The s
 
 | Key | Type | Default | Range | Notes |
 |---|---|---|---|---|
-| `enabled` | bool | `false` | — | Master switch. Disabled by default — user opts in. |
+| `enabled` | bool | `true` | — | Master switch. Enabled by default. |
 | `radius` | float | `1.5` | 0.5 – 3.0 | Gaussian blur radius in pixels. Wider radii affect larger features. Keep ≤ 2 for star sharpening; larger values can halo star cores. |
 | `amount` | int | `80` | 0 – 500 | Sharpening strength on Pillow's internal 0–500 scale. 80 is subtle (≈ 30 % in most editors). 150–200 is clearly visible. Values above 250 will look processed. |
 | `threshold` | int | `3` | 0 – 20 | Minimum pixel-value difference required before sharpening is applied. Protects the flat dark-sky background from noise amplification. Set to 0 only if you also reduce `amount`. |

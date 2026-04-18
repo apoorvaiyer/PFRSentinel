@@ -12,12 +12,13 @@ from PySide6.QtGui import QColor
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit,
-    SpinBox, DoubleSpinBox, SwitchButton, FluentIcon
+    SpinBox, DoubleSpinBox, SwitchButton
 )
 from ..theme.accent_themes import ACCENT_PRESETS
 
 from version import __version__
 from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..theme.icons import mdi
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard
 from services.ffmpeg_utils import is_ffmpeg_available  # noqa: F401 – re-exported for legacy callers
 
@@ -148,7 +149,7 @@ class SettingsPanel(QScrollArea):
         info_row.addWidget(info_label)
         
         link_btn = PushButton("Get free API key")
-        link_btn.setIcon(FluentIcon.LINK)
+        link_btn.setIcon(mdi('open-in-new'))
         link_btn.clicked.connect(lambda: webbrowser.open("https://openweathermap.org/api"))
         info_row.addWidget(link_btn)
         info_row.addStretch()
@@ -173,7 +174,7 @@ class SettingsPanel(QScrollArea):
         api_row.addWidget(self.show_key_btn)
         
         self.test_weather_btn = PrimaryPushButton("Test")
-        self.test_weather_btn.setIcon(FluentIcon.SYNC)
+        self.test_weather_btn.setIcon(mdi('refresh'))
         self.test_weather_btn.clicked.connect(self._test_weather)
         api_row.addWidget(self.test_weather_btn)
         
@@ -258,12 +259,12 @@ class SettingsPanel(QScrollArea):
         update_btn_row.setSpacing(Spacing.sm)
         
         self.check_updates_btn = PrimaryPushButton("Check for Updates")
-        self.check_updates_btn.setIcon(FluentIcon.SYNC)
+        self.check_updates_btn.setIcon(mdi('refresh'))
         self.check_updates_btn.clicked.connect(self._check_for_updates)
         update_btn_row.addWidget(self.check_updates_btn)
         
         self.github_btn = PushButton("GitHub Releases")
-        self.github_btn.setIcon(FluentIcon.LINK)
+        self.github_btn.setIcon(mdi('github'))
         self.github_btn.clicked.connect(self._open_github_releases)
         update_btn_row.addWidget(self.github_btn)
         

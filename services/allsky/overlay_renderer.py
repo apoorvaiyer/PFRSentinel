@@ -7,20 +7,29 @@ Orchestrates: grid → constellations → Messier → NGC → planets.
 All layers share a single LabelGrid for collision avoidance.
 Fails silently if model not calibrated or any layer errors.
 """
-import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
+
+from services.logger import app_logger as log
+
+# Pre-import scipy at module level so background threads never trigger
+# a first-time import (causes segfault in PyInstaller builds).
+try:
+    from scipy.spatial.distance import cdist as _cdist
+except Exception as _e:
+    _cdist = None
+    log.error(f"scipy.spatial import failed in overlay_renderer: {type(_e).__name__}: {_e}")
 
 from .fisheye import FisheyeModel
 from .label_collision import LabelGrid
 from .render_grid import render_grid
 from .render_constellations import render_constellations
 from .render_objects import render_messier, render_ngc, render_planets, _is_sky_visible
-
-log = logging.getLogger(__name__)
+from .render_stars import render_bright_stars, star_uid, star_display_name
+from .star_centroid import detect_stars, estimate_sky_circle
 
 def _build_detection_mask(img: Image.Image) -> np.ndarray:
     """Build a sky visibility mask from actual star detections.
@@ -35,9 +44,6 @@ def _build_detection_mask(img: Image.Image) -> np.ndarray:
     drop-in replacement for the grayscale image in ``_is_sky_visible()``.
     Falls back to image grayscale if < 10 stars detected.
     """
-    from .star_centroid import detect_stars, estimate_sky_circle
-    from PIL import ImageDraw
-
     try:
         sky_cx, sky_cy, sky_r = estimate_sky_circle(img)
         detections = detect_stars(
@@ -54,8 +60,9 @@ def _build_detection_mask(img: Image.Image) -> np.ndarray:
     det_xy = np.array([(x, y) for x, y, _ in detections])
 
     # 2nd nearest neighbour distance (more robust than 1st to outliers)
-    from scipy.spatial.distance import cdist
-    dists = cdist(det_xy, det_xy)
+    if _cdist is None:
+        return np.array(img.convert('L'))
+    dists = _cdist(det_xy, det_xy)
     np.fill_diagonal(dists, 1e9)
     nn2_dist = np.sort(dists, axis=1)[:, 1]
     base_radii = np.clip(nn2_dist * 0.8, 50, 250)
@@ -157,6 +164,13 @@ def render_allsky_overlay(
     allowed_ids = _compute_allowed_ids(config, model, lat, lon, dt, gray)
 
     try:
+        stars_config = config.get('bright_stars', {})
+        img = render_bright_stars(img, model, stars_config, lat, lon, dt, grid_cfg,
+                                  allowed_ids, sky_gray=gray)
+    except Exception as e:
+        log.warning(f"allsky bright stars render failed: {e}")
+
+    try:
         messier_config = config.get('messier', {})
         img = render_messier(img, model, messier_config, lat, lon, dt, grid_cfg,
                              allowed_ids, sky_gray=gray)
@@ -212,7 +226,7 @@ def _compute_allowed_ids(
     if top_n <= 0:
         return None
 
-    from .catalogs import get_messier_objects, get_ngc_objects
+    from .catalogs import get_messier_objects, get_ngc_objects, get_bright_stars
     from .planets import get_all_positions
     from .coords import radec_to_altaz as _ra2aa
 
@@ -230,6 +244,24 @@ def _compute_allowed_ids(
         return _is_sky_visible(gray, int(xy[0]), int(xy[1]))
 
     candidates = []  # (mag, uid)
+
+    # Bright stars (BSC5 named)
+    stars_cfg = config.get('bright_stars', {})
+    if stars_cfg.get('enabled', False):
+        stars_max_mag = float(stars_cfg.get('max_magnitude', 2.5))
+        use_bayer = bool(stars_cfg.get('bayer_fallback', False))
+        for s in get_bright_stars(max_mag=stars_max_mag):
+            if not star_display_name(s, use_bayer):
+                continue
+            alt, az = _ra2aa(
+                s['ra_deg'], s['dec_deg'], lat, lon, dt, refraction=True
+            )
+            if float(alt) < 10.0:
+                continue
+            xy = model.altaz_to_pixel(float(alt), float(az))
+            if not _visible(xy):
+                continue
+            candidates.append((float(s['vmag']), star_uid(s)))
 
     # Planets
     for name, (ra, dec) in get_all_positions(dt).items():
@@ -282,15 +314,27 @@ def _compute_allowed_ids(
     return {uid for _, uid in candidates[:top_n]}
 
 
+_model_cache: dict = {'path': '', 'mtime': 0.0, 'model': None}
+
+
 def _load_model(config: dict) -> Optional[FisheyeModel]:
-    """Load fisheye model from calibration_file path; return None on failure."""
+    """Load fisheye model from calibration_file path, cached by path+mtime."""
+    import os
     path = config.get('calibration_file', '')
     if not path:
         return None
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    if path == _model_cache['path'] and mtime == _model_cache['mtime']:
+        return _model_cache['model']
     model = FisheyeModel.try_load(path)
     if model is None or not model.is_valid():
         log.debug(f"allsky: calibration model not valid at {path!r}")
+        _model_cache.update(path=path, mtime=mtime, model=None)
         return None
+    _model_cache.update(path=path, mtime=mtime, model=model)
     return model
 
 

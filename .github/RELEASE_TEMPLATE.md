@@ -56,7 +56,7 @@ Simply run the new installer - no uninstall needed.
 - [Quick Start Guide](docs/QUICKSTART.md)
 - [Full Documentation](docs/README.md)
 - [ZWO Camera Setup](docs/ZWO_SETUP_GUIDE.md)
-- [VirusTotal Scanning](docs/VIRUSTOTAL_SCANNING.md)
+- [VirusTotal Scanning](docs/dev/VIRUSTOTAL_SCANNING.md)
 
 ## 🔧 Known Issues
 

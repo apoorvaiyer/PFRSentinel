@@ -21,12 +21,15 @@ class TimelapseController(QObject):
     """
 
     status_updated = Signal(dict)  # Emits get_status() dict periodically
+    finalizing_started = Signal()          # Background ffmpeg finalization began
+    finalizing_finished = Signal(str)      # Finalization done; arg is session path ('' if none)
 
     def __init__(self, main_window):
         super().__init__(main_window)
         self._main_window = main_window
         self._writer = TimelapseWriter()
         self._writer.on_session_finished = self._on_session_finished
+        self._finalize_thread = None
 
         # Status timer: update panel every 5 seconds while recording
         self._status_timer = QTimer(self)
@@ -61,15 +64,57 @@ class TimelapseController(QObject):
     # ------------------------------------------------------------------ #
 
     def on_capture_stopped(self):
-        """Stop the active session when capture is stopped."""
-        app_logger.info("Timelapse: capture stopped, closing active session")
-        self._writer.stop()
-        self._emit_status()
+        """Stop the active session when capture is stopped.
+
+        If a session is actively recording, ffmpeg needs to rewrite the mp4
+        atom table (+faststart) which can take 10–40 s. We offload that to a
+        background thread so the Stop button stays responsive; UI feedback
+        is provided via finalizing_started / finalizing_finished signals.
+        """
+        if not self._writer.get_status().get('recording'):
+            # Fast path — no active session to finalize.
+            self._writer.stop()
+            self._emit_status()
+            return
+
+        session_path = self._writer.get_status().get('session_path') or ''
+        app_logger.info("Timelapse: capture stopped, finalizing in background")
+        self.finalizing_started.emit()
+        self._finalize_thread = threading.Thread(
+            target=self._finalize_async,
+            args=(session_path,),
+            daemon=True,
+        )
+        self._finalize_thread.start()
+
+    def _finalize_async(self, session_path: str):
+        try:
+            self._writer.stop()
+        except Exception as e:
+            app_logger.error(f"Timelapse: finalization error: {e}")
+        finally:
+            self.finalizing_finished.emit(session_path)
+            self._emit_status()
+
+    def is_finalizing(self) -> bool:
+        """True while a background finalization is still running."""
+        return bool(self._finalize_thread and self._finalize_thread.is_alive())
 
     def shutdown(self):
-        """Graceful shutdown — close any active session."""
+        """Graceful shutdown — wait for any in-flight finalization.
+
+        Called on app close. We must not kill ffmpeg mid-finalization or the
+        mp4 will be truncated, so we block here (bounded) until it's done.
+        """
         app_logger.debug("Timelapse: controller shutdown")
-        self._writer.stop()
+        thread = self._finalize_thread
+        if thread and thread.is_alive():
+            app_logger.info("Timelapse: waiting for finalization before exit…")
+            thread.join(timeout=75)
+            if thread.is_alive():
+                app_logger.warning("Timelapse: finalization did not complete within 75s")
+        else:
+            self._writer.stop()
 
     # ------------------------------------------------------------------ #
     #  Status                                                              #

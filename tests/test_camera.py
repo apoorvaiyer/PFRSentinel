@@ -32,19 +32,19 @@ class TestCameraConnectionMock:
         assert 'ASICamera2.dll' in DEFAULT_CONFIG['zwo_sdk_path']
     
     def test_camera_settings_defaults(self):
-        """Test camera settings have sensible defaults"""
-        from services.config import DEFAULT_CONFIG
-        
-        # Check exposure range
-        assert DEFAULT_CONFIG['zwo_exposure_ms'] >= 0.032  # Min ~32µs
-        assert DEFAULT_CONFIG['zwo_exposure_ms'] <= 3600000  # Max 1 hour
-        
-        # Check gain range
-        assert DEFAULT_CONFIG['zwo_gain'] >= 0
-        
-        # Check white balance range
-        assert 1 <= DEFAULT_CONFIG['zwo_wb_r'] <= 99
-        assert 1 <= DEFAULT_CONFIG['zwo_wb_b'] <= 99
+        """Per-camera defaults now live in DEFAULT_CAMERA_PROFILE, not DEFAULT_CONFIG."""
+        from services.config import DEFAULT_CAMERA_PROFILE
+
+        # Exposure range
+        assert DEFAULT_CAMERA_PROFILE['exposure_ms'] >= 0.032  # Min ~32µs
+        assert DEFAULT_CAMERA_PROFILE['exposure_ms'] <= 3600000  # Max 1 hour
+
+        # Gain range
+        assert DEFAULT_CAMERA_PROFILE['gain'] >= 0
+
+        # White balance range
+        assert 1 <= DEFAULT_CAMERA_PROFILE['wb_r'] <= 99
+        assert 1 <= DEFAULT_CAMERA_PROFILE['wb_b'] <= 99
 
 
 class TestBayerDebayering:
@@ -52,10 +52,10 @@ class TestBayerDebayering:
     
     def test_bggr_pattern_detection(self):
         """Test BGGR Bayer pattern is correctly identified"""
-        from services.config import DEFAULT_CONFIG
-        
+        from services.config import DEFAULT_CAMERA_PROFILE
+
         # ASI cameras typically use BGGR
-        assert DEFAULT_CONFIG['zwo_bayer_pattern'] in ['RGGB', 'BGGR', 'GRBG', 'GBRG']
+        assert DEFAULT_CAMERA_PROFILE['bayer_pattern'] in ['RGGB', 'BGGR', 'GRBG', 'GBRG']
     
     @pytest.mark.skipif(not HAS_CV2, reason="OpenCV (cv2) not installed")
     def test_debayer_creates_rgb(self):

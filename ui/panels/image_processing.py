@@ -11,10 +11,11 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, ComboBox, SpinBox, DoubleSpinBox, 
-    SwitchButton, FluentIcon, LineEdit, PrimaryPushButton
+    SwitchButton, LineEdit, PrimaryPushButton
 )
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..theme.icons import mdi
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard, ClickSlider
 from services.dev_mode_config import is_dev_mode_available
 
@@ -162,7 +163,7 @@ class ImageProcessingPanel(QScrollArea):
         layout.addWidget(timestamp_card)
         
         # === AUTO STRETCH ===
-        stretch_card = CollapsibleCard("Auto Stretch (MTF)", FluentIcon.BRIGHTNESS)
+        stretch_card = CollapsibleCard("Auto Stretch (MTF)", mdi('image-auto-adjust'))
         
         self.stretch_enabled_switch = SwitchRow(
             "Enable Auto Stretch",
@@ -309,7 +310,7 @@ class ImageProcessingPanel(QScrollArea):
         layout.addWidget(stretch_card)
 
         # === ML MODELS (Beta) ===
-        ml_card = CollapsibleCard("ML Models (Beta)", FluentIcon.IOT)
+        ml_card = CollapsibleCard("ML Models (Beta)", mdi('brain'))
         
         self.ml_enabled_switch = SwitchRow(
             "Enable ML Analysis",
@@ -377,7 +378,7 @@ class ImageProcessingPanel(QScrollArea):
         layout.addWidget(ml_card)
         
         # === ML DATA CONTRIBUTION ===
-        contrib_card = CollapsibleCard("Community Data Contribution", FluentIcon.PEOPLE)
+        contrib_card = CollapsibleCard("Community Data Contribution", mdi('account-group'))
         
         # Hero info section
         contrib_info = CaptionLabel(
@@ -426,17 +427,17 @@ class ImageProcessingPanel(QScrollArea):
         contrib_btn_row.setSpacing(Spacing.sm)
         
         self.ml_export_btn = PrimaryPushButton("Export for Upload")
-        self.ml_export_btn.setIcon(FluentIcon.ZIP_FOLDER)
+        self.ml_export_btn.setIcon(mdi('folder-zip-outline'))
         self.ml_export_btn.clicked.connect(self._export_ml_data)
         contrib_btn_row.addWidget(self.ml_export_btn)
         
         self.ml_upload_btn = PushButton("Open Upload Form")
-        self.ml_upload_btn.setIcon(FluentIcon.LINK)
+        self.ml_upload_btn.setIcon(mdi('cloud-upload-outline'))
         self.ml_upload_btn.clicked.connect(self._open_ml_upload_form)
         contrib_btn_row.addWidget(self.ml_upload_btn)
         
         self.ml_clear_btn = PushButton("Clear")
-        self.ml_clear_btn.setIcon(FluentIcon.DELETE)
+        self.ml_clear_btn.setIcon(mdi('delete-outline'))
         self.ml_clear_btn.clicked.connect(self._clear_ml_samples)
         contrib_btn_row.addWidget(self.ml_clear_btn)
         
@@ -463,7 +464,7 @@ class ImageProcessingPanel(QScrollArea):
         
         # === DEV MODE === (Only show in development builds)
         if is_dev_mode_available():
-            dev_card = CollapsibleCard("Developer Mode", FluentIcon.DEVELOPER_TOOLS)
+            dev_card = CollapsibleCard("Developer Mode", mdi('code-tags'))
             
             self.dev_mode_switch = SwitchRow(
                 "Enable Dev Mode",
