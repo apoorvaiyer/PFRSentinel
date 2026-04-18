@@ -115,10 +115,10 @@ DEFAULT_CONFIG = {
         "normalize_channels": True,  # Equalize R/G/B medians before stretch (fixes color cast in dark scenes)
         "dark_scene_threshold": 0.05  # Median below this triggers dark scene mode (0.0-0.2)
     },
-    
+
     # Star sharpening — cosmetic unsharp mask applied before overlay rendering
     "sharpening": {
-        "enabled": True,
+        "enabled": true,   # Disabled by default; user opts in
         "radius": 1.5,      # Gaussian blur radius in pixels (keep <= 2 for stars)
         "amount": 80,       # Strength on Pillow 0-500 scale (80 = subtle)
         "threshold": 3,     # Min pixel diff to sharpen; suppresses noise in dark sky

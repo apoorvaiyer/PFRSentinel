@@ -98,6 +98,9 @@ class ImageFileHandler(FileSystemEventHandler):
         for fp, _ in sorted_items[:to_remove]:
             del self._processed_signatures[fp]
 
+    # on_modified fires for a never-seen file only if its mtime is this recent
+    _MODIFIED_RECENCY_THRESHOLD = 30  # seconds
+
     def _has_file_changed(self, filepath):
         """Check if a file's content has changed since we last processed it.
 
@@ -108,6 +111,16 @@ class ImageFileHandler(FileSystemEventHandler):
         prev = self._processed_signatures.get(filepath)
         if prev is None:
             return True
+            # Never processed — only treat as changed if the file was
+            # genuinely modified recently.  This prevents spurious
+            # on_modified events (e.g. Windows Preview opening a file
+            # updates access time, triggering watchdog) from processing
+            # pre-existing, untouched files.
+            try:
+                stat = os.stat(filepath)
+                return (time.time() - stat.st_mtime) < self._MODIFIED_RECENCY_THRESHOLD
+            except OSError:
+                return True
         try:
             stat = os.stat(filepath)
             return (stat.st_mtime, stat.st_size) != prev
