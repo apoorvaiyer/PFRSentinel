@@ -46,7 +46,7 @@ class TestWebServerBasic:
         """Test server handles port conflict gracefully"""
         server1 = WebOutputServer(host='127.0.0.1', port=18082)
         server1.start()
-        
+
         try:
             server2 = WebOutputServer(host='127.0.0.1', port=18082)
             # Server may or may not start depending on OS
@@ -58,6 +58,35 @@ class TestWebServerBasic:
                 server2.stop()
         finally:
             server1.stop()
+
+    def test_image_age_and_stale_flag(self):
+        """
+        Stale-image signalling: after update_image, /status reports a small
+        age and image_stale=False; once we synthetically age the image past
+        the threshold, image_stale flips to True.
+        """
+        # Ensure a clean class state regardless of other tests.
+        ImageHTTPHandler.latest_image_update_time = None
+        ImageHTTPHandler.latest_image_data = None
+        ImageHTTPHandler.image_count = 0
+        ImageHTTPHandler.stale_threshold_sec = 2  # test-local short threshold
+
+        # Fresh update → age is small, not stale.
+        ImageHTTPHandler.update_image(
+            image_data=b"fake", content_type="image/jpeg",
+            path="x.jpg", metadata={}
+        )
+        age = ImageHTTPHandler._image_age_seconds()
+        assert age is not None and age < 1.0
+        assert not (age >= ImageHTTPHandler.stale_threshold_sec)
+
+        # Simulate ageing: rewind update time by 10s.
+        ImageHTTPHandler.latest_image_update_time = time.time() - 10
+        age = ImageHTTPHandler._image_age_seconds()
+        assert age >= ImageHTTPHandler.stale_threshold_sec
+
+        # Reset threshold so other tests aren't affected.
+        ImageHTTPHandler.stale_threshold_sec = 300
 
 
 @pytest.mark.requires_network

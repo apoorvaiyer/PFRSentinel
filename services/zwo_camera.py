@@ -416,40 +416,72 @@ class ZWOCamera:
                 self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(self.exposure_seconds * 1000000))
                 self.camera.set_control_value(self.asi.ASI_GAIN, self.gain)
 
-                # Capture frame
-                self.camera.start_exposure()
+            # Retry ASI_EXP_FAILED once before tearing down — a single failed
+            # status is frequently just a USB bandwidth hiccup and recovers on
+            # immediate restart. The expensive full-reconnect path stays for
+            # persistent failures.
+            max_exp_attempts = 2
+            exposure_succeeded = False
+            for exp_attempt in range(1, max_exp_attempts + 1):
+                with sdk_lock:
+                    if not self.camera:
+                        raise Exception("Camera disconnected before exposure")
+                    self.camera.start_exposure()
 
-            # Wait for exposure to complete (lock released so disconnect can run)
-            timeout = self.exposure_seconds + 5.0
-            start_time = time.time()
-            self.exposure_start_time = start_time
+                # Wait for exposure to complete (lock released so disconnect can run)
+                timeout = self.exposure_seconds + 5.0
+                start_time = time.time()
+                self.exposure_start_time = start_time
+                transient_failure = False
 
-            while time.time() - start_time < timeout:
-                # Check if capture was stopped or camera disconnected during wait
-                if not self.is_capturing:
-                    try:
-                        self.camera.stop_exposure()
-                    except Exception:
-                        pass
-                    raise Exception("Capture stopped during exposure")
-                if self.camera is None:
-                    raise Exception("Camera disconnected during exposure")
+                while time.time() - start_time < timeout:
+                    # Check if capture was stopped or camera disconnected during wait
+                    if not self.is_capturing:
+                        try:
+                            self.camera.stop_exposure()
+                        except Exception:
+                            pass
+                        raise Exception("Capture stopped during exposure")
+                    if self.camera is None:
+                        raise Exception("Camera disconnected during exposure")
 
-                status = self.camera.get_exposure_status()
-                if status == self.asi.ASI_EXP_SUCCESS:
+                    status = self.camera.get_exposure_status()
+                    if status == self.asi.ASI_EXP_SUCCESS:
+                        exposure_succeeded = True
+                        break
+                    elif status == self.asi.ASI_EXP_FAILED:
+                        if exp_attempt < max_exp_attempts:
+                            self.log(
+                                f"⚠ ASI_EXP_FAILED on attempt {exp_attempt}/{max_exp_attempts} — "
+                                "retrying exposure (likely USB bandwidth hiccup)"
+                            )
+                            try:
+                                with sdk_lock:
+                                    if self.camera:
+                                        self.camera.stop_exposure()
+                            except Exception:
+                                pass
+                            time.sleep(0.3)
+                            transient_failure = True
+                            break  # Break inner wait loop, outer retry will restart
+                        raise Exception("Exposure failed (camera returned ASI_EXP_FAILED status)")
+                    elif status == self.asi.ASI_EXP_IDLE:
+                        raise Exception("Exposure error: camera returned to IDLE state unexpectedly")
+
+                    # Update remaining time for UI
+                    elapsed = time.time() - start_time
+                    self.exposure_remaining = max(0, self.exposure_seconds - elapsed)
+                    time.sleep(0.05)
+
+                if exposure_succeeded:
                     break
-                elif status == self.asi.ASI_EXP_FAILED:
-                    raise Exception("Exposure failed (camera returned ASI_EXP_FAILED status)")
-                elif status == self.asi.ASI_EXP_IDLE:
-                    raise Exception("Exposure error: camera returned to IDLE state unexpectedly")
-
-                # Update remaining time for UI
-                elapsed = time.time() - start_time
-                self.exposure_remaining = max(0, self.exposure_seconds - elapsed)
-                time.sleep(0.05)
+                if not transient_failure:
+                    # Fell out of wait loop via timeout — don't retry, let the
+                    # timeout check below raise.
+                    break
 
             # Check if we timed out
-            if time.time() - start_time >= timeout:
+            if not exposure_succeeded and time.time() - start_time >= timeout:
                 self.exposure_remaining = 0.0
                 self.exposure_start_time = None
                 raise Exception(f"Exposure timeout: camera did not complete {self.exposure_seconds}s exposure within {timeout}s")
@@ -550,8 +582,25 @@ class ZWOCamera:
         
         consecutive_errors = 0
         max_reconnect_attempts = 5
+        # Long-interval retry state: after max_reconnect_attempts, rather than
+        # permanently exiting (which strands a 24/7 unattended rig), we sleep
+        # for an escalating interval and then run the whole recovery cycle
+        # again. The flag is only used to gate one-shot Discord alerts so we
+        # don't spam on every cycle.
+        long_retry_mode = False
+        # Backoff schedule in seconds: 5m -> 15m -> 1h -> stay at 1h.
+        # Reduces Discord/log noise for a permanently dead camera while still
+        # trying often enough to self-recover after a transient outage.
+        long_retry_schedule = [300, 900, 3600]
+        long_retry_cycle = 0
         last_schedule_log = None  # Track last schedule status to avoid log spam
         frames_captured = 0  # Counter for periodic logging
+        # Heartbeat + state flags observed by the UI watchdog. _last_frame_time
+        # is updated after every successful capture. long_retry_mode_public
+        # mirrors the local long_retry_mode so the watchdog can skip bogus
+        # "wedged" alerts while we're intentionally sleeping between retries.
+        self._last_frame_time = time.time()
+        self.long_retry_mode_public = False
         
         # Recalibration rate limiting to prevent infinite loops
         # (e.g., someone turning lights on/off repeatedly)
@@ -651,9 +700,21 @@ class ZWOCamera:
                     
                     # Capture frame
                     img, metadata = self.capture_single_frame()
-                    
-                    # Reset error counter on successful capture
+
+                    # Reset error counter + heartbeat on successful capture
                     consecutive_errors = 0
+                    self._last_frame_time = time.time()
+                    # If we were in long-retry mode and just recovered, notify once
+                    if long_retry_mode:
+                        long_retry_mode = False
+                        self.long_retry_mode_public = False
+                        long_retry_cycle = 0
+                        self.log("✓ Capture recovered from long-retry mode")
+                        if hasattr(self, 'on_error_callback') and self.on_error_callback:
+                            try:
+                                self.on_error_callback("Camera recovered — capture resumed")
+                            except Exception:
+                                pass
                     
                     # Auto-adjust exposure based on image brightness
                     # Check if drastic brightness change requires recalibration
@@ -762,9 +823,16 @@ class ZWOCamera:
                                 self.log("Cleaning up existing camera connection...")
                                 self._connection.disconnect()
                             
-                            # Reinitialize camera using safe reconnection
-                            self.log("Waiting 0.5s before reconnection attempt...")
-                            time.sleep(0.5)  # Brief delay before reconnecting
+                            # ZWO SDK docs recommend waiting 10-15s before
+                            # reopening a camera after an error. 0.5s almost
+                            # guaranteed "Invalid ID" on the first reopen, which
+                            # wasted one of our five recovery attempts. Use 8s
+                            # interruptible so a user Stop still responds quickly.
+                            pre_reconnect_wait = 8.0
+                            self.log(f"Waiting {pre_reconnect_wait:.0f}s before reconnection attempt (USB bus settle)...")
+                            wait_end = time.time() + pre_reconnect_wait
+                            while self.is_capturing and time.time() < wait_end:
+                                time.sleep(0.2)
                             
                             # Use safe reconnection method that re-detects cameras
                             if self.reconnect_camera_safe():
@@ -789,37 +857,74 @@ class ZWOCamera:
                             self.log(f"Stack trace: {traceback.format_exc()}")
                             # Exponential backoff: 2, 4, 8, 16, 32 seconds
                             backoff_time = min(2 ** consecutive_errors, 32)
-                            self.log(f"Using exponential backoff: waiting {backoff_time}s before retry {consecutive_errors + 1}/{max_reconnect_attempts}...")
+                            self.log(
+                                f"Using exponential backoff: waiting {backoff_time}s "
+                                f"before next recovery cycle (attempt {consecutive_errors}/{max_reconnect_attempts} failed)..."
+                            )
                             wait_end = time.time() + backoff_time
                             while self.is_capturing and time.time() < wait_end:
                                 time.sleep(0.2)
                     else:
-                        # Max attempts reached - stop capture
-                        self.log(f"✗ CRITICAL: Maximum reconnection attempts ({max_reconnect_attempts}) reached")
-                        self.log("Camera appears to be disconnected or unresponsive")
-                        self.log("Stopping capture loop. Manual intervention required.")
-                        self.log("")
-                        self.log("Troubleshooting steps:")
-                        self.log("  1. Check USB cable connection")
-                        self.log("  2. Check camera power supply")
-                        self.log("  3. Try: Physically disconnect USB, wait 5 seconds, reconnect")
-                        self.log("  4. Check Windows Device Manager for USB errors")
-                        self.log("  5. Restart application (automatic USB reset will be attempted)")
-                        self.log("  6. If persistent: Update ZWO drivers from astronomy-imaging-camera.com")
-                        self.log("")
-                        self.log("Note: Camera may be stuck in bad USB state requiring physical disconnect.")
-                        self.is_capturing = False
-                        # Notify via callback that capture failed
-                        if hasattr(self, 'on_error_callback') and self.on_error_callback:
-                            self.on_error_callback("Camera disconnected - failed to reconnect after multiple attempts")
-                        break
+                        # Max attempts reached — enter long-interval retry mode
+                        # instead of permanently exiting. The rig is unattended;
+                        # we'd rather keep trying every few minutes than leave
+                        # the user staring at a stale image all night.
+                        interval = long_retry_schedule[min(long_retry_cycle, len(long_retry_schedule) - 1)]
+                        if not long_retry_mode:
+                            long_retry_mode = True
+                            self.long_retry_mode_public = True
+                            self.log(f"✗ Maximum reconnection attempts ({max_reconnect_attempts}) reached")
+                            self.log(f"⏳ Entering long-interval retry mode — first retry in {interval}s (backoff: 5m → 15m → 1h)")
+                            self.log("Troubleshooting steps:")
+                            self.log("  1. Check USB cable connection")
+                            self.log("  2. Check camera power supply")
+                            self.log("  3. Try: Physically disconnect USB, wait 5 seconds, reconnect")
+                            self.log("  4. Check Windows Device Manager for USB errors")
+                            self.log("  5. If persistent: Update ZWO drivers from astronomy-imaging-camera.com")
+                            if hasattr(self, 'on_error_callback') and self.on_error_callback:
+                                try:
+                                    self.on_error_callback(
+                                        f"Camera unreachable — retrying every {interval // 60} min"
+                                    )
+                                except Exception:
+                                    pass
+                        else:
+                            self.log(f"⏳ Long-retry cycle {long_retry_cycle + 1} — next retry in {interval}s")
+
+                        # Interruptible sleep so user-initiated stop responds promptly.
+                        wait_end = time.time() + interval
+                        while self.is_capturing and time.time() < wait_end:
+                            time.sleep(0.2)
+
+                        long_retry_cycle += 1
+                        # Reset counter so the next cycle gets a fresh 5 attempts.
+                        consecutive_errors = 0
         finally:
             # Ensure camera is properly stopped on all exit paths (normal, error, or thread interrupt)
             self.log("Capture loop exiting - cleaning up...")
             # Note: We use snapshot mode (start_exposure/get_data_after_exposure)
             # NOT video mode (start_video_capture/get_video_data)
             # Camera cleanup is handled by disconnect_camera() which is called by stop_capture()
-        
+
+            # If capture is exiting while is_capturing is still True, something
+            # fatal (unhandled exception) forced us out — tell the UI so it can
+            # tear down state, not sit pretending we're still running.
+            if self.is_capturing and hasattr(self, 'on_error_callback') and self.on_error_callback:
+                self.is_capturing = False
+                try:
+                    self.on_error_callback(
+                        "Capture loop terminated unexpectedly",
+                        is_fatal=True,
+                    )
+                except TypeError:
+                    # Callback doesn't accept is_fatal yet — fall back to single-arg form
+                    try:
+                        self.on_error_callback("Capture loop terminated unexpectedly")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
         self.log("Capture loop stopped")
     
     def start_capture(self, on_frame_callback, on_log_callback=None):

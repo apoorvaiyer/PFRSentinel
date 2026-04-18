@@ -210,29 +210,47 @@ class CameraConnection:
             self.log("Querying SDK for number of connected cameras...")
             num_cameras = self.asi.get_num_cameras()
             self.cameras = []
-            
+
             if num_cameras == 0:
                 self.log("⚠ No ZWO cameras detected by SDK")
                 self.log("Check: 1) USB cable connected, 2) Camera powered, 3) USB drivers installed")
                 return []
-            
+
             self.log(f"✓ Found {num_cameras} ZWO camera(s) connected")
             self.log("Enumerating camera details...")
-            
-            for i in range(num_cameras):
-                try:
-                    camera_info = self.asi.list_cameras()[i]
-                    self.cameras.append({
-                        'index': i,
-                        'name': camera_info
-                    })
-                    self.log(f"  ✓ Camera {i}: {camera_info}")
-                except Exception as cam_err:
-                    self.log(f"  ⚠ Warning: Could not get info for camera {i}: {cam_err}")
-            
+
+            # Snapshot list_cameras() once — calling it per-iteration races against
+            # the driver still binding after a hot-plug / disable-enable cycle,
+            # producing "list index out of range" on the just-appeared camera.
+            # If the list is shorter than num_cameras, retry a few times to let
+            # the SDK converge.
+            camera_list = []
+            for poll_attempt in range(3):
+                camera_list = list(self.asi.list_cameras())
+                if len(camera_list) >= num_cameras:
+                    break
+                self.log(
+                    f"  ⚠ Enumeration race: get_num_cameras={num_cameras} but "
+                    f"list_cameras returned {len(camera_list)} — retrying in 1s "
+                    f"({poll_attempt + 1}/3)"
+                )
+                time.sleep(1.0)
+
+            # If we still disagree after retries, trust list_cameras() — it's the
+            # one that returns actual names we can use.
+            for i, name in enumerate(camera_list):
+                self.cameras.append({'index': i, 'name': name})
+                self.log(f"  ✓ Camera {i}: {name}")
+
+            if len(camera_list) != num_cameras:
+                self.log(
+                    f"  ⚠ Enumeration still inconsistent after retries: "
+                    f"num_cameras={num_cameras}, enumerated={len(camera_list)}"
+                )
+
             self.log(f"Camera detection complete: {len(self.cameras)} camera(s) enumerated")
             return self.cameras
-        
+
         except Exception as e:
             self.log(f"ERROR during camera detection: {e}")
             import traceback
@@ -244,7 +262,8 @@ class CameraConnection:
     # =========================================================================
     
     def connect(self, camera_index: int = 0, settings: Optional[Dict[str, Any]] = None,
-                expected_camera_name: Optional[str] = None) -> bool:
+                expected_camera_name: Optional[str] = None,
+                post_recovery: bool = False) -> bool:
         """
         Connect to a specific camera.
 
@@ -253,30 +272,43 @@ class CameraConnection:
             settings: Optional dict with camera settings (gain, exposure_sec, wb_r, wb_b, etc.)
             expected_camera_name: If provided, verify the opened camera matches this name.
                 Prevents connecting to the wrong physical camera when SDK indices shift.
+            post_recovery: If True, we just came out of a USB disable/enable cycle.
+                Use a longer retry schedule (6 attempts with exponential backoff)
+                and re-run detect_cameras() between attempts, because the camera
+                may appear in the SDK list before it's actually openable, and
+                its index may shift on re-enumeration.
 
         Returns:
             True if successful, False otherwise
         """
         self.log(f"=== Connecting to Camera (Index: {camera_index}) ===")
-        
+
         if not self.asi:
             self.log("SDK not initialized, initializing now...")
             if not self.initialize_sdk():
                 self.log("Connection failed: SDK initialization failed")
                 return False
-        
+
         try:
             if self.camera:
                 self.log("Existing camera connection detected, disconnecting first...")
                 self.disconnect()
-            
+
             # Add delay to allow SDK cleanup (especially important after other apps like ASICap)
             time.sleep(0.5)  # Increased from 0.2s
-            
+
             self.log(f"Opening camera at index {camera_index}...")
-            
-            # Try to open the camera with retry logic for transient SDK errors
-            max_attempts = 3
+
+            # Retry schedule: tighter for normal connects, longer & with
+            # re-detection for post-recovery opens (driver may still be binding
+            # and SDK index may shift).
+            if post_recovery:
+                backoff_schedule = [1.0, 2.0, 4.0, 4.0, 4.0]  # ~15s total
+                self.log(f"  (post-recovery mode: up to {len(backoff_schedule) + 1} attempts with re-detection)")
+            else:
+                backoff_schedule = [1.0, 1.0]  # 3 attempts total
+            max_attempts = len(backoff_schedule) + 1
+
             for attempt in range(1, max_attempts + 1):
                 try:
                     self.camera = self.asi.Camera(camera_index)
@@ -284,10 +316,26 @@ class CameraConnection:
                 except Exception as e:
                     if attempt < max_attempts:
                         self.log(f"⚠ Attempt {attempt}/{max_attempts} failed: {e}")
-                        if attempt == 1:
+                        if attempt == 1 and not post_recovery:
                             self.log(f"⚠ If you recently used ASICap or other ZWO software, please wait 10-15 seconds before retrying")
-                        self.log(f"Waiting 1.0s before retry...")
-                        time.sleep(1.0)  # Increased from 0.5s
+
+                        # On "Invalid ID" during post-recovery, re-enumerate to
+                        # pick up the camera's (possibly shifted) new index.
+                        if post_recovery and "Invalid ID" in str(e) and expected_camera_name:
+                            self.log("  Re-detecting cameras (index may have shifted after recovery)...")
+                            try:
+                                refreshed = self.detect_cameras()
+                                if refreshed:
+                                    new_idx = self._find_camera_index_by_name(refreshed, expected_camera_name)
+                                    if new_idx is not None and new_idx != camera_index:
+                                        self.log(f"  Target now at index {new_idx} (was {camera_index})")
+                                        camera_index = new_idx
+                            except Exception as detect_err:
+                                self.log(f"  Re-detect failed: {detect_err}")
+
+                        wait = backoff_schedule[attempt - 1]
+                        self.log(f"Waiting {wait}s before retry...")
+                        time.sleep(wait)
                     else:
                         # Final attempt failed - re-raise the exception
                         raise
@@ -395,6 +443,46 @@ class CameraConnection:
         except Exception as diag_err:
             self.log(f"  Could not query camera list for diagnostics: {diag_err}")
     
+    def _wait_for_stable_detection(self, camera_name: str,
+                                    timeout_sec: float = 10.0,
+                                    poll_interval: float = 2.0) -> Optional[int]:
+        """
+        Poll detect_cameras() until the target camera appears at the same index
+        on two consecutive polls, or timeout.
+
+        Right after a USB disable/enable cycle, the SDK can briefly show the
+        camera before the driver is fully bound — `connect()` then fails with
+        "Invalid ID". Waiting for a stable detection avoids that race.
+
+        Args:
+            camera_name: Name substring to search for
+            timeout_sec: Max wait time
+            poll_interval: Seconds between polls
+
+        Returns:
+            Stable camera index, or None if not seen stably within timeout.
+        """
+        deadline = time.time() + timeout_sec
+        last_index: Optional[int] = None
+
+        while time.time() < deadline:
+            detected = self.detect_cameras()
+            if detected:
+                idx = self._find_camera_index_by_name(detected, camera_name)
+                if idx is not None and idx == last_index:
+                    self.log(f"  ✓ Target stable at index {idx}")
+                    return idx
+                last_index = idx
+            else:
+                last_index = None
+            try:
+                time.sleep(poll_interval)
+            except OSError:
+                return None
+
+        self.log(f"  ⚠ Target not stably detected within {timeout_sec}s")
+        return last_index  # Best effort — caller can still try this index
+
     def _find_camera_index_by_name(self, cameras: List[Dict[str, Any]], camera_name: str) -> Optional[int]:
         """
         Find camera index by exact name match.
@@ -470,7 +558,10 @@ class CameraConnection:
         # Other cameras being visible (e.g. guide camera) doesn't help us.
         detected = self.detect_cameras()
         target_found = False
-        
+        # post_recovery flips True only if we needed disable/enable and it worked;
+        # tells connect() to use the longer retry schedule for driver settle.
+        post_recovery = False
+
         if detected and camera_to_find:
             target_index = self._find_camera_index_by_name(detected, camera_to_find)
             target_found = target_index is not None
@@ -524,12 +615,22 @@ class CameraConnection:
                         self.log("✓ USB disable/enable completed, reinitializing SDK...")
                         self.asi = None
                         if self.initialize_sdk():
-                            detected = self.detect_cameras()
-                            if detected:
-                                target_index = self._find_camera_index_by_name(detected, camera_to_find)
-                                target_found = target_index is not None
-                                if target_found:
-                                    self.log(f"✓ Camera recovered via disable/enable!")
+                            # Detection-settle: SDK may briefly report the
+                            # camera before it's stable. Poll until we see
+                            # the target name twice in a row at the same
+                            # index, or give up after ~10s.
+                            target_index = self._wait_for_stable_detection(
+                                camera_to_find, timeout_sec=10
+                            )
+                            target_found = target_index is not None
+                            if target_found:
+                                self.log(f"✓ Camera recovered via disable/enable!")
+                                post_recovery = True
+                                # Refresh the local `detected` view so the
+                                # post-recovery index lookup below doesn't
+                                # key off the stale pre-recovery list (which
+                                # didn't include the target).
+                                detected = self.cameras
                     else:
                         self.log("⚠ USB disable/enable failed or not applicable")
                 except Exception as e:
@@ -568,9 +669,13 @@ class CameraConnection:
             self.log(f"Using first available camera at index {target_index}")
         
         self.camera_index = target_index
-        
-        # Connect with settings (with SDK reset fallback on failure)
-        if self.connect(target_index, settings, expected_camera_name=camera_to_find):
+
+        # Connect with settings (with SDK reset fallback on failure).
+        # post_recovery extends the per-open retry budget when we just came
+        # out of a disable/enable cycle — the driver may still be binding.
+        if self.connect(target_index, settings,
+                        expected_camera_name=camera_to_find,
+                        post_recovery=post_recovery):
             return True
 
         self.log("⚠ Connection failed, attempting complete SDK reset...")

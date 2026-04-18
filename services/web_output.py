@@ -17,22 +17,27 @@ from .logger import app_logger
 
 class ImageHTTPHandler(BaseHTTPRequestHandler):
     """HTTP request handler for serving images and status."""
-    
+
     # Class-level variables shared between all handler instances
     latest_image_path = None
     latest_image_data = None
     latest_image_content_type = 'image/jpeg'  # Default to JPEG
     latest_image_etag = None  # PERF-002: ETag for caching support
+    latest_image_update_time = None  # Unix ts of last update_image() call
     latest_metadata = {}
     server_start_time = None
     image_count = 0
-    
+    # Images older than this are flagged as stale in /status and via
+    # X-PFR-Image-Stale header so consumers (NINA, dashboards) can detect
+    # capture outages instead of silently serving hours-old frames.
+    stale_threshold_sec = 300
+
     @classmethod
     def update_image(cls, image_data: bytes, content_type: str, path: str = None, metadata: dict = None):
         """
         Update the latest image with ETag generation.
         PERF-002: Centralized image update with caching support.
-        
+
         Args:
             image_data: Raw image bytes
             content_type: MIME type (e.g., 'image/jpeg')
@@ -46,7 +51,15 @@ class ImageHTTPHandler(BaseHTTPRequestHandler):
             cls.latest_metadata = metadata
         # Generate ETag from content hash for cache validation
         cls.latest_image_etag = hashlib.md5(image_data).hexdigest()
+        cls.latest_image_update_time = time.time()
         cls.image_count += 1
+
+    @classmethod
+    def _image_age_seconds(cls):
+        """Seconds since the last update_image() call, or None if never set."""
+        if cls.latest_image_update_time is None:
+            return None
+        return max(0.0, time.time() - cls.latest_image_update_time)
     
     def log_message(self, format, *args):
         """Override to use our logger instead of stderr."""
@@ -118,6 +131,14 @@ class ImageHTTPHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, If-None-Match")
+            # Staleness signalling — consumers that want to know whether the
+            # served image is current can check these headers instead of
+            # having to diff ETags over time.
+            age = self._image_age_seconds()
+            if age is not None:
+                self.send_header("X-PFR-Image-Age-Seconds", f"{int(age)}")
+                if age >= self.stale_threshold_sec:
+                    self.send_header("X-PFR-Image-Stale", "true")
             self.end_headers()
             self.wfile.write(self.latest_image_data)
             app_logger.debug(f"Served image: {len(self.latest_image_data)} bytes ({self.latest_image_content_type})")
@@ -132,13 +153,19 @@ class ImageHTTPHandler(BaseHTTPRequestHandler):
         uptime = 0
         if self.server_start_time:
             uptime = int(time.time() - self.server_start_time)
-        
+
+        age = self._image_age_seconds()
+        image_stale = age is not None and age >= self.stale_threshold_sec
+
         status = {
             "server": "PFR Sentinel HTTP Server",
             "status": "running",
             "uptime_seconds": uptime,
             "images_served": self.image_count,
             "latest_image": self.latest_image_path or "None",
+            "image_age_seconds": int(age) if age is not None else None,
+            "image_stale": image_stale,
+            "stale_threshold_seconds": self.stale_threshold_sec,
             "metadata": self.latest_metadata,
             "timestamp": datetime.now().isoformat()
         }
