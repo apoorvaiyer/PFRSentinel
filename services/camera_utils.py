@@ -5,6 +5,15 @@ import numpy as np
 from datetime import datetime
 
 
+def clean_camera_name(name: str) -> str:
+    """Strip the ``(Index: N)`` suffix from a stored camera name."""
+    if not name:
+        return ''
+    if '(Index:' in name:
+        return name.split('(Index:')[0].strip()
+    return name.strip()
+
+
 def simple_debayer_rggb(raw_data, width, height):
     """
     Simple Bayer RGGB to RGB conversion using nearest neighbor interpolation

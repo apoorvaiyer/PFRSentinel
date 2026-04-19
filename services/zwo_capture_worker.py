@@ -324,6 +324,8 @@ def capture_loop(camera: "ZWOCamera"):
                                     time.sleep(0.2)
                                 continue
                             camera.log("✓ Camera reconnected successfully for scheduled captures")
+                            # Suppress watchdog during the first post-reconnect exposure.
+                            camera._last_frame_time = time.time()
 
                 if not camera.camera:
                     raise Exception("Camera disconnected")
@@ -484,6 +486,8 @@ def capture_loop(camera: "ZWOCamera"):
                                 raise Exception(
                                     f"Camera not responding after reconnect: {probe_err}"
                                 )
+                            # Suppress watchdog during the first post-reconnect exposure.
+                            camera._last_frame_time = time.time()
                             continue
                         else:
                             raise Exception("Failed to reconnect camera")

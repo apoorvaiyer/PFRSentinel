@@ -17,6 +17,20 @@ from services.logger import app_logger
 from services.zwo_camera import ZWOCamera
 
 
+# ZWO SDK errors that corrupt the DLL for the process lifetime — only a
+# USB reset or app restart recovers.
+_UNRECOVERABLE_ERROR_PATTERNS = (
+    "access violation",
+    "0xe06d7363",
+    "winerror -529697949",
+    "exception: exception",
+)
+
+_DISCORD_ERROR_SUPPRESS_AFTER_ATTEMPTS = 3
+_WEDGED_THREAD_JOIN_TIMEOUT_SEC = 3.0
+_SUSTAINED_CAPTURE_RESET_SEC = 300
+
+
 class CameraControllerQt(QObject):
     """
     Qt-compatible camera controller.
@@ -48,6 +62,14 @@ class CameraControllerQt(QObject):
         self._auto_recovery_schedule = [30, 120, 300, 900, 1800]
         self._auto_recovery_timer: QTimer | None = None
         self._last_successful_frame_ts = 0.0
+
+        # Held across a fatal error so the capture thread can be joined
+        # before the next recovery attempt; concurrent SDK calls from a
+        # still-alive thread and a new reinit corrupt the ZWO DLL.
+        self._dying_camera = None
+        self._unrecoverable_mode = False
+        self._usb_reset_attempted = False
+        self._suppress_discord_errors = False
 
     def detect_cameras(self):
         """Detect connected ZWO cameras"""
@@ -301,14 +323,23 @@ class CameraControllerQt(QObject):
         except Exception as e:
             self.is_capturing = False
             self.is_connected = False
-            self.error.emit(str(e))
+            err_text = str(e)
+            self.error.emit(err_text)
             app_logger.error(f"Failed to start capture: {e}")
             import traceback
             app_logger.debug(f"Stack trace: {traceback.format_exc()}")
             from services.posthog_service import capture_error
             capture_error(e, context='camera_start')
-            if not self._user_requested_stop:
-                self._schedule_auto_recovery()
+            if self._user_requested_stop:
+                return
+            if self._is_unrecoverable_error(err_text):
+                if not self._usb_reset_attempted:
+                    self._usb_reset_attempted = True
+                    self._start_usb_reset_worker()
+                    return
+                self._enter_unrecoverable_mode(err_text)
+                return
+            self._schedule_auto_recovery()
             return
     
     def stop_capture(self):
@@ -318,6 +349,10 @@ class CameraControllerQt(QObject):
 
         self._user_requested_stop = True
         self._cancel_auto_recovery_timer()
+        self._unrecoverable_mode = False
+        self._usb_reset_attempted = False
+        self._suppress_discord_errors = False
+        self._dying_camera = None
 
         try:
             # Update state immediately for responsive UI
@@ -372,9 +407,11 @@ class CameraControllerQt(QObject):
         # recovery succeeding.
         now = time.time()
         if self._auto_recovery_attempts and self._last_successful_frame_ts:
-            if now - self._last_successful_frame_ts > 300:
+            if now - self._last_successful_frame_ts > _SUSTAINED_CAPTURE_RESET_SEC:
                 app_logger.info("Sustained capture stream — resetting auto-recovery counter")
                 self._auto_recovery_attempts = 0
+                self._suppress_discord_errors = False
+                self._usb_reset_attempted = False
         self._last_successful_frame_ts = now
 
         # Also notify main window directly
@@ -400,17 +437,35 @@ class CameraControllerQt(QObject):
             # camera (the loop already exited and cleanup ran).
             self.is_capturing = False
             self.is_connected = False
+            if self.zwo_camera is not None:
+                self._dying_camera = self.zwo_camera
             self.zwo_camera = None
             self.capture_stopped.emit()
             if not self._user_requested_stop:
                 self._schedule_auto_recovery()
 
     def _schedule_auto_recovery(self):
+        if self._unrecoverable_mode:
+            app_logger.info(
+                "Auto-recovery suppressed — in unrecoverable mode, awaiting "
+                "manual restart."
+            )
+            return
         # Schedule clamps at the final interval rather than stopping — on a
         # 24/7 rig, keep trying forever is better than giving up.
         idx = min(self._auto_recovery_attempts, len(self._auto_recovery_schedule) - 1)
         delay_s = self._auto_recovery_schedule[idx]
         self._auto_recovery_attempts += 1
+
+        if (
+            not self._suppress_discord_errors
+            and self._auto_recovery_attempts > _DISCORD_ERROR_SUPPRESS_AFTER_ATTEMPTS
+        ):
+            self._suppress_discord_errors = True
+            app_logger.warning(
+                f"Auto-recovery: reached attempt #{self._auto_recovery_attempts}; "
+                "suppressing further Discord error pings until capture resumes."
+            )
 
         app_logger.warning(
             f"Auto-recovery: scheduling capture restart in {delay_s}s "
@@ -443,6 +498,8 @@ class CameraControllerQt(QObject):
             app_logger.info("Auto-recovery: capture already running — cancelled")
             return
 
+        self._join_dying_camera()
+
         app_logger.info(
             f"Auto-recovery: attempting capture restart "
             f"(attempt #{self._auto_recovery_attempts})"
@@ -455,6 +512,93 @@ class CameraControllerQt(QObject):
             # failure), keep the recovery chain alive.
             app_logger.error(f"Auto-recovery restart raised: {e}")
             self._schedule_auto_recovery()
+
+    def _join_dying_camera(self):
+        dying = self._dying_camera
+        if dying is None:
+            return
+        try:
+            dying.wait_for_capture_thread_exit(
+                timeout=_WEDGED_THREAD_JOIN_TIMEOUT_SEC
+            )
+        except Exception as e:
+            app_logger.warning(f"Error while joining dying capture thread: {e}")
+        finally:
+            self._dying_camera = None
+
+    @staticmethod
+    def _is_unrecoverable_error(message: str) -> bool:
+        if not message:
+            return False
+        lowered = message.lower()
+        return any(pat in lowered for pat in _UNRECOVERABLE_ERROR_PATTERNS)
+
+    def _start_usb_reset_worker(self):
+        """Run the USB disable/enable cycle off the Qt main thread.
+
+        The underlying Windows call sleeps for 15+ s while the driver re-binds;
+        running it inline would freeze the UI. When the worker finishes, the
+        next recovery attempt is scheduled via QTimer.singleShot(0, ...) which
+        marshals back to the main thread.
+        """
+        if sys.platform != 'win32':
+            app_logger.info("USB reset unavailable: not on Windows.")
+            self._schedule_auto_recovery()
+            return
+        from services.camera_utils import clean_camera_name
+        camera_name = clean_camera_name(
+            self.config.get('zwo_selected_camera_name', '') or ''
+        )
+        if not camera_name:
+            app_logger.warning("USB reset skipped: no saved camera name.")
+            self._schedule_auto_recovery()
+            return
+
+        app_logger.warning(
+            "Unrecoverable SDK state — starting USB reset in background worker."
+        )
+
+        def worker():
+            try:
+                from services.usb_reset_win import (
+                    disable_enable_zwo_camera_usb, is_usb_reset_available,
+                )
+                if not is_usb_reset_available():
+                    app_logger.warning("USB reset API unavailable.")
+                else:
+                    ok = disable_enable_zwo_camera_usb(
+                        camera_name=camera_name,
+                        logger=lambda m: app_logger.info(m),
+                    )
+                    app_logger.info(
+                        f"USB reset {'succeeded' if ok else 'did not complete'}"
+                    )
+            except Exception as e:
+                app_logger.error(f"USB reset raised: {e}")
+            finally:
+                QTimer.singleShot(0, self._schedule_auto_recovery)
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _enter_unrecoverable_mode(self, last_error: str):
+        self._unrecoverable_mode = True
+        self._cancel_auto_recovery_timer()
+        self.capture_stopped.emit()
+        self.error.emit(
+            "Camera unrecoverable — ZWO SDK state is corrupted. "
+            "Please restart the application. "
+            f"(last error: {last_error})"
+        )
+
+    def should_notify_discord(self) -> bool:
+        return not self._suppress_discord_errors
+
+    def mark_discord_notified(self):
+        """Call after sending a Discord error so the unrecoverable-mode
+        one-shot notification silences subsequent per-attempt pings."""
+        if self._unrecoverable_mode:
+            self._suppress_discord_errors = True
     
     def _on_calibration_status(self, is_calibrating: bool):
         """Callback from ZWOCamera when calibration status changes
