@@ -410,6 +410,45 @@ class ZWOCamera:
         
         return True
     
+    def wait_for_capture_thread_exit(self, timeout: float = 10.0) -> bool:
+        """Wait for the capture thread to exit without issuing new SDK calls.
+
+        Used by the UI-level auto-recovery path: after the watchdog declares a
+        fatal wedge, the capture thread may still be blocked inside an ASI SDK
+        call. Starting a new ZWOCamera instance (which reinitialises the SDK)
+        while that thread is alive has caused C++ SEH exceptions and access
+        violations from concurrent SDK access. Join the thread first, then
+        recover.
+
+        Unlike stop_capture(), this does NOT call stop_exposure() or touch
+        the SDK at all — the caller has already decided the camera is wedged
+        and SDK calls may themselves hang or crash. We just wait for the
+        thread to unwind on its own.
+
+        Returns True if the thread exited (or was never alive), False on timeout.
+        """
+        self.is_capturing = False
+        if self.calibration_manager:
+            try:
+                self.calibration_manager.abort()
+            except Exception:
+                pass
+
+        if not self.capture_thread or not self.capture_thread.is_alive():
+            return True
+
+        self.log(f"Waiting up to {timeout:.0f}s for wedged capture thread to exit...")
+        self.capture_thread.join(timeout=timeout)
+        if self.capture_thread.is_alive():
+            self.log(
+                "⚠ Capture thread did not exit within timeout — "
+                "SDK call still blocked; recovery will proceed anyway"
+            )
+            return False
+        self.log("✓ Capture thread exited cleanly before recovery")
+        self.capture_thread = None
+        return True
+
     def stop_capture(self):
         """Stop continuous capture and wait for thread to finish"""
         if not self.is_capturing:

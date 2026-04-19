@@ -211,6 +211,363 @@ class TestRecoveryRaces:
         assert idx is None
 
 
+class TestCleanCameraName:
+    """Unit tests for the camera-name cleaner."""
+
+    @pytest.mark.parametrize("raw, expected", [
+        ("ZWO ASI676MC (Index: 0)", "ZWO ASI676MC"),
+        ("  ZWO ASI462MM (Index: 1)  ", "ZWO ASI462MM"),
+        ("ZWO ASI676MC", "ZWO ASI676MC"),
+        ("", ""),
+        (None, ""),
+    ])
+    def test_strips_index_suffix(self, raw, expected):
+        from services.camera_utils import clean_camera_name
+        assert clean_camera_name(raw) == expected
+
+
+class TestWaitForCaptureThreadExit:
+    """Tests for ZWOCamera.wait_for_capture_thread_exit()."""
+
+    def _make_camera(self):
+        # Patch the CameraConnection constructor so it doesn't look for the
+        # real SDK — the test only needs ZWOCamera's thread-join logic.
+        from services.zwo_camera import ZWOCamera
+        with patch('services.zwo_camera.CameraConnection') as conn_cls:
+            conn_cls.return_value = MagicMock(asi=None, camera=None, sdk_lock=MagicMock())
+            cam = ZWOCamera(sdk_path=None)
+        cam.on_log_callback = lambda _: None
+        return cam
+
+    def test_returns_true_when_no_thread(self):
+        cam = self._make_camera()
+        cam.capture_thread = None
+        assert cam.wait_for_capture_thread_exit(timeout=0.1) is True
+        assert cam.is_capturing is False
+
+    def test_returns_true_when_thread_already_exited(self):
+        import threading
+        cam = self._make_camera()
+        t = threading.Thread(target=lambda: None)
+        t.start()
+        t.join()
+        cam.capture_thread = t
+        assert cam.wait_for_capture_thread_exit(timeout=0.1) is True
+
+    def test_joins_running_thread_and_returns_true(self):
+        import threading
+        cam = self._make_camera()
+        cam.is_capturing = True
+
+        started = threading.Event()
+
+        def fake_loop():
+            started.set()
+            # Exits as soon as is_capturing flips False
+            while cam.is_capturing:
+                pass
+
+        t = threading.Thread(target=fake_loop, daemon=True)
+        cam.capture_thread = t
+        t.start()
+        started.wait(timeout=1.0)
+        # wait_for_capture_thread_exit should flip is_capturing and join
+        assert cam.wait_for_capture_thread_exit(timeout=2.0) is True
+        assert cam.capture_thread is None
+
+    def test_returns_false_on_timeout(self):
+        import threading, time
+        cam = self._make_camera()
+        cam.is_capturing = True
+
+        # Thread that ignores the stop flag — simulates a thread wedged in SDK.
+        def stuck():
+            time.sleep(1.5)
+
+        t = threading.Thread(target=stuck, daemon=True)
+        cam.capture_thread = t
+        t.start()
+        assert cam.wait_for_capture_thread_exit(timeout=0.1) is False
+        # capture_thread reference is kept so caller can re-inspect
+        assert cam.capture_thread is t
+        t.join()
+
+    def test_aborts_calibration_manager(self):
+        cam = self._make_camera()
+        cal = MagicMock()
+        cam.calibration_manager = cal
+        cam.capture_thread = None
+        cam.wait_for_capture_thread_exit(timeout=0.1)
+        cal.abort.assert_called_once()
+
+
+class TestUnrecoverableErrorDetection:
+    """Unit tests for the SDK-crash error classifier — no Qt needed."""
+
+    @pytest.mark.parametrize("msg", [
+        "exception: access violation writing 0x0000000000000024",
+        "Access Violation in zwoasi.dll",
+        "[WinError -529697949] Windows Error 0xe06d7363",
+        "Windows Error 0xE06D7363",
+        "exception: exception",
+    ])
+    def test_unrecoverable_patterns(self, msg):
+        from ui.controllers.camera_controller import CameraControllerQt
+        assert CameraControllerQt._is_unrecoverable_error(msg) is True
+
+    @pytest.mark.parametrize("msg", [
+        "",
+        "Exposure failed (camera returned ASI_EXP_FAILED status)",
+        "Capture wedged — no frames for 112s",
+        "Failed to reconnect camera",
+        "Invalid ID",
+        "Camera not responding after reconnect: timeout",
+    ])
+    def test_recoverable_patterns(self, msg):
+        from ui.controllers.camera_controller import CameraControllerQt
+        assert CameraControllerQt._is_unrecoverable_error(msg) is False
+
+
+class TestDiscordSuppression:
+    """Unit tests for the Discord error-throttle state machine."""
+
+    def _controller(self):
+        # Build a CameraControllerQt without running its Qt init (which needs
+        # a QApplication).  We only need the plain attribute defaults for
+        # should_notify_discord() logic.
+        from ui.controllers.camera_controller import CameraControllerQt
+        ctrl = CameraControllerQt.__new__(CameraControllerQt)
+        ctrl._unrecoverable_mode = False
+        ctrl._suppress_discord_errors = False
+        return ctrl
+
+    def test_allows_notifications_by_default(self):
+        ctrl = self._controller()
+        assert ctrl.should_notify_discord() is True
+
+    def test_suppresses_after_flag_set(self):
+        ctrl = self._controller()
+        ctrl._suppress_discord_errors = True
+        assert ctrl.should_notify_discord() is False
+
+    def test_unrecoverable_mode_mark_notified_silences_further_pings(self):
+        ctrl = self._controller()
+        ctrl._unrecoverable_mode = True
+        # Pure predicate — first call allows the final "needs restart" ping
+        assert ctrl.should_notify_discord() is True
+        # Caller records that the ping was sent
+        ctrl.mark_discord_notified()
+        # All subsequent calls must be suppressed
+        assert ctrl.should_notify_discord() is False
+        assert ctrl.should_notify_discord() is False
+
+    def test_mark_discord_notified_noop_outside_unrecoverable_mode(self):
+        """Regression guard: mark_discord_notified must not mute normal-mode
+        Discord pings — only the unrecoverable-mode one-shot path uses it."""
+        ctrl = self._controller()
+        ctrl.mark_discord_notified()
+        assert ctrl._suppress_discord_errors is False
+        assert ctrl.should_notify_discord() is True
+
+
+class TestCaptureLoopReconnectHeartbeat:
+    """P2 regression: _last_frame_time must be refreshed after reconnect."""
+
+    def test_reconnect_path_resets_last_frame_time(self):
+        """
+        Read the source of zwo_capture_worker.capture_loop and assert that the
+        reconnect branch writes _last_frame_time back to time.time().
+
+        A behavioural test would need to drive the full capture loop with a
+        mocked ZWOCamera, which brings in calibration manager, sdk_lock, and
+        scheduled-window state.  The invariant we actually care about is:
+        "somewhere in the reconnect recovery branch, _last_frame_time gets
+        reset."  A source-level assertion catches future refactors that
+        silently drop it.
+        """
+        import inspect
+        from services import zwo_capture_worker
+        src = inspect.getsource(zwo_capture_worker.capture_loop)
+        # The reconnect branch starts at '✓ Camera reconnected successfully'.
+        # Must be followed (before the next 'except') by an assignment that
+        # writes _last_frame_time.
+        reconnect_pos = src.index("✓ Camera reconnected successfully")
+        tail = src[reconnect_pos:]
+        assert "_last_frame_time = time.time()" in tail, (
+            "Reconnect recovery must refresh camera._last_frame_time so the "
+            "UI-level watchdog doesn't fire on the first post-reconnect "
+            "exposure. Lost this line? See services/zwo_capture_worker.py."
+        )
+
+
+class TestControllerRecoveryWiring:
+    """Integration tests for the controller recovery path (requires Qt)."""
+
+    @pytest.fixture
+    def qt_app(self):
+        # Shared QApplication across tests — Qt forbids creating two.
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            pytest.skip("PySide6 not installed")
+        app = QApplication.instance() or QApplication([])
+        yield app
+
+    def _build_controller(self):
+        from ui.controllers.camera_controller import CameraControllerQt
+        main_window = MagicMock()
+        main_window.config = MagicMock()
+        main_window.config.get = MagicMock(return_value='')
+        ctrl = CameraControllerQt(main_window)
+        return ctrl
+
+    def test_fatal_error_preserves_dying_camera_reference(self, qt_app):
+        """The prev ZWOCamera must survive the fatal teardown so its thread
+        can be joined before the next recovery fires — otherwise the SDK
+        DLL sees concurrent access and crashes."""
+        ctrl = self._build_controller()
+        fake_camera = MagicMock()
+        ctrl.zwo_camera = fake_camera
+        ctrl.is_capturing = True
+        # Stub out the auto-recovery scheduler so we don't start a real timer.
+        ctrl._schedule_auto_recovery = MagicMock()
+        ctrl._on_camera_error("Capture wedged — no frames for 112s", is_fatal=True)
+        assert ctrl.zwo_camera is None
+        assert ctrl._dying_camera is fake_camera
+        assert ctrl.is_capturing is False
+        ctrl._schedule_auto_recovery.assert_called_once()
+
+    def test_auto_recovery_joins_dying_camera_before_restart(self, qt_app):
+        """Recovery must wait for the previous capture thread to exit before
+        calling start_capture() (which hits get_num_cameras on the main
+        thread)."""
+        ctrl = self._build_controller()
+        dying = MagicMock()
+        ctrl._dying_camera = dying
+        # Stub start_capture so we only verify the join order.
+        call_order = []
+        dying.wait_for_capture_thread_exit = MagicMock(
+            side_effect=lambda *a, **kw: call_order.append('join') or True
+        )
+        ctrl.start_capture = MagicMock(
+            side_effect=lambda: call_order.append('start_capture')
+        )
+        ctrl._user_requested_stop = False
+        ctrl.is_capturing = False
+        ctrl._on_auto_recovery_fire()
+        assert call_order == ['join', 'start_capture']
+        assert ctrl._dying_camera is None
+
+    def test_schedule_auto_recovery_noops_in_unrecoverable_mode(self, qt_app):
+        ctrl = self._build_controller()
+        ctrl._unrecoverable_mode = True
+        # Precondition check — would normally increment attempts.
+        before = ctrl._auto_recovery_attempts
+        ctrl._schedule_auto_recovery()
+        assert ctrl._auto_recovery_attempts == before
+        assert ctrl._auto_recovery_timer is None
+
+    def test_schedule_auto_recovery_sets_suppress_flag_after_threshold(self, qt_app):
+        from ui.controllers.camera_controller import (
+            _DISCORD_ERROR_SUPPRESS_AFTER_ATTEMPTS,
+        )
+        ctrl = self._build_controller()
+        for _ in range(_DISCORD_ERROR_SUPPRESS_AFTER_ATTEMPTS):
+            ctrl._schedule_auto_recovery()
+            ctrl._cancel_auto_recovery_timer()
+        assert ctrl._suppress_discord_errors is False
+        # One more crosses the threshold
+        ctrl._schedule_auto_recovery()
+        ctrl._cancel_auto_recovery_timer()
+        assert ctrl._suppress_discord_errors is True
+
+    def test_sustained_frame_stream_clears_suppression(self, qt_app):
+        ctrl = self._build_controller()
+        ctrl._suppress_discord_errors = True
+        ctrl._usb_reset_attempted = True
+        ctrl._auto_recovery_attempts = 5
+        # Seed a "previously successful" timestamp far in the past so the
+        # 5-minute gate clears on the current frame.
+        import time as _t
+        ctrl._last_successful_frame_ts = _t.time() - 3600
+        # Fake main_window.on_image_captured to avoid extra complexity.
+        ctrl.main_window.on_image_captured = MagicMock()
+        ctrl._on_frame_captured(MagicMock(), {})
+        assert ctrl._suppress_discord_errors is False
+        assert ctrl._usb_reset_attempted is False
+        assert ctrl._auto_recovery_attempts == 0
+
+    def test_enter_unrecoverable_mode_emits_capture_stopped_and_error(self, qt_app):
+        ctrl = self._build_controller()
+        ctrl._cancel_auto_recovery_timer = MagicMock()
+        stopped_spy = []
+        error_spy = []
+        ctrl.capture_stopped.connect(lambda: stopped_spy.append(True))
+        ctrl.error.connect(lambda msg: error_spy.append(msg))
+        ctrl._enter_unrecoverable_mode("access violation writing 0x24")
+        assert ctrl._unrecoverable_mode is True
+        assert stopped_spy == [True]
+        assert len(error_spy) == 1
+        assert "restart" in error_spy[0].lower()
+
+    def test_usb_reset_worker_runs_off_main_thread(self, qt_app):
+        """USB reset blocks ~15s inside the Windows API; it must run on a
+        worker thread, not the Qt main thread, so the UI stays responsive."""
+        import threading, time
+        ctrl = self._build_controller()
+        ctrl.config.get = MagicMock(return_value='ZWO ASI676MC (Index: 0)')
+        main_thread_id = threading.get_ident()
+        worker_thread_id = {}
+        reset_started = threading.Event()
+        reset_completed = threading.Event()
+
+        def fake_disable_enable(camera_name, logger, **kw):
+            worker_thread_id['id'] = threading.get_ident()
+            reset_started.set()
+            # Simulate a slow USB reset. If _start_usb_reset_worker were
+            # synchronous, the caller would block here too.
+            time.sleep(0.2)
+            reset_completed.set()
+            return True
+
+        with patch('sys.platform', 'win32'), \
+                patch('services.usb_reset_win.is_usb_reset_available', return_value=True), \
+                patch('services.usb_reset_win.disable_enable_zwo_camera_usb',
+                      side_effect=fake_disable_enable):
+            t0 = time.time()
+            ctrl._start_usb_reset_worker()
+            # If the reset ran inline, this line wouldn't execute until after
+            # the 0.2s sleep. Assert the caller returned immediately.
+            assert time.time() - t0 < 0.1, "USB reset blocked the calling thread"
+            assert reset_started.wait(timeout=2.0), "worker did not start"
+            assert reset_completed.wait(timeout=2.0), "worker did not finish"
+        assert worker_thread_id.get('id') not in (None, main_thread_id)
+
+    def test_usb_reset_worker_skips_when_no_camera_name(self, qt_app):
+        ctrl = self._build_controller()
+        ctrl.config.get = MagicMock(return_value='')
+        ctrl._schedule_auto_recovery = MagicMock()
+        with patch('sys.platform', 'win32'):
+            ctrl._start_usb_reset_worker()
+        # Should fall through to scheduling a retry synchronously rather than
+        # spinning up a worker with no target.
+        ctrl._schedule_auto_recovery.assert_called_once()
+
+    def test_user_stop_clears_unrecoverable_state(self, qt_app):
+        ctrl = self._build_controller()
+        ctrl._unrecoverable_mode = True
+        ctrl._usb_reset_attempted = True
+        ctrl._suppress_discord_errors = True
+        ctrl._dying_camera = MagicMock()
+        ctrl.is_capturing = True
+        ctrl.zwo_camera = MagicMock()
+        ctrl.stop_capture()
+        assert ctrl._unrecoverable_mode is False
+        assert ctrl._usb_reset_attempted is False
+        assert ctrl._suppress_discord_errors is False
+        assert ctrl._dying_camera is None
+
+
 @pytest.mark.requires_camera
 class TestPhysicalCamera:
     """Tests that require actual camera hardware"""

@@ -472,7 +472,16 @@ class _MainWindowCaptureMixin:
             self.app_bar.camera_chip.set_status('error')
             self.app_bar.camera_chip.set_label('Camera Error')
 
-        self._send_discord_error(f"Camera Error: {error_msg}")
+        should_notify = (
+            self.camera_controller is None
+            or self.camera_controller.should_notify_discord()
+        )
+        if should_notify:
+            self._send_discord_error(f"Camera Error: {error_msg}")
+            if self.camera_controller is not None:
+                self.camera_controller.mark_discord_notified()
+        else:
+            app_logger.debug("Discord error suppressed")
 
     def _on_camera_capture_stopped(self):
         """Handle controller capture_stopped signal.
