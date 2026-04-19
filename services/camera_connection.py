@@ -9,12 +9,13 @@ import sys
 import time
 import threading
 from typing import Optional, List, Dict, Callable, Any
+from .camera_config import verify_camera_identity, configure_camera
 
 
 class CameraConnection:
     """
     Manages ZWO ASI SDK and camera connection lifecycle.
-    
+
     This class handles:
     - SDK initialization and reset
     - Camera detection and enumeration
@@ -22,49 +23,49 @@ class CameraConnection:
     - Camera configuration (gain, exposure, WB, etc.)
     - Safe reconnection after disconnects
     """
-    
+
     def __init__(self, sdk_path: Optional[str] = None, logger: Optional[Callable[[str], None]] = None):
         """
         Initialize connection manager.
-        
+
         Args:
             sdk_path: Path to ASICamera2.dll (optional, will search defaults)
             logger: Callback function for logging messages
         """
         self.sdk_path = sdk_path
         self._logger = logger
-        
+
         # SDK state
         self.asi = None
         self.camera = None
         self.cameras: List[Dict[str, Any]] = []
-        
+
         # Camera identification for reconnection
         self.camera_name: Optional[str] = None
         self.camera_index: int = 0
-        
+
         # Camera capabilities (populated on connect)
         self.camera_info: dict = {}
         self.supports_raw16: bool = False
         self.bit_depth: int = 8  # Sensor ADC bit depth
-        
+
         # Current capture mode
         self.current_image_type = None  # ASI_IMG_RAW8 or ASI_IMG_RAW16
         self.current_bit_depth: int = 8  # 8 for RAW8, 16 for RAW16
-        
+
         # Thread safety
         self._cleanup_lock = threading.Lock()
         self.sdk_lock = threading.Lock()  # Guards all SDK calls (capture vs disconnect race)
-        
+
         # Callback for persisting camera name to config
         self.config_callback: Optional[Callable[[str, Any], None]] = None
-        
+
         # USB reset capability (Windows only)
         self._usb_reset_available = False
         self._usb_reset_func = None
         self._usb_disable_enable_func = None
         self._init_usb_reset()
-    
+
     def log(self, message: str) -> None:
         """Log message via callback or app_logger"""
         if self._logger:
@@ -72,12 +73,12 @@ class CameraConnection:
         else:
             from .logger import app_logger
             app_logger.debug(message)
-    
+
     def _init_usb_reset(self) -> None:
         """Initialize USB reset capability (Windows only)"""
         if sys.platform != 'win32':
             return  # USB reset only supported on Windows
-        
+
         try:
             from .usb_reset_win import (
                 reset_zwo_camera_usb, disable_enable_zwo_camera_usb,
@@ -94,7 +95,7 @@ class CameraConnection:
             self.log(f"⚠ USB reset module not available: {e}")
         except Exception as e:
             self.log(f"⚠ Error initializing USB reset: {e}")
-    
+
     @staticmethod
     def _is_running_as_admin() -> bool:
         """Check if the current process has Administrator privileges."""
@@ -103,15 +104,15 @@ class CameraConnection:
             return ctypes.windll.shell32.IsUserAnAdmin() != 0
         except Exception:
             return False
-    
+
     # =========================================================================
     # SDK Initialization
     # =========================================================================
-    
+
     def initialize_sdk(self) -> bool:
         """
         Initialize the ZWO ASI SDK.
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -120,7 +121,7 @@ class CameraConnection:
             import zwoasi as asi
             self.asi = asi
             self.log("zwoasi module imported successfully")
-            
+
             if self.sdk_path and os.path.exists(self.sdk_path):
                 self.log(f"Attempting SDK init with configured path: {self.sdk_path}")
                 asi.init(self.sdk_path)
@@ -136,9 +137,9 @@ class CameraConnection:
                     self.log("ERROR: ASICamera2.dll not found in application directory")
                     self.log("Please configure SDK path in Capture tab settings")
                     return False
-            
+
             return True
-        
+
         except ImportError as e:
             self.log(f"ERROR: zwoasi library not installed: {e}")
             self.log("Run: pip install zwoasi")
@@ -148,64 +149,64 @@ class CameraConnection:
             import traceback
             self.log(f"Stack trace: {traceback.format_exc()}")
             return False
-    
+
     def reset_sdk_completely(self) -> bool:
         """
         Completely reset the SDK state (nuclear option).
         Use this when SDK gets into an inconsistent state.
-        
+
         Returns:
             True if successful, False otherwise
         """
         self.log("=== Complete SDK Reset ===")
-        
+
         try:
             # Close camera if connected
             if self.camera:
                 self.log("Disconnecting camera before SDK reset...")
                 self.disconnect()
-            
+
             # Clear SDK reference
             self.log("Clearing SDK reference...")
             self.asi = None
-            
+
             # Wait for cleanup
             time.sleep(1.0)
-            
+
             # Reinitialize SDK
             self.log("Reinitializing SDK...")
             if not self.initialize_sdk():
                 self.log("✗ SDK reinitialization failed")
                 return False
-            
+
             self.log("✓ SDK reset complete")
             return True
-            
+
         except Exception as e:
             self.log(f"✗ ERROR during SDK reset: {e}")
             import traceback
             self.log(f"Stack trace: {traceback.format_exc()}")
             return False
-    
+
     # =========================================================================
     # Camera Detection
     # =========================================================================
-    
+
     def detect_cameras(self) -> List[Dict[str, Any]]:
         """
         Detect connected ZWO cameras.
-        
+
         Returns:
             List of camera info dicts with 'index' and 'name' keys
         """
         self.log("=== Starting Camera Detection ===")
-        
+
         if not self.asi:
             self.log("SDK not initialized, initializing now...")
             if not self.initialize_sdk():
                 self.log("Camera detection failed: SDK initialization failed")
                 return []
-        
+
         try:
             self.log("Querying SDK for number of connected cameras...")
             num_cameras = self.asi.get_num_cameras()
@@ -256,11 +257,11 @@ class CameraConnection:
             import traceback
             self.log(f"Stack trace: {traceback.format_exc()}")
             return []
-    
+
     # =========================================================================
     # Camera Connection
     # =========================================================================
-    
+
     def connect(self, camera_index: int = 0, settings: Optional[Dict[str, Any]] = None,
                 expected_camera_name: Optional[str] = None,
                 post_recovery: bool = False) -> bool:
@@ -339,7 +340,7 @@ class CameraConnection:
                     else:
                         # Final attempt failed - re-raise the exception
                         raise
-            
+
             camera_info = self.camera.get_camera_property()
             actual_name = camera_info['Name']
 
@@ -381,15 +382,15 @@ class CameraConnection:
             self.log(f"  Pixel Size: {camera_info['PixelSize']} µm")
             self.log(f"  Sensor ADC: {self.bit_depth}-bit")
             self.log(f"  RAW16 Support: {'Yes' if self.supports_raw16 else 'No'}")
-            
+
             # Get controls info
             controls = self.camera.get_controls()
             self.log(f"  Available controls: {len(controls)}")
-            
+
             # Brief stabilization delay - camera needs time to fully initialize
             # This helps prevent "Camera closed" errors immediately after connection
             time.sleep(0.3)
-            
+
             # Apply settings if provided (sets ROI, gain, exposure, etc.)
             if settings:
                 self.configure(settings)
@@ -408,21 +409,21 @@ class CameraConnection:
                 )
                 self.camera.set_image_type(self.asi.ASI_IMG_RAW8)
                 self.log(f"  ROI: Full frame {camera_info['MaxWidth']}x{camera_info['MaxHeight']}")
-            
+
             self.log(f"✓ Camera connection successful")
             return True
-        
+
         except Exception as e:
             self.log(f"✗ ERROR connecting to camera: {e}")
             import traceback
             self.log(f"Stack trace: {traceback.format_exc()}")
-            
+
             # Add diagnostic information for "Invalid ID" errors
             if "Invalid ID" in str(e):
                 self._log_invalid_id_diagnostics(camera_index)
-            
+
             return False
-    
+
     def _log_invalid_id_diagnostics(self, camera_index: int) -> None:
         """Log diagnostic information for Invalid ID errors"""
         self.log("=== Diagnostic Information ===")
@@ -432,7 +433,7 @@ class CameraConnection:
         self.log("  2. SDK is in an inconsistent state")
         self.log("  3. Camera index changed (hot plug event)")
         self.log("Recommended action: Try stopping/restarting the application")
-        
+
         # Try to get current camera list for diagnostics
         try:
             num_cameras = self.asi.get_num_cameras()
@@ -442,7 +443,7 @@ class CameraConnection:
                 self.log(f"  Camera {idx}: {name}")
         except Exception as diag_err:
             self.log(f"  Could not query camera list for diagnostics: {diag_err}")
-    
+
     def _wait_for_stable_detection(self, camera_name: str,
                                     timeout_sec: float = 10.0,
                                     poll_interval: float = 2.0) -> Optional[int]:
@@ -462,35 +463,17 @@ class CameraConnection:
         Returns:
             Stable camera index, or None if not seen stably within timeout.
         """
-        deadline = time.time() + timeout_sec
-        last_index: Optional[int] = None
-
-        while time.time() < deadline:
-            detected = self.detect_cameras()
-            if detected:
-                idx = self._find_camera_index_by_name(detected, camera_name)
-                if idx is not None and idx == last_index:
-                    self.log(f"  ✓ Target stable at index {idx}")
-                    return idx
-                last_index = idx
-            else:
-                last_index = None
-            try:
-                time.sleep(poll_interval)
-            except OSError:
-                return None
-
-        self.log(f"  ⚠ Target not stably detected within {timeout_sec}s")
-        return last_index  # Best effort — caller can still try this index
+        from .camera_reconnect import wait_for_stable_detection
+        return wait_for_stable_detection(self, camera_name, timeout_sec, poll_interval)
 
     def _find_camera_index_by_name(self, cameras: List[Dict[str, Any]], camera_name: str) -> Optional[int]:
         """
         Find camera index by exact name match.
-        
+
         Args:
             cameras: List of detected cameras with 'index' and 'name' keys
             camera_name: Name of camera to find
-            
+
         Returns:
             Camera index if found, None if not found
         """
@@ -498,17 +481,17 @@ class CameraConnection:
             if camera_name in cam['name']:
                 self.log(f"✓ Found camera '{camera_name}' at index {cam['index']}")
                 return cam['index']
-        
+
         # Log available cameras for debugging
         self.log(f"✗ Camera '{camera_name}' not found in detected cameras:")
         for cam in cameras:
             self.log(f"  - [{cam['index']}] {cam['name']}")
         return None
-    
+
     def _find_camera_index(self, cameras: List[Dict[str, Any]], camera_name: Optional[str]) -> int:
         """
         Find camera index by name, or return first camera index if no name specified.
-        
+
         NOTE: This method is for initial connection when no specific camera is required.
         For reconnection, use _find_camera_index_by_name() which enforces strict matching.
         """
@@ -518,17 +501,17 @@ class CameraConnection:
                     self.log(f"✓ Found camera '{camera_name}' at index {cam['index']}")
                     return cam['index']
             self.log(f"⚠ Warning: Could not find camera '{camera_name}' by name")
-        
+
         # Fall back to first camera (only for initial connection, not reconnection)
         self.log(f"Using first available camera at index {cameras[0]['index']}: {cameras[0]['name']}")
         return cameras[0]['index']
-    
+
     def reconnect_safe(self, target_camera_name: Optional[str] = None,
                        settings: Optional[Dict[str, Any]] = None,
                        allow_fallback: bool = False) -> bool:
         """
         Safely reconnect to camera by re-detecting available cameras first.
-        
+
         Args:
             target_camera_name: Name of camera to reconnect to (defaults to last connected)
             settings: Camera settings dict to apply after reconnection (ROI, gain, etc.)
@@ -536,300 +519,48 @@ class CameraConnection:
                      resolution mismatch and reshape errors during capture.
             allow_fallback: If False (default), reconnection fails if target camera not found.
                            If True, falls back to first available camera.
-                           
+
         Returns:
             True if reconnection successful, False otherwise
-            
+
         IMPORTANT: By default, this method will NOT connect to a different camera
         if the target camera is not found. This prevents accidentally connecting
         to the wrong camera when the originally-selected camera loses power or
         is disconnected.
         """
-        self.log("=== Safe Camera Reconnection ===")
-        camera_to_find = target_camera_name or self.camera_name
-        
-        if camera_to_find:
-            self.log(f"Target camera: '{camera_to_find}'")
-        else:
-            self.log("No target camera name specified - will use first available")
-        
-        # --- Detection Phase ---
-        # Detect cameras, then check if our TARGET camera is present.
-        # Other cameras being visible (e.g. guide camera) doesn't help us.
-        detected = self.detect_cameras()
-        target_found = False
-        # post_recovery flips True only if we needed disable/enable and it worked;
-        # tells connect() to use the longer retry schedule for driver settle.
-        post_recovery = False
+        from .camera_reconnect import reconnect_safe as reconnect_safe_impl
+        return reconnect_safe_impl(self, target_camera_name, settings, allow_fallback)
 
-        if detected and camera_to_find:
-            target_index = self._find_camera_index_by_name(detected, camera_to_find)
-            target_found = target_index is not None
-        elif detected:
-            target_found = True  # No specific target, any camera will do
-        
-        # --- Recovery Phase ---
-        # Trigger recovery if target camera is NOT in the detected list,
-        # even if other cameras (guide cam, etc.) are visible.
-        if not target_found and camera_to_find:
-            other_cams = [c['name'] for c in detected] if detected else []
-            if other_cams:
-                self.log(f"⚠ Target camera '{camera_to_find}' not found (other cameras visible: {', '.join(other_cams)})")
-            else:
-                self.log("✗ No cameras detected at all")
-            self.log("Attempting recovery steps for missing camera...")
-            
-            # Step 1: Try soft USB re-enumeration (Windows only)
-            if self._usb_reset_available:
-                self.log("Step 1: Attempting USB device soft reset...")
-                try:
-                    if self._usb_reset_func(camera_name=camera_to_find, logger=self.log):
-                        self.log("✓ USB soft reset completed, waiting for re-enumeration...")
-                        time.sleep(2)
-                    else:
-                        self.log("⚠ USB soft reset failed or not applicable")
-                except Exception as e:
-                    self.log(f"⚠ USB soft reset error: {e}")
-            
-            # Step 2: SDK reset + re-detect
-            self.log("Step 2: Attempting SDK reset...")
-            self.asi = None
-            if self.initialize_sdk():
-                detected = self.detect_cameras()
-                if detected:
-                    target_index = self._find_camera_index_by_name(detected, camera_to_find)
-                    target_found = target_index is not None
-                    if target_found:
-                        self.log(f"✓ Target camera recovered after SDK reset")
-            
-            # Step 3: Aggressive USB disable/enable (Device Manager style)
-            if not target_found and self._usb_disable_enable_func:
-                self.log("Step 3: Attempting USB device disable/enable (Device Manager reset)...")
-                self.log("This replicates: Device Manager > Disable > Wait 15s > Enable")
-                try:
-                    if self._usb_disable_enable_func(
-                        camera_name=camera_to_find,
-                        disable_seconds=15,
-                        logger=self.log
-                    ):
-                        self.log("✓ USB disable/enable completed, reinitializing SDK...")
-                        self.asi = None
-                        if self.initialize_sdk():
-                            # Detection-settle: SDK may briefly report the
-                            # camera before it's stable. Poll until we see
-                            # the target name twice in a row at the same
-                            # index, or give up after ~10s.
-                            target_index = self._wait_for_stable_detection(
-                                camera_to_find, timeout_sec=10
-                            )
-                            target_found = target_index is not None
-                            if target_found:
-                                self.log(f"✓ Camera recovered via disable/enable!")
-                                post_recovery = True
-                                # Refresh the local `detected` view so the
-                                # post-recovery index lookup below doesn't
-                                # key off the stale pre-recovery list (which
-                                # didn't include the target).
-                                detected = self.cameras
-                    else:
-                        self.log("⚠ USB disable/enable failed or not applicable")
-                except Exception as e:
-                    self.log(f"⚠ USB disable/enable error: {e}")
-            
-            # All recovery failed
-            if not target_found:
-                self.log("✗ All recovery attempts failed")
-                if self._usb_disable_enable_func and not self._is_running_as_admin():
-                    self.log("⚠ USB disable/enable was skipped because app is not running as Administrator")
-                    self.log("  To enable full recovery: right-click app shortcut > Properties > Compatibility > 'Run as administrator'")
-                if not allow_fallback:
-                    self.log(f"✗ RECONNECTION FAILED: Target camera '{camera_to_find}' not found")
-                    self.log("The originally-selected camera is not available.")
-                    self.log("⚠ Camera may require physical disconnect/reconnect or")
-                    self.log("  Device Manager > Disable device > wait 15s > Enable device")
-                    return False
-                else:
-                    if detected:
-                        self.log(f"⚠ Falling back to first available camera")
-                        target_index = detected[0]['index']
-                    else:
-                        self.log("✗ No cameras available at all")
-                        return False
-        
-        elif not detected:
-            # No cameras at all and no specific target to recover
-            self.log("✗ No cameras detected")
-            return False
-        
-        # If we have no target_index yet (no recovery was needed), find it
-        if camera_to_find and target_found:
-            target_index = self._find_camera_index_by_name(detected, camera_to_find)
-        elif not camera_to_find:
-            target_index = detected[0]['index']
-            self.log(f"Using first available camera at index {target_index}")
-        
-        self.camera_index = target_index
-
-        # Connect with settings (with SDK reset fallback on failure).
-        # post_recovery extends the per-open retry budget when we just came
-        # out of a disable/enable cycle — the driver may still be binding.
-        if self.connect(target_index, settings,
-                        expected_camera_name=camera_to_find,
-                        post_recovery=post_recovery):
-            return True
-
-        self.log("⚠ Connection failed, attempting complete SDK reset...")
-        if not self.reset_sdk_completely():
-            return False
-
-        detected = self.detect_cameras()
-        if not detected:
-            self.log("✗ No cameras detected after SDK reset")
-            return False
-
-        # Strict matching again after SDK reset
-        if camera_to_find:
-            target_index = self._find_camera_index_by_name(detected, camera_to_find)
-            if target_index is None:
-                if allow_fallback:
-                    target_index = detected[0]['index']
-                else:
-                    self.log(f"✗ Target camera '{camera_to_find}' still not found after SDK reset")
-                    return False
-        else:
-            target_index = detected[0]['index']
-
-        self.camera_index = target_index
-        return self.connect(target_index, settings, expected_camera_name=camera_to_find)
-    
     # =========================================================================
     # Camera Configuration
     # =========================================================================
-    
-    def _validate_control(self, controls, control_type, value, name):
-        """Validate and clamp a control value to camera's supported range."""
-        ctrl = next((c for c in controls.values() if c['ControlType'] == control_type), None)
-        if ctrl:
-            validated = max(ctrl['MinValue'], min(ctrl['MaxValue'], value))
-            if validated != value:
-                self.log(f"  ⚠ {name} {value} out of range [{ctrl['MinValue']}-{ctrl['MaxValue']}], using {validated}")
-            return validated, ctrl
-        return value, None
 
     def verify_identity(self) -> bool:
-        """
-        Verify the open camera handle still points to the expected physical camera.
-        Returns True if identity matches, False if mismatch or no camera.
-        """
-        if not self.camera or not self.camera_name:
-            return False
-        try:
-            actual_name = self.camera.get_camera_property()['Name']
-            if self.camera_name not in actual_name:
-                self.log(
-                    f"✗ Camera identity MISMATCH: expected '{self.camera_name}', "
-                    f"SDK returned '{actual_name}'. Refusing operation."
-                )
-                return False
-            return True
-        except Exception as e:
-            self.log(f"✗ Camera identity check failed: {e}")
-            return False
+        """Verify the open camera handle still points to the expected physical camera."""
+        return verify_camera_identity(self.camera, self.camera_name, self.log)
 
     def configure(self, settings: Dict[str, Any]) -> None:
         """Configure camera settings."""
         if not self.camera:
             self.log("Cannot configure: camera not connected")
             return
-        
         self.log("Configuring camera settings...")
-
         try:
-            if not self.verify_identity():
+            if not verify_camera_identity(self.camera, self.camera_name, self.log):
                 self.log("Aborting configure — camera identity mismatch")
                 return
-
-            camera_info = self.camera.get_camera_property()
-            controls = self.camera.get_controls()
-            
-            # Set gain with range validation
-            if 'gain' in settings:
-                gain, ctrl = self._validate_control(controls, self.asi.ASI_GAIN, settings['gain'], "Gain")
-                self.camera.set_control_value(self.asi.ASI_GAIN, gain)
-                rng = f" (range: {ctrl['MinValue']}-{ctrl['MaxValue']})" if ctrl else ""
-                self.log(f"  Gain: {gain}{rng}")
-            
-            # Set exposure with range validation
-            if 'exposure_sec' in settings:
-                exposure_us = int(settings['exposure_sec'] * 1000000)
-                exposure_us, ctrl = self._validate_control(controls, self.asi.ASI_EXPOSURE, exposure_us, "Exposure")
-                self.camera.set_control_value(self.asi.ASI_EXPOSURE, exposure_us)
-                self.log(f"  Exposure: {exposure_us/1000000}s ({exposure_us/1000}ms)")
-            
-            # Configure white balance
-            self._configure_white_balance(settings)
-            
-            # Set other controls
-            self.camera.set_control_value(self.asi.ASI_BANDWIDTHOVERLOAD, 40)
-            if 'offset' in settings:
-                self.camera.set_control_value(self.asi.ASI_BRIGHTNESS, settings['offset'])
-            
-            # Set flip
-            flip = settings.get('flip', 0)
-            if flip in (1, 3):
-                self.camera.set_control_value(self.asi.ASI_FLIP, 1)
-            if flip in (2, 3):
-                self.camera.set_control_value(self.asi.ASI_FLIP, 2)
-            
-            # Determine image type (RAW8 or RAW16)
-            use_raw16 = settings.get('use_raw16', False) and self.supports_raw16
-            image_type = self.asi.ASI_IMG_RAW16 if use_raw16 else self.asi.ASI_IMG_RAW8
+            image_type, bit_depth = configure_camera(
+                self.camera, self.asi, settings, self.supports_raw16, self.log
+            )
             self.current_image_type = image_type
-            self.current_bit_depth = 16 if use_raw16 else 8
-            
-            # Set ROI to full frame — required on every connect because the SDK can
-            # retain a stale ROI from a prior session, causing reshape failures.
-            self.camera.set_roi(start_x=0, start_y=0, width=camera_info['MaxWidth'],
-                               height=camera_info['MaxHeight'], bins=1, image_type=image_type)
-            self.camera.set_image_type(image_type)
-            
-            mode_str = "RAW16" if use_raw16 else "RAW8"
-            self.log(f"  ROI: Full frame {camera_info['MaxWidth']}x{camera_info['MaxHeight']} ({mode_str})")
-            self.log("Camera configuration applied")
-            
+            self.current_bit_depth = bit_depth
         except Exception as e:
             self.log(f"Error configuring camera: {e}")
-    
-    def _configure_white_balance(self, settings: Dict[str, Any]) -> None:
-        """Configure white balance based on mode."""
-        wb_mode = settings.get('wb_mode', 'asi_auto')
-        
-        if wb_mode == 'asi_auto':
-            try:
-                self.camera.set_control_value(self.asi.ASI_AUTO_MAX_BRIGHTNESS, 1)
-                self.log("  White balance: ASI Auto")
-            except Exception:
-                pass
-        else:
-            try:
-                self.camera.set_control_value(self.asi.ASI_AUTO_MAX_BRIGHTNESS, 0)
-            except Exception:
-                pass
-            
-            if wb_mode == 'manual':
-                wb_r, wb_b = settings.get('wb_r', 75), settings.get('wb_b', 99)
-                self.camera.set_control_value(self.asi.ASI_WB_R, wb_r)
-                self.camera.set_control_value(self.asi.ASI_WB_B, wb_b)
-                self.log(f"  White balance: Manual (R={wb_r}, B={wb_b})")
-            elif wb_mode == 'gray_world':
-                self.camera.set_control_value(self.asi.ASI_WB_R, 50)
-                self.camera.set_control_value(self.asi.ASI_WB_B, 50)
-                self.log("  White balance: Gray World (software)")
-    
+
     # =========================================================================
     # Camera Disconnection
     # =========================================================================
-    
+
     def disconnect(self, stop_exposure_callback: Optional[Callable[[], None]] = None) -> None:
         """
         Disconnect from camera gracefully (idempotent - safe to call multiple times).
@@ -895,22 +626,22 @@ class CameraConnection:
                 # Always clear camera reference even if close failed
                 self.camera = None
                 self.log("Camera reference cleared")
-    
+
     # =========================================================================
     # Properties
     # =========================================================================
-    
+
     @property
     def is_connected(self) -> bool:
         """Check if camera is connected"""
         return self.camera is not None
-    
+
     def get_camera_property(self) -> Optional[Dict[str, Any]]:
         """Get camera properties if connected"""
         if self.camera:
             return self.camera.get_camera_property()
         return None
-    
+
     def get_controls(self) -> Optional[Dict[str, Any]]:
         """Get camera controls if connected"""
         if self.camera:

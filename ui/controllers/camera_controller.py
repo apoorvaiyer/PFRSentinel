@@ -5,8 +5,9 @@ Adapter between PySide6 UI and existing ZWO camera service.
 Uses ZWOCamera.start_capture() with callbacks - NO reimplementation of capture logic.
 All auto-exposure, calibration, scheduled windows, etc. are handled by ZWOCamera.
 """
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 from datetime import datetime
+import time
 
 import sys
 import os
@@ -39,7 +40,15 @@ class CameraControllerQt(QObject):
         self.zwo_camera = None
         self.is_connected = False
         self.is_capturing = False
-    
+
+        # 24/7 rigs: without auto-recovery a single SDK wedge ends captures
+        # for the night. See _schedule_auto_recovery.
+        self._user_requested_stop = False
+        self._auto_recovery_attempts = 0
+        self._auto_recovery_schedule = [30, 120, 300, 900, 1800]
+        self._auto_recovery_timer: QTimer | None = None
+        self._last_successful_frame_ts = 0.0
+
     def detect_cameras(self):
         """Detect connected ZWO cameras"""
         app_logger.info("Detecting cameras...")
@@ -168,7 +177,10 @@ class CameraControllerQt(QObject):
         """Start camera capture using ZWOCamera's built-in capture loop"""
         if self.is_capturing:
             return
-        
+
+        self._cancel_auto_recovery_timer()
+        self._user_requested_stop = False
+
         try:
             sdk_path = self.config.get('zwo_sdk_path', '')
             saved_camera_index = self.config.get('zwo_selected_camera', 0)
@@ -295,12 +307,17 @@ class CameraControllerQt(QObject):
             app_logger.debug(f"Stack trace: {traceback.format_exc()}")
             from services.posthog_service import capture_error
             capture_error(e, context='camera_start')
-            return  # Prevent any further execution
+            if not self._user_requested_stop:
+                self._schedule_auto_recovery()
+            return
     
     def stop_capture(self):
         """Stop camera capture"""
         if not self.is_capturing:
             return
+
+        self._user_requested_stop = True
+        self._cancel_auto_recovery_timer()
 
         try:
             # Update state immediately for responsive UI
@@ -349,7 +366,17 @@ class CameraControllerQt(QObject):
         
         # Emit signal (thread-safe way to update Qt UI)
         self.frame_ready.emit(pil_image, metadata)
-        
+
+        # Reset the retry budget after a sustained stream — otherwise a rig
+        # that wedges once a day eventually exhausts attempts despite every
+        # recovery succeeding.
+        now = time.time()
+        if self._auto_recovery_attempts and self._last_successful_frame_ts:
+            if now - self._last_successful_frame_ts > 300:
+                app_logger.info("Sustained capture stream — resetting auto-recovery counter")
+                self._auto_recovery_attempts = 0
+        self._last_successful_frame_ts = now
+
         # Also notify main window directly
         if self.main_window:
             self.main_window.on_image_captured(pil_image, metadata)
@@ -375,6 +402,59 @@ class CameraControllerQt(QObject):
             self.is_connected = False
             self.zwo_camera = None
             self.capture_stopped.emit()
+            if not self._user_requested_stop:
+                self._schedule_auto_recovery()
+
+    def _schedule_auto_recovery(self):
+        # Schedule clamps at the final interval rather than stopping — on a
+        # 24/7 rig, keep trying forever is better than giving up.
+        idx = min(self._auto_recovery_attempts, len(self._auto_recovery_schedule) - 1)
+        delay_s = self._auto_recovery_schedule[idx]
+        self._auto_recovery_attempts += 1
+
+        app_logger.warning(
+            f"Auto-recovery: scheduling capture restart in {delay_s}s "
+            f"(attempt #{self._auto_recovery_attempts})"
+        )
+
+        self._cancel_auto_recovery_timer()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._on_auto_recovery_fire)
+        timer.start(delay_s * 1000)
+        self._auto_recovery_timer = timer
+
+    def _cancel_auto_recovery_timer(self):
+        if self._auto_recovery_timer is not None:
+            try:
+                self._auto_recovery_timer.stop()
+            except Exception:
+                pass
+            self._auto_recovery_timer.deleteLater()
+            self._auto_recovery_timer = None
+
+    def _on_auto_recovery_fire(self):
+        self._auto_recovery_timer = None
+
+        if self._user_requested_stop:
+            app_logger.info("Auto-recovery: user stop requested — cancelled")
+            return
+        if self.is_capturing:
+            app_logger.info("Auto-recovery: capture already running — cancelled")
+            return
+
+        app_logger.info(
+            f"Auto-recovery: attempting capture restart "
+            f"(attempt #{self._auto_recovery_attempts})"
+        )
+        try:
+            self.start_capture()
+        except Exception as e:
+            # Safety net: start_capture's except block already re-schedules,
+            # but if the exception escaped before that block (e.g. import
+            # failure), keep the recovery chain alive.
+            app_logger.error(f"Auto-recovery restart raised: {e}")
+            self._schedule_auto_recovery()
     
     def _on_calibration_status(self, is_calibrating: bool):
         """Callback from ZWOCamera when calibration status changes
