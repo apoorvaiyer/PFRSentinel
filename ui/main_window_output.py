@@ -1,0 +1,410 @@
+import io
+import os
+import random
+import traceback
+from datetime import datetime
+
+from PySide6.QtCore import QTimer
+
+from services.logger import app_logger
+from services.web_output import WebOutputServer
+
+
+class _MainWindowOutputMixin:
+
+    # =========================================================================
+    # DISCORD HELPERS
+    # =========================================================================
+
+    def _on_test_discord(self):
+        discord_config = self.config.get('discord', {})
+        webhook_url = discord_config.get('webhook_url', '')
+
+        if not webhook_url:
+            self.output_panel.set_discord_test_result(False, "Webhook URL required")
+            return
+
+        try:
+            from services.discord_alerts import DiscordAlerts
+
+            test_config = {
+                'discord': {
+                    'enabled': True,
+                    'webhook_url': webhook_url,
+                    'embed_color_hex': discord_config.get('embed_color_hex', '#0EA5E9'),
+                    'username_override': discord_config.get('username_override', ''),
+                    'avatar_url': discord_config.get('avatar_url', ''),
+                    'include_latest_image': False
+                }
+            }
+            alerts = DiscordAlerts(test_config)
+
+            success = alerts.send_discord_message(
+                title="🧪 Webhook Test",
+                description="PFR Sentinel webhook test successful!",
+                level="success"
+            )
+
+            if success:
+                self.output_panel.set_discord_test_result(True, "Test message sent!")
+                app_logger.info("Discord test message sent successfully")
+            else:
+                self.output_panel.set_discord_test_result(False, alerts.last_send_status)
+                app_logger.warning(f"Discord test failed: {alerts.last_send_status}")
+
+        except Exception as e:
+            app_logger.error(f"Discord test error: {e}")
+            self.output_panel.set_discord_test_result(False, str(e)[:50])
+
+    def _send_discord_startup(self):
+        try:
+            discord_config = self.config.get('discord', {})
+            if not discord_config.get('enabled', False):
+                return
+
+            if not discord_config.get('startup_enabled', True):
+                return
+
+            from services.discord_alerts import DiscordAlerts
+            alerts = DiscordAlerts(self.config)
+
+            if alerts.is_enabled():
+                alerts.send_startup_message()
+                app_logger.info("Discord startup notification sent")
+        except Exception as e:
+            app_logger.error(f"Failed to send Discord startup notification: {e}")
+
+    def _send_discord_error(self, error_msg: str):
+        try:
+            discord_config = self.config.get('discord', {})
+            if not discord_config.get('enabled', False):
+                return
+
+            # Check post_errors setting (config key is 'post_errors', not 'error_enabled')
+            if not discord_config.get('post_errors', False):
+                return
+
+            from services.discord_alerts import DiscordAlerts
+            alerts = DiscordAlerts(self.config)
+
+            if alerts.is_enabled():
+                alerts.send_error_message(error_msg)
+                app_logger.debug("Discord error notification sent")
+        except Exception as e:
+            app_logger.error(f"Failed to send Discord error notification: {e}")
+
+    def _send_discord_shutdown(self):
+        try:
+            discord_config = self.config.get('discord', {})
+            if not discord_config.get('enabled', False):
+                return
+
+            if not discord_config.get('post_startup_shutdown', False):
+                return
+
+            from services.discord_alerts import DiscordAlerts
+            alerts = DiscordAlerts(self.config)
+
+            if alerts.is_enabled():
+                alerts.send_shutdown_message()
+                app_logger.info("Discord shutdown notification sent")
+        except Exception as e:
+            app_logger.error(f"Failed to send Discord shutdown notification: {e}")
+
+    # =========================================================================
+    # IMAGE HANDLING
+    # =========================================================================
+
+    def on_image_captured(self, pil_image, metadata: dict):
+        """Handle new captured image from camera or watch mode
+
+        This receives RAW images and sends them to the image processor
+        for auto-stretch, brightness, overlays, and saving.
+        """
+        self.image_count += 1
+        self.app_bar.update_image_count(self.image_count)
+
+        # Cache raw frame so image-processing settings changes can
+        # reprocess without waiting for the next exposure.
+        # The metadata dict is shallow-copied so processor pops don't
+        # remove keys from our cache (numpy arrays are shared, not duped).
+        self._cached_raw_image = pil_image.copy()
+        self._cached_raw_metadata = metadata.copy()
+
+        auto_stretch_enabled = self.config.get('auto_stretch', {}).get('enabled', False)
+        if auto_stretch_enabled:
+            self.app_bar.set_status('stretching')
+        else:
+            self.app_bar.set_status('processing')
+
+        self.image_processor.process_and_save(pil_image, metadata)
+
+        self.image_captured.emit(pil_image)
+
+    def reprocess_last_frame(self):
+        """Reprocess the cached raw frame with current settings.
+
+        Called when image-processing or overlay settings change so the user
+        sees the effect immediately instead of waiting for the next exposure.
+        Debounced to 500ms so slider drags don't queue dozens of reprocesses.
+        """
+        if self._cached_raw_image is None:
+            return
+
+        # Debounce: restart the timer on every call, fire only once after 500ms idle
+        if not hasattr(self, '_reprocess_timer'):
+            self._reprocess_timer = QTimer(self)
+            self._reprocess_timer.setSingleShot(True)
+            self._reprocess_timer.timeout.connect(self._do_reprocess)
+        self._reprocess_timer.start(500)
+
+    def _do_reprocess(self):
+        if self._cached_raw_image is None:
+            return
+
+        app_logger.debug("Reprocessing last frame with updated settings")
+
+        auto_stretch_enabled = self.config.get('auto_stretch', {}).get('enabled', False)
+        if auto_stretch_enabled:
+            self.app_bar.set_status('stretching')
+        else:
+            self.app_bar.set_status('processing')
+
+        self.image_processor.process_and_save(
+            self._cached_raw_image, self._cached_raw_metadata
+        )
+
+    def _on_image_processed(self, processed_image, metadata: dict, output_path: str):
+        try:
+            self.last_processed_image = output_path
+            self.preview_metadata = metadata
+
+            self.live_panel.update_preview(processed_image, metadata)
+
+            output_config = self.config.get('output', {})
+            discord_config = self.config.get('discord', {})
+            has_outputs = (
+                output_config.get('webserver_enabled', False) or
+                discord_config.get('enabled', False)
+            )
+
+            if has_outputs:
+                self.app_bar.set_status('sending')
+                self._push_to_output_servers(output_path, processed_image)
+
+                if self.is_capturing:
+                    QTimer.singleShot(300, lambda: self.app_bar.set_status('waiting'))
+                else:
+                    QTimer.singleShot(300, lambda: self.app_bar.set_status(None))
+            else:
+                if self.is_capturing:
+                    self.app_bar.set_status('waiting')
+                else:
+                    self.app_bar.set_status(None)
+
+            app_logger.debug(f"Image processed: {os.path.basename(output_path)}")
+        except Exception as e:
+            app_logger.error(f"_on_image_processed crashed: {e}")
+            app_logger.error(traceback.format_exc())
+
+    def _on_preview_ready(self, preview_image, hist_data: dict):
+        try:
+            if hist_data:
+                app_logger.debug(f"Histogram data received: r={len(hist_data.get('r', []))}, auto_exposure={hist_data.get('auto_exposure')}, target={hist_data.get('target_brightness')}")
+                self.live_panel.histogram.update_from_data(hist_data)
+            else:
+                app_logger.warning("No histogram data received from processor")
+        except Exception as e:
+            app_logger.error(f"_on_preview_ready crashed: {e}")
+            app_logger.error(traceback.format_exc())
+
+    def _on_processing_error(self, error_msg: str):
+        self.app_bar.set_status(None)
+        app_logger.error(f"Image processing error: {error_msg}")
+
+    def on_calibration_status(self, is_calibrating: bool):
+        """Handle calibration status change from camera
+
+        Args:
+            is_calibrating: True when calibration starts, False when complete
+        """
+        if is_calibrating:
+            self.app_bar.set_status('calibrating')
+            app_logger.debug("Calibration started")
+        else:
+            self.app_bar.set_status('waiting')
+            app_logger.debug("Calibration complete")
+
+    # =========================================================================
+    # OUTPUT SERVER MANAGEMENT
+    # =========================================================================
+
+    def _ensure_output_servers_started(self):
+        output_config = self.config.get('output', {})
+
+        if output_config.get('webserver_enabled', False):
+            if not self.web_server or not self.web_server.running:
+                self._start_web_server()
+
+    def _start_web_server(self):
+        output_config = self.config.get('output', {})
+
+        host = output_config.get('webserver_host', '127.0.0.1')
+        port = output_config.get('webserver_port', 8080)
+        image_path = output_config.get('webserver_path', '/latest')
+        status_path = output_config.get('webserver_status_path', '/status')
+
+        self.web_server = WebOutputServer(host, port, image_path, status_path)
+        if self.web_server.start():
+            url = self.web_server.get_url()
+            status_url = self.web_server.get_status_url()
+            app_logger.info(f"Web server started: {url}")
+            app_logger.info(f"Status endpoint: {status_url}")
+            self._notify(f"Web server started: {url}")
+            self.app_bar.set_web_status(True, True)
+        else:
+            app_logger.error("Failed to start web server")
+            self._notify("Web server failed to start", "error")
+            self.web_server = None
+            self.app_bar.set_web_status(True, False)
+
+    def _stop_web_server(self):
+        if self.web_server:
+            try:
+                self.web_server.stop()
+                self.web_server = None
+                app_logger.info("Web server stopped")
+                self.app_bar.set_web_status(False, False)
+            except Exception as e:
+                app_logger.error(f"Error stopping web server: {e}")
+
+    def _push_to_output_servers(self, image_path: str, processed_img):
+        try:
+            if self.web_server and self.web_server.running:
+                img_bytes = io.BytesIO()
+
+                output_config = self.config.get('output', {})
+                output_format = output_config.get('output_format', 'PNG').upper()
+
+                if output_format in ('JPG', 'JPEG'):
+                    quality = output_config.get('jpg_quality', 85)
+                    processed_img.save(img_bytes, format='JPEG', quality=quality, optimize=True)
+                    content_type = 'image/jpeg'
+                else:
+                    processed_img.save(img_bytes, format='PNG', optimize=True)
+                    content_type = 'image/png'
+
+                self.web_server.update_image(
+                    image_path,
+                    img_bytes.getvalue(),
+                    metadata=self.preview_metadata,
+                    content_type=content_type
+                )
+                app_logger.debug(f"Pushed image to web server ({content_type})")
+
+            discord_config = self.config.get('discord', {})
+            discord_enabled = discord_config.get('enabled', False)
+            periodic_enabled = discord_config.get('periodic_enabled', False)
+
+            if discord_enabled and periodic_enabled:
+                should_post = False
+
+                if not hasattr(self, 'first_image_posted_to_discord'):
+                    self.first_image_posted_to_discord = False
+                if not hasattr(self, '_discord_jitter_seconds'):
+                    self._discord_jitter_seconds = 0
+
+                if not self.first_image_posted_to_discord:
+                    should_post = True
+                    app_logger.info(f"Posting first image to Discord: {image_path}")
+                else:
+                    # Check interval with jitter to reduce network load
+                    interval_minutes = max(30, discord_config.get('periodic_interval_minutes', 30))
+
+                    if not hasattr(self, 'last_discord_post_time'):
+                        self.last_discord_post_time = None
+
+                    if self.last_discord_post_time is None:
+                        should_post = True
+                    else:
+                        elapsed_seconds = (datetime.now() - self.last_discord_post_time).total_seconds()
+                        target_seconds = (interval_minutes * 60) - self._discord_jitter_seconds
+                        if elapsed_seconds >= target_seconds:
+                            should_post = True
+                            actual_min = elapsed_seconds / 60
+                            app_logger.info(
+                                f"Posting periodic Discord update "
+                                f"(interval: {interval_minutes}m, jitter: -{self._discord_jitter_seconds}s, "
+                                f"actual: {actual_min:.1f}m)"
+                            )
+
+                if should_post:
+                    success = self._send_discord_periodic_update(image_path)
+                    if success:
+                        if not self.first_image_posted_to_discord:
+                            self.first_image_posted_to_discord = True
+                        # Recalculate jitter for next cycle (0–300 seconds / 0–5 minutes)
+                        self._discord_jitter_seconds = random.randint(0, 300)
+                        app_logger.debug(f"Next Discord jitter: -{self._discord_jitter_seconds}s")
+
+        except Exception as e:
+            app_logger.error(f"Error pushing to output servers: {e}")
+
+    def _send_discord_periodic_update(self, image_path: str):
+        """Send periodic update to Discord with latest image
+
+        Returns:
+            bool: True if sent successfully, False otherwise
+        """
+        try:
+            from services.discord_alerts import DiscordAlerts
+
+            alerts = DiscordAlerts(self.config)
+
+            if not alerts.is_enabled():
+                return False
+
+            mode = "ZWO Camera" if self.is_capturing else "Directory Watch"
+            count = self.image_count
+
+            camera_info = ""
+            if self.is_capturing and self.camera_controller and self.camera_controller.zwo_camera:
+                from services.discord_alerts import format_exposure_time
+                exposure_seconds = self.camera_controller.zwo_camera.exposure_seconds
+                gain = self.camera_controller.zwo_camera.gain
+                exposure_formatted = format_exposure_time(exposure_seconds)
+                camera_info = f"\n**Exposure:** {exposure_formatted}\n**Gain:** {gain}"
+
+            message = f"""**Periodic Status Update**
+
+**Mode:** {mode}
+**Images Processed:** {count}{camera_info}
+**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+
+            discord_config = self.config.get('discord', {})
+            include_image = discord_config.get('include_image', True)
+            attach_image = image_path if include_image else None
+
+            success = alerts.send_discord_message(
+                title=f"{self.config.get('app_name', 'PFRSentinel')} - Status Update",
+                description=message,
+                level="info",
+                image_path=attach_image
+            )
+
+            if success:
+                self.last_discord_post_time = datetime.now()
+                app_logger.info("Discord update sent successfully")
+                from services.posthog_service import capture_event
+                capture_event('discord_post_sent', {
+                    'interval_minutes': discord_config.get('periodic_interval_minutes', 30),
+                    'include_image': include_image,
+                })
+                return True
+            else:
+                app_logger.warning(f"Discord update failed: {alerts.last_send_status}")
+                return False
+
+        except Exception as e:
+            app_logger.error(f"Error sending Discord update: {e}")
+            return False

@@ -84,6 +84,9 @@ Weather (requires `weather.api_key` + `weather.location` in config): `{WEATHER}`
 - Loaded with a merge-against-`DEFAULT_CONFIG` pattern, so new keys land safely on old configs.
 - Keys are nested. Output flags live under `output_config.*`, camera settings under `camera_profiles[<clean_name>]`.
 
+### Module discipline
+New functionality gets a new file when it has a distinct responsibility — don't just append to the nearest existing file. The panel/controller/service split enforces SRP by layer; apply the same thinking *within* each layer. When in doubt, name the new module after what it *does* (`image_stretch`, `token_substitution`, `compass_geometry`), not what calls it. See `.claude/rules/python-general.md` → "Module design" for the full checklist.
+
 ### ML module
 Phase 1–3 complete; Phase 4 future:
 - **Phase 1**: Roof open/closed (CNN, 100% on test set)

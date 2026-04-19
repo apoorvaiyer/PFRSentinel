@@ -1,49 +1,19 @@
-"""
-Image processing and metadata parsing
-"""
+"""Image processing and metadata parsing."""
 import os
-import re
 import tempfile
 from datetime import datetime
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import numpy as np
 from .logger import app_logger
-
-
-def is_safe_path(path: str) -> bool:
-    """
-    Check if path is safe (no directory traversal attacks).
-    SEC-003 fix: Prevents loading files from unintended directories.
-    
-    Args:
-        path: File path to validate
-        
-    Returns:
-        True if path is safe, False if potentially malicious
-    """
-    if not path:
-        return False
-    
-    # Allow special dynamic placeholders
-    if path == 'WEATHER_ICON':
-        return True
-    
-    # Normalize the path to resolve any . or .. components
-    normalized = os.path.normpath(path)
-    
-    # Check for directory traversal patterns
-    # After normpath, '..' should not appear in a safe path
-    if '..' in normalized:
-        return False
-    
-    return True
+from .image_stretch import auto_stretch_image, mtf_stretch, _stretch_channel, _calculate_mtf_midtone  # noqa: F401
+from .overlay_renderer import add_overlays  # noqa: F401
 
 
 def save_image_atomic(img, output_path: str, format_name: str, **save_kwargs) -> None:
     """
     Save image atomically to prevent corruption on crash/power loss.
     REL-001 fix: Uses temp file + rename pattern for atomic writes.
-    
+
     Args:
         img: PIL Image to save
         output_path: Final destination path
@@ -51,34 +21,27 @@ def save_image_atomic(img, output_path: str, format_name: str, **save_kwargs) ->
         **save_kwargs: Additional arguments for PIL save()
     """
     output_dir = os.path.dirname(output_path)
-    
-    # Ensure output directory exists
-    if output_dir and not os.path.exists(output_dir):
+
+    if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    
-    # Create temp file in same directory for atomic rename
+
     fd, temp_path = tempfile.mkstemp(
         suffix='.tmp',
         dir=output_dir if output_dir else '.',
         prefix='.saving_'
     )
-    
+
     try:
-        os.close(fd)  # Close the file descriptor, PIL will reopen
-        
-        # Save to temp file
+        os.close(fd)
         img.save(temp_path, format_name, **save_kwargs)
-        
-        # Atomic rename (os.replace is atomic on same filesystem)
         os.replace(temp_path, output_path)
-        
+
     except Exception:
-        # Clean up temp file on error
         try:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
         except OSError:
-            pass  # Best effort cleanup
+            pass
         raise
 
 
@@ -91,1025 +54,53 @@ def parse_sidecar_file(sidecar_path):
     """
     metadata = {}
     camera_name = None
-    
+
     if not os.path.exists(sidecar_path):
         return metadata
-    
+
     try:
         with open(sidecar_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
-                
-                # Check for camera header [ZWO ASI676MC]
+
                 if line.startswith('[') and line.endswith(']'):
                     camera_name = line[1:-1]
                     metadata['CAMERA'] = camera_name
                     continue
-                
-                # Parse key = value pairs
+
                 if '=' in line:
                     key, value = line.split('=', 1)
                     key = key.strip()
                     value = value.strip()
                     metadata[key.upper()] = value
-    
+
     except Exception as e:
         app_logger.error(f"Error parsing sidecar file {sidecar_path}: {e}")
-    
+
     return metadata
 
 
 def derive_metadata(metadata, image_filename, session_name):
-    """
-    Derive additional metadata values from parsed data.
-    """
+    """Derive additional metadata values from parsed data."""
     derived = metadata.copy()
-    
-    # Derive resolution from "Capture Area Size"
+
     if 'CAPTURE AREA SIZE' in metadata:
-        # Format: "3552 * 3552"
         area = metadata['CAPTURE AREA SIZE']
         area = area.replace('*', 'x').replace(' ', '')
         derived['RES'] = area
-    
-    # Add filename and session
+
     derived['FILENAME'] = image_filename
     derived['SESSION'] = session_name
-    
-    # Add current datetime
     derived['DATETIME'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    # Map common fields for easier access
+
     for key in ['EXPOSURE', 'GAIN', 'TEMPERATURE']:
         if key not in derived and key.title() in metadata:
             derived[key] = metadata[key.title()]
-    
-    # Ensure TEMP is available
+
     if 'TEMP' not in derived and 'TEMPERATURE' in derived:
         derived['TEMP'] = derived['TEMPERATURE']
-    
+
     return derived
-
-
-def replace_tokens(text, metadata):
-    """
-    Replace tokens like {EXPOSURE}, {GAIN} with actual values.
-    """
-    # Create a copy of metadata with formatted values
-    formatted_metadata = metadata.copy()
-    
-    # Format exposure to 2 decimal places if it exists
-    if 'EXPOSURE' in formatted_metadata:
-        exp_str = str(formatted_metadata['EXPOSURE'])
-        if exp_str.endswith('s'):
-            try:
-                exp_value = float(exp_str[:-1])
-                formatted_metadata['EXPOSURE'] = f"{exp_value:.2f}s"
-            except ValueError:
-                pass
-    
-    result = text
-    
-    # Find all tokens in the format {TOKEN}
-    tokens = re.findall(r'\{([^}]+)\}', text)
-    
-    for token in tokens:
-        token_upper = token.upper()
-        value = formatted_metadata.get(token_upper, '?')
-        result = result.replace(f'{{{token}}}', str(value))
-    
-    return result
-
-
-def get_text_bbox(draw, text, font):
-    """Get bounding box of text."""
-    bbox = draw.textbbox((0, 0), text, font=font)
-    width = bbox[2] - bbox[0]
-    height = bbox[3] - bbox[1]
-    return width, height
-
-
-def calculate_position(image_size, text_size, anchor, x_offset, y_offset):
-    """
-    Calculate text position based on anchor point and offsets.
-    """
-    img_width, img_height = image_size
-    text_width, text_height = text_size
-    
-    # Base positions for each anchor
-    anchors = {
-        "Top-Left": (x_offset, y_offset),
-        "Top-Right": (img_width - text_width - x_offset, y_offset),
-        "Bottom-Left": (x_offset, img_height - text_height - y_offset),
-        "Bottom-Right": (img_width - text_width - x_offset, img_height - text_height - y_offset),
-        "Center": ((img_width - text_width) // 2 + x_offset, (img_height - text_height) // 2 + y_offset)
-    }
-    
-    return anchors.get(anchor, (x_offset, y_offset))
-
-
-def parse_color(color_str):
-    """
-    Parse color string to RGB tuple.
-    Supports: 'white', 'black', 'red', 'green', 'blue', or '#RRGGBB'
-    """
-    color_map = {
-        'white': (255, 255, 255),
-        'black': (0, 0, 0),
-        'red': (255, 0, 0),
-        'green': (0, 255, 0),
-        'blue': (0, 0, 255),
-        'yellow': (255, 255, 0),
-        'cyan': (0, 255, 255),
-        'magenta': (255, 0, 255)
-    }
-    
-    color_lower = color_str.lower()
-    
-    if color_lower in color_map:
-        return color_map[color_lower]
-    
-    # Try hex format
-    if color_str.startswith('#') and len(color_str) == 7:
-        try:
-            r = int(color_str[1:3], 16)
-            g = int(color_str[3:5], 16)
-            b = int(color_str[5:7], 16)
-            return (r, g, b)
-        except (ValueError, IndexError):
-            pass
-    
-    # Default to white
-    return (255, 255, 255)
-
-
-def add_overlays(image_input, overlays, metadata, image_cache=None, weather_service=None):
-    """
-    Add text and image overlays to an image.
-    
-    Args:
-        image_input: Either a file path (str) or PIL Image object
-        overlays: List of overlay configurations
-        metadata: Metadata dictionary
-        image_cache: Optional dict to cache loaded overlay images
-        weather_service: Optional WeatherService instance for weather tokens
-    
-    Returns the modified PIL Image object.
-    """
-    try:
-        # Merge weather data into metadata if weather service is available
-        if weather_service and weather_service.is_configured():
-            try:
-                weather_tokens = weather_service.get_weather_tokens()
-                if weather_tokens:
-                    metadata.update(weather_tokens)
-            except Exception as e:
-                app_logger.warning(f"Failed to fetch weather data: {e}")
-        
-        # Load image if it's a path, otherwise use the Image object directly
-        if isinstance(image_input, str):
-            img = Image.open(image_input)
-        else:
-            img = image_input
-        
-        # Only convert palette mode - preserve RGB/RGBA
-        if img.mode in ('P',):  # Only convert palette mode
-            img = img.convert('RGB')
-        
-        # Ensure RGBA mode for drawing (to support image overlays with transparency)
-        if img.mode != 'RGBA':
-            img = img.convert('RGBA')
-        
-        draw = ImageDraw.Draw(img)
-
-        # All-sky astronomical overlay (constellation lines, planets, grid, etc.)
-        allsky_config = metadata.get('__allsky_config')
-        if allsky_config and allsky_config.get('enabled', False):
-            try:
-                from services.allsky import render_allsky_overlay
-                img = render_allsky_overlay(img, allsky_config, metadata)
-                draw = ImageDraw.Draw(img)  # Refresh draw after compositing
-            except Exception:
-                pass  # Silently skip — logged inside renderer
-
-        for overlay in overlays:
-            overlay_type = overlay.get('type', 'text')
-            
-            if overlay_type == 'image':
-                # Handle image overlay with cache and weather service
-                img = add_image_overlay(img, overlay, image_cache, weather_service)
-            elif overlay_type == 'compass':
-                # Handle compass rose overlay
-                img = _add_compass_overlay(img, overlay)
-            else:
-                # Handle text overlay
-                img = add_text_overlay(img, draw, overlay, metadata)
-        
-        # Convert back to RGB for final output
-        if img.mode == 'RGBA':
-            # Create RGB image with white background
-            rgb_img = Image.new('RGB', img.size, (255, 255, 255))
-            rgb_img.paste(img, mask=img.split()[3] if img.mode == 'RGBA' else None)
-            img = rgb_img
-        
-        return img
-    
-    except Exception as e:
-        error_msg = f"Error adding overlays: {e}"
-        app_logger.error(error_msg)
-        raise RuntimeError(error_msg)
-
-
-def _add_compass_overlay(img, overlay):
-    """Add a compass rose overlay using anchor/offset positioning.
-
-    Args:
-        img: PIL Image (RGBA)
-        overlay: Overlay config dict with rotation, size, anchor, offset_x, offset_y
-
-    Returns:
-        Modified PIL Image
-    """
-    try:
-        from .compass_overlay import draw_compass
-
-        size = overlay.get('size', 80)
-        rotation = overlay.get('rotation', 0)
-        anchor = overlay.get('anchor', 'Bottom-Right')
-        offset_x = overlay.get('offset_x', 20)
-        offset_y = overlay.get('offset_y', 20)
-
-        # Use calculate_position to get top-left of compass bounding box,
-        # then derive center for draw_compass
-        x, y = calculate_position(img.size, (size, size), anchor, offset_x, offset_y)
-        cx = x + size // 2
-        cy = y + size // 2
-
-        img = draw_compass(img, rotation=rotation, size=size, cx=cx, cy=cy)
-    except Exception as e:
-        app_logger.debug(f"Compass overlay skipped: {e}")
-    return img
-
-
-def add_image_overlay(base_img, overlay, image_cache=None, weather_service=None):
-    """
-    Add an image overlay to the base image
-    
-    Args:
-        base_img: Base PIL Image
-        overlay: Overlay configuration dict
-        image_cache: Optional dict to cache loaded images
-        weather_service: Optional WeatherService for dynamic weather icons
-        
-    Returns:
-        Modified PIL Image
-    """
-    try:
-        import os
-        
-        image_path = overlay.get('image_path', '')
-        if not image_path:
-            app_logger.warning(f"Image overlay has no image_path: {overlay}")
-            return base_img
-        
-        # SEC-003: Validate path before loading (prevent directory traversal)
-        if not is_safe_path(image_path):
-            app_logger.warning(f"Blocked potentially unsafe image overlay path: {image_path}")
-            return base_img
-        
-        # Handle dynamic weather icon
-        if image_path == 'WEATHER_ICON':
-            if weather_service and weather_service.is_configured():
-                actual_path = weather_service.get_weather_icon_path()
-                if actual_path and os.path.exists(actual_path):
-                    app_logger.debug(f"Resolved WEATHER_ICON to: {actual_path}")
-                    image_path = actual_path
-                else:
-                    app_logger.warning("Weather icon not available - path not returned or doesn't exist")
-                    return base_img
-            else:
-                app_logger.debug("Weather service not configured for WEATHER_ICON")
-                return base_img
-        
-        if not os.path.exists(image_path):
-            app_logger.warning(f"Image overlay path does not exist: {image_path}")
-            return base_img
-        
-        # Use cache if available
-        if image_cache is not None and image_path in image_cache:
-            overlay_img = image_cache[image_path].copy()
-        else:
-            app_logger.debug(f"Loading image overlay from: {image_path}")
-            # Load overlay image
-            overlay_img = Image.open(image_path)
-            app_logger.debug(f"Loaded image: {overlay_img.size}, mode: {overlay_img.mode}")
-            
-            # Cache the loaded image if cache is provided
-            if image_cache is not None:
-                image_cache[image_path] = overlay_img.copy()
-        
-        # Get size settings
-        target_width = overlay.get('width', overlay_img.width)
-        target_height = overlay.get('height', overlay_img.height)
-        maintain_aspect = overlay.get('maintain_aspect', True)
-        
-        # Resize if needed
-        if maintain_aspect and (target_width != overlay_img.width or target_height != overlay_img.height):
-            # Calculate aspect-preserving size
-            aspect_ratio = overlay_img.width / overlay_img.height
-            if target_width / target_height > aspect_ratio:
-                # Height is limiting factor
-                target_width = int(target_height * aspect_ratio)
-            else:
-                # Width is limiting factor
-                target_height = int(target_width / aspect_ratio)
-        
-        # Resize overlay image
-        if target_width != overlay_img.width or target_height != overlay_img.height:
-            overlay_img = overlay_img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-        
-        # Apply opacity
-        opacity = overlay.get('opacity', 100)
-        if opacity < 100 and overlay_img.mode in ('RGBA', 'LA'):
-            # Adjust alpha channel
-            alpha = overlay_img.split()[3 if overlay_img.mode == 'RGBA' else 1]
-            alpha = alpha.point(lambda p: int(p * opacity / 100))
-            overlay_img.putalpha(alpha)
-        elif opacity < 100:
-            # Convert to RGBA and set opacity
-            overlay_img = overlay_img.convert('RGBA')
-            alpha = Image.new('L', overlay_img.size, int(255 * opacity / 100))
-            overlay_img.putalpha(alpha)
-        
-        # Ensure overlay has alpha channel
-        if overlay_img.mode != 'RGBA':
-            overlay_img = overlay_img.convert('RGBA')
-        
-        # Calculate position
-        anchor = overlay.get('anchor', 'Bottom-Right')
-        x_offset = overlay.get('offset_x', 10)
-        y_offset = overlay.get('offset_y', 10)
-        
-        x, y = calculate_position(base_img.size, (target_width, target_height), 
-                                 anchor, x_offset, y_offset)
-        
-        # Paste overlay onto base image
-        base_img.paste(overlay_img, (x, y), overlay_img)
-        
-        return base_img
-        
-    except Exception as e:
-        app_logger.error(f"Error adding image overlay: {e}")
-        return base_img
-
-
-def add_text_overlay(img, draw, overlay, metadata):
-    """
-    Add a text overlay to the image
-    
-    Args:
-        img: PIL Image
-        draw: ImageDraw object
-        overlay: Overlay configuration dict
-        metadata: Metadata dictionary
-        
-    Returns:
-        Modified PIL Image
-    """
-    try:
-        # Get datetime format from overlay config
-        datetime_format = overlay.get('datetime_format', '%Y-%m-%d %H:%M:%S')
-        
-        # Create overlay-specific metadata with custom datetime format
-        overlay_metadata = metadata.copy()
-        if '{DATETIME}' in overlay.get('text', '').upper():
-            overlay_metadata['DATETIME'] = datetime.now().strftime(datetime_format)
-        
-        # Replace tokens in overlay text
-        text = replace_tokens(overlay.get('text', ''), overlay_metadata)
-        
-        # Get overlay properties
-        font_size = overlay.get('font_size', 28)
-        color = parse_color(overlay.get('color', 'white'))
-        anchor = overlay.get('anchor', 'Bottom-Left')
-        x_offset = overlay.get('offset_x', 10)  # Match config key
-        y_offset = overlay.get('offset_y', 10)  # Match config key
-        background_enabled = overlay.get('background_enabled', False)
-        background_color = overlay.get('background_color', 'black')
-        alignment = overlay.get('alignment', 'left')  # NEW: 'left', 'center', 'right'
-        
-        # Load font (use default if custom font loading fails)
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except (OSError, IOError):
-            try:
-                font = ImageFont.truetype("Arial.ttf", font_size)
-            except (OSError, IOError):
-                # Fall back to default font
-                font = ImageFont.load_default()
-        
-        # Calculate text bounding box for proper padding
-        # Get bbox relative to (0, 0) to find actual text dimensions including descenders
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        
-        # Calculate base position using anchor
-        x, y = calculate_position(img.size, (text_width, text_height), anchor, x_offset, y_offset)
-        
-        # Apply text alignment adjustment for multi-line text
-        # This adjusts each line's x position based on alignment
-        # For single-line text, this has no effect when alignment='left'
-        lines = text.split('\n')
-        line_positions = []
-        
-        for line in lines:
-            line_bbox = draw.textbbox((0, 0), line, font=font)
-            line_width = line_bbox[2] - line_bbox[0]
-            
-            if alignment == 'center':
-                line_x = x + (text_width - line_width) // 2
-            elif alignment == 'right':
-                line_x = x + (text_width - line_width)
-            else:  # left (default)
-                line_x = x
-            
-            line_positions.append(line_x)
-        
-        # Draw background box if enabled and not transparent
-        if background_enabled and background_color.lower() != 'transparent':
-            padding = 5
-            # Calculate background box based on full text block dimensions
-            # (not per-line, to create a unified background)
-            text_bbox = draw.textbbox((x, y), text, font=font)
-            box_coords = [
-                text_bbox[0] - padding,  # left
-                text_bbox[1] - padding,  # top
-                text_bbox[2] + padding,  # right
-                text_bbox[3] + padding   # bottom (includes descenders)
-            ]
-            # Parse background color (supports color names and hex)
-            bg_color = parse_color(background_color)
-            draw.rectangle(box_coords, fill=bg_color)
-        
-        # Draw text with per-line positioning based on alignment
-        if len(lines) == 1:
-            # Single line - use calculated position with alignment
-            draw.text((line_positions[0], y), text, fill=color, font=font)
-        else:
-            # Multi-line - draw each line at its aligned position
-            line_height = draw.textbbox((0, 0), 'Ay', font=font)[3]  # Height with ascender/descender
-            current_y = y
-            for i, line in enumerate(lines):
-                draw.text((line_positions[i], current_y), line, fill=color, font=font)
-                current_y += line_height
-        
-        return img
-        
-    except Exception as e:
-        app_logger.error(f"Error adding text overlay: {e}")
-        return img
-
-
-def mtf_stretch(value, midtone):
-    """
-    Apply Midtone Transfer Function (MTF) stretch.
-    
-    This is the standard astrophotography stretch function (PixInsight-style) that maps 
-    pixel values through a curve controlled by the midtone parameter.
-    
-    The MTF is defined such that:
-    - MTF(0) = 0
-    - MTF(m) = 0.5  (midtone maps to middle gray)
-    - MTF(1) = 1
-    
-    Standard formula: MTF(x, m) = (m - 1) * x / ((2*m - 1) * x - m)
-    
-    Note: When m < 0.5, the stretch brightens dark values (most common in astrophotography)
-          When m > 0.5, the stretch darkens values
-          When m = 0.5, it's the identity function
-    
-    Args:
-        value: Input pixel value(s) normalized to 0-1 range (can be numpy array)
-        midtone: Midtone parameter (0 < m < 1). Lower values = more aggressive brightening.
-                 Typical values for dark astro images: 0.05-0.25
-    
-    Returns:
-        Stretched value(s) in 0-1 range
-    """
-    # Prevent division by zero and handle edge cases
-    m = np.clip(midtone, 0.0001, 0.9999)
-    x = np.clip(value, 0.0, 1.0)
-    
-    # Standard MTF formula: (m - 1) * x / ((2*m - 1) * x - m)
-    numerator = (m - 1.0) * x
-    denominator = (2.0 * m - 1.0) * x - m
-    
-    # Avoid division by zero
-    result = np.where(
-        np.abs(denominator) > 1e-10,
-        numerator / denominator,
-        x  # Return input value if denominator is too small
-    )
-    
-    return np.clip(result, 0.0, 1.0)
-
-
-def auto_stretch_image(img, config, raw_16bit=None):
-    """
-    Apply automatic MTF stretch to enhance image contrast.
-    
-    This function analyzes the image histogram and applies an MTF (Midtone Transfer
-    Function) stretch to bring out detail in the shadows and midtones while protecting
-    highlights. This is the standard approach used in astrophotography software.
-    
-    When raw_16bit data is provided, processing happens in 16-bit precision for
-    better dynamic range preservation before converting to 8-bit output.
-    
-    Args:
-        img: PIL Image object (8-bit)
-        config: Dictionary with stretch settings:
-               - target_median: Target median brightness (0.0-1.0)
-               - linked_stretch: Apply same stretch to all channels (prevents color shifts)
-               - preserve_blacks: Keep true blacks dark instead of lifting to grey
-               - black_point: Manual black point (0.0-0.1) - pixels below this stay black
-               - shadow_aggressiveness: MAD multiplier (1.5=aggressive, 2.8=standard, 4.0=gentle)
-               - saturation_boost: Post-stretch saturation multiplier
-               - normalize_channels: Equalize channel medians before stretch (for dark scenes with color cast)
-               - dark_scene_threshold: Median below this triggers dark scene mode (default 0.05)
-        raw_16bit: Optional numpy array with 16-bit RGB data (H, W, 3) dtype=uint16.
-                   When provided, stretching uses full 16-bit precision for better results.
-    
-    Returns:
-        PIL Image with stretch applied (8-bit output)
-    """
-    try:
-        # Use 16-bit data if available for higher precision processing
-        if raw_16bit is not None and raw_16bit.dtype == np.uint16:
-            # 16-bit input: normalize to 0-1 range using full 16-bit range
-            img_array = raw_16bit.astype(np.float32) / 65535.0
-            bit_depth_str = "16-bit"
-        else:
-            # 8-bit input: convert from PIL Image
-            img_array = np.array(img).astype(np.float32) / 255.0
-            bit_depth_str = "8-bit"
-        
-        # Get stretch parameters
-        target_median = config.get('target_median', 0.25)
-        linked_stretch = config.get('linked_stretch', True)
-        preserve_blacks = config.get('preserve_blacks', True)
-        black_point = config.get('black_point', 0.0)
-        shadow_aggressiveness = config.get('shadow_aggressiveness', 2.8)
-        saturation_boost = config.get('saturation_boost', 1.5)
-        normalize_channels = config.get('normalize_channels', False)
-        dark_scene_threshold = config.get('dark_scene_threshold', 0.05)
-        
-        # Clamp parameters to valid ranges
-        target_median = np.clip(target_median, 0.05, 0.95)
-        black_point = np.clip(black_point, 0.0, 0.1)
-        shadow_aggressiveness = np.clip(shadow_aggressiveness, 1.0, 5.0)
-        
-        # Check current image brightness - skip stretch if image is already bright
-        # MTF stretch is designed for dark astro images, not daylight scenes
-        if len(img_array.shape) == 2:
-            current_brightness = np.median(img_array)
-        else:
-            # Use luminance for color images
-            if img_array.shape[2] >= 3:
-                current_brightness = np.median(
-                    0.299 * img_array[:,:,0] + 0.587 * img_array[:,:,1] + 0.114 * img_array[:,:,2]
-                )
-            else:
-                current_brightness = np.median(img_array)
-        
-        # Skip stretch if image is already brighter than target (e.g., daylight capture)
-        if current_brightness > target_median + 0.1:
-            app_logger.debug(f"Auto-stretch skipped ({bit_depth_str}): image already bright (median={current_brightness:.3f} > target={target_median:.3f})")
-            return img
-        
-        app_logger.debug(f"Auto-stretch starting ({bit_depth_str}): current_median={current_brightness:.3f}, target={target_median:.3f}, preserve_blacks={preserve_blacks}")
-        
-        # === DARK SCENE CHANNEL NORMALIZATION ===
-        # For very dark images, color channel imbalance gets amplified by stretch.
-        # This equalizes channel medians before stretching to prevent color casts.
-        is_dark_scene = current_brightness < dark_scene_threshold
-        if normalize_channels and is_dark_scene and len(img_array.shape) == 3 and img_array.shape[2] >= 3:
-            img_array = _normalize_channel_medians(img_array)
-        
-        # Determine if image is grayscale or color
-        if len(img_array.shape) == 2:
-            # Grayscale image
-            stretched = _stretch_channel(img_array, target_median, 'L', 
-                                        preserve_blacks, black_point, shadow_aggressiveness)
-        elif img_array.shape[2] == 3:
-            # RGB image
-            if linked_stretch:
-                stretched = _stretch_linked_rgb(img_array, target_median, 
-                                               preserve_blacks, black_point, shadow_aggressiveness)
-            else:
-                # Independent stretch per channel (WARNING: can cause color shifts)
-                stretched = np.zeros_like(img_array)
-                channel_names = ['R', 'G', 'B']
-                for c in range(3):
-                    stretched[:,:,c] = _stretch_channel(
-                        img_array[:,:,c], target_median, channel_names[c],
-                        preserve_blacks, black_point, shadow_aggressiveness
-                    )
-        elif img_array.shape[2] == 4:
-            # RGBA image - stretch RGB, preserve alpha
-            rgb = img_array[:,:,:3]
-            alpha = img_array[:,:,3]
-            
-            if linked_stretch:
-                stretched_rgb = _stretch_linked_rgb(rgb, target_median,
-                                                   preserve_blacks, black_point, shadow_aggressiveness)
-            else:
-                stretched_rgb = np.zeros_like(rgb)
-                channel_names = ['R', 'G', 'B']
-                for c in range(3):
-                    stretched_rgb[:,:,c] = _stretch_channel(
-                        rgb[:,:,c], target_median, channel_names[c],
-                        preserve_blacks, black_point, shadow_aggressiveness
-                    )
-            
-            stretched = np.dstack([stretched_rgb, alpha])
-        else:
-            # Unknown format, return unchanged
-            return img
-        
-        # Apply SCNR (Subtractive Chromatic Noise Reduction) for green cast
-        # This is the standard astrophotography algorithm for removing airglow /
-        # light-pollution green cast.  Runs post-stretch where the cast is visible.
-        scnr_amount = config.get('scnr_amount', 0.0)
-        if scnr_amount > 0 and len(stretched.shape) == 3 and stretched.shape[2] >= 3:
-            stretched = _apply_scnr(stretched, scnr_amount)
-
-        # Convert back to uint8 and PIL Image
-        stretched_uint8 = (stretched * 255.0).astype(np.uint8)
-        result_img = Image.fromarray(stretched_uint8, mode=img.mode)
-
-        # Apply saturation boost to compensate for stretch color desaturation
-        if saturation_boost != 1.0 and result_img.mode in ('RGB', 'RGBA'):
-            from PIL import ImageEnhance
-            enhancer = ImageEnhance.Color(result_img)
-            result_img = enhancer.enhance(saturation_boost)
-            app_logger.debug(f"Auto-stretch saturation boost: {saturation_boost:.2f}")
-
-        return result_img
-        
-    except Exception as e:
-        app_logger.error(f"Auto-stretch error: {e}")
-        return img
-
-
-def _normalize_channel_medians(img_array):
-    """
-    Normalize RGB channel medians to remove color casts in dark scenes.
-    
-    In very dark images (closed roof, artificial lighting), channels can have
-    very different medians (e.g., B=0.04, R=G=0.02). When stretched, this 
-    imbalance gets amplified, causing purple/magenta tints.
-    
-    This function uses luminance-weighted normalization to gently balance channels
-    without over-correcting and causing new color casts.
-    
-    Args:
-        img_array: 3D numpy array (H, W, 3) in 0-1 range
-    
-    Returns:
-        Normalized RGB array with balanced channel medians
-    """
-    r_median = np.median(img_array[:,:,0])
-    g_median = np.median(img_array[:,:,1])
-    b_median = np.median(img_array[:,:,2])
-    
-    # Calculate luminance-weighted target (prevents over-correction)
-    # This maintains natural color balance better than equalizing to single channel
-    target_median = 0.299 * r_median + 0.587 * g_median + 0.114 * b_median
-    
-    # Avoid division by zero for very dark channels
-    min_median = 0.001
-    
-    app_logger.debug(f"Dark scene normalization: R={r_median:.4f}, G={g_median:.4f}, B={b_median:.4f}")
-    app_logger.debug(f"  Luminance target: {target_median:.4f}")
-    
-    result = img_array.copy()
-    
-    # Apply gentle scaling (50% correction to avoid over-correction)
-    # This removes most color cast while preserving some natural color
-    if r_median > min_median:
-        r_scale = target_median / r_median
-        # Blend 50% toward target (full correction can over-correct)
-        r_scale = 1.0 + 0.5 * (r_scale - 1.0)
-        result[:,:,0] = np.clip(img_array[:,:,0] * r_scale, 0, 1)
-        app_logger.debug(f"  R scaled by {r_scale:.3f}")
-    
-    if g_median > min_median:
-        g_scale = target_median / g_median
-        g_scale = 1.0 + 0.5 * (g_scale - 1.0)
-        result[:,:,1] = np.clip(img_array[:,:,1] * g_scale, 0, 1)
-        app_logger.debug(f"  G scaled by {g_scale:.3f}")
-    
-    if b_median > min_median:
-        b_scale = target_median / b_median
-        b_scale = 1.0 + 0.5 * (b_scale - 1.0)
-        result[:,:,2] = np.clip(img_array[:,:,2] * b_scale, 0, 1)
-        app_logger.debug(f"  B scaled by {b_scale:.3f}")
-    
-    return result
-
-
-def _apply_scnr(img_array, amount=0.5):
-    """
-    Subtractive Chromatic Noise Reduction — the standard astrophotography
-    technique for removing green cast from airglow and light pollution.
-
-    For each pixel, the green channel is clamped so it never exceeds the
-    "neutral" value (average of R and B).  The `amount` parameter blends
-    between the original green and the corrected green.
-
-    This is equivalent to PixInsight's SCNR Average Neutral protection.
-
-    Args:
-        img_array: float32 RGB array in 0-1 range, shape (H, W, 3)
-        amount: 0.0 = no correction, 1.0 = full SCNR
-
-    Returns:
-        Corrected float32 RGB array
-    """
-    amount = np.clip(amount, 0.0, 1.0)
-
-    r = img_array[:, :, 0]
-    g = img_array[:, :, 1]
-    b = img_array[:, :, 2]
-
-    # Neutral reference = average of R and B
-    neutral = (r + b) * 0.5
-
-    # Only correct where green exceeds neutral (preserves non-green areas)
-    corrected_g = np.minimum(g, neutral)
-
-    # Blend original ↔ corrected by amount
-    new_g = g * (1.0 - amount) + corrected_g * amount
-
-    # Measure correction for logging
-    green_excess = np.median(np.maximum(g - neutral, 0))
-    correction_pct = (1.0 - np.median(new_g) / (np.median(g) + 1e-10)) * 100
-
-    result = img_array.copy()
-    result[:, :, 1] = new_g
-
-    app_logger.debug(
-        f"SCNR: amount={amount:.0%}, green_excess={green_excess:.4f}, "
-        f"median_reduction={correction_pct:.1f}%"
-    )
-
-    return result
-
-
-def _stretch_linked_rgb(img_array, target_median, preserve_blacks=True, 
-                        black_point=0.0, shadow_aggressiveness=2.8):
-    """
-    Stretch RGB image using linked luminance-based approach.
-    
-    This applies the same shadow clip and MTF to all channels, which
-    preserves color balance and prevents per-frame color shifts.
-    
-    Args:
-        img_array: 3D numpy array (H, W, 3) in 0-1 range
-        target_median: Target median brightness after stretch
-        preserve_blacks: If True, keep true blacks dark
-        black_point: Manual black point - pixels below this stay black
-        shadow_aggressiveness: MAD multiplier for shadow clipping
-    
-    Returns:
-        Stretched RGB array
-    """
-    # Calculate luminance for linked processing
-    luminance = 0.299 * img_array[:,:,0] + 0.587 * img_array[:,:,1] + 0.114 * img_array[:,:,2]
-    
-    # Calculate shadow clip from luminance using MAD
-    median_lum = np.median(luminance)
-    mad_lum = np.median(np.abs(luminance - median_lum))
-    mad_lum = max(mad_lum, 0.001)
-    
-    # Calculate shadow clip point using aggressiveness parameter
-    # Higher aggressiveness = more clipping = lighter blacks
-    # Lower aggressiveness = less clipping = darker blacks preserved
-    shadow_clip = max(0.0, median_lum - shadow_aggressiveness * mad_lum)
-    
-    # Safety: don't clip more than 80% of the median value
-    shadow_clip = min(shadow_clip, median_lum * 0.8)
-    
-    # Apply manual black point if set (overrides calculated if higher)
-    effective_black_point = max(shadow_clip, black_point)
-    
-    app_logger.debug(f"Auto-stretch (linked): lum_median={median_lum:.4f}, MAD={mad_lum:.4f}, "
-                    f"shadow_clip={shadow_clip:.4f}, black_point={black_point:.4f}")
-    
-    # Create output array
-    stretched = np.zeros_like(img_array)
-    
-    if preserve_blacks:
-        # PRESERVE BLACKS MODE: Apply soft transition instead of hard clip
-        # This keeps true blacks dark while still stretching midtones
-        
-        # Find the 1st percentile as true black reference
-        true_black = np.percentile(luminance, 1)
-        
-        # Calculate transition zone (pixels between true black and clip point)
-        transition_start = true_black
-        transition_end = effective_black_point
-        
-        app_logger.debug(f"Preserve blacks: true_black={true_black:.4f}, transition=[{transition_start:.4f}-{transition_end:.4f}]")
-        
-        for c in range(3):
-            channel = img_array[:,:,c].copy()
-            
-            if transition_end > transition_start:
-                # Create mask for different zones
-                is_black = luminance <= transition_start
-                is_transition = (luminance > transition_start) & (luminance <= transition_end)
-                is_normal = luminance > transition_end
-                
-                # Blacks stay black (map to 0)
-                channel[is_black] = 0.0
-                
-                # Transition zone: smooth ramp from 0 to clipped value
-                if np.any(is_transition):
-                    # Calculate how far through transition zone each pixel is
-                    t = (luminance[is_transition] - transition_start) / (transition_end - transition_start)
-                    # Smooth step function (ease in/out)
-                    t = t * t * (3 - 2 * t)  # Smoothstep
-                    # Map from original value to stretched value
-                    orig_val = channel[is_transition]
-                    stretched_val = (orig_val - effective_black_point) / (1.0 - effective_black_point)
-                    stretched_val = np.clip(stretched_val, 0, 1)
-                    channel[is_transition] = t * stretched_val
-                
-                # Normal zone: standard clip and rescale
-                if np.any(is_normal):
-                    normal_vals = channel[is_normal]
-                    normal_vals = np.clip(normal_vals, effective_black_point, 1.0)
-                    channel[is_normal] = (normal_vals - effective_black_point) / (1.0 - effective_black_point)
-            else:
-                # No transition zone - just apply clip if needed
-                if effective_black_point > 0:
-                    channel = np.clip(channel, effective_black_point, 1.0)
-                    channel = (channel - effective_black_point) / (1.0 - effective_black_point)
-            
-            stretched[:,:,c] = channel
-    else:
-        # STANDARD MODE: Hard clip shadows (original behavior)
-        for c in range(3):
-            channel = img_array[:,:,c]
-            if effective_black_point > 0:
-                channel = np.clip(channel, effective_black_point, 1.0)
-                channel = (channel - effective_black_point) / (1.0 - effective_black_point)
-            stretched[:,:,c] = channel
-    
-    # Calculate MTF from luminance after clipping
-    lum_clipped = 0.299 * stretched[:,:,0] + 0.587 * stretched[:,:,1] + 0.114 * stretched[:,:,2]
-    current_median = np.median(lum_clipped)
-    
-    # Skip MTF if already at target
-    if abs(current_median - target_median) < 0.01:
-        app_logger.debug(f"MTF (linked): skipped - already at target (median={current_median:.4f})")
-        return stretched
-    
-    midtone = _calculate_mtf_midtone(current_median, target_median)
-    
-    # Apply same MTF to all channels (preserves color)
-    for c in range(3):
-        stretched[:,:,c] = mtf_stretch(stretched[:,:,c], midtone)
-    
-    app_logger.debug(f"MTF (linked): post-clip_median={current_median:.4f}, midtone={midtone:.4f}, target={target_median:.3f}")
-    
-    return stretched
-
-
-def _stretch_channel(channel, target_median, channel_name='',
-                    preserve_blacks=True, black_point=0.0, shadow_aggressiveness=2.8):
-    """
-    Stretch a single channel to target median using MAD-based shadow clipping.
-    
-    This uses the statistical approach: shadow_clip = median - aggressiveness * MAD
-    where MAD (Median Absolute Deviation) is a robust measure of noise floor.
-    
-    Args:
-        channel: 2D numpy array (0-1 range)
-        target_median: Target median value after stretch
-        channel_name: Optional name for debug logging (e.g., 'R', 'G', 'B')
-        preserve_blacks: If True, keep true blacks dark
-        black_point: Manual black point - pixels below this stay black
-        shadow_aggressiveness: MAD multiplier (lower = preserve more shadows)
-    
-    Returns:
-        Stretched channel
-    """
-    channel = channel.copy()
-    
-    # Step 1: Calculate shadow clip using MAD (Median Absolute Deviation)
-    median = np.median(channel)
-    mad = np.median(np.abs(channel - median))
-    
-    # Ensure minimum MAD to prevent over-clipping uniform images
-    mad = max(mad, 0.001)
-    
-    # Calculate shadow clip point using aggressiveness parameter
-    shadow_clip = max(0.0, median - shadow_aggressiveness * mad)
-    
-    # Safety: don't clip more than 80% of the median value
-    shadow_clip = min(shadow_clip, median * 0.8)
-    
-    # Apply manual black point if set (overrides calculated if higher)
-    effective_black_point = max(shadow_clip, black_point)
-    
-    if channel_name:
-        app_logger.debug(f"Auto-stretch {channel_name}: median={median:.4f}, MAD={mad:.4f}, "
-                        f"shadow_clip={shadow_clip:.4f}, effective_bp={effective_black_point:.4f}")
-    
-    # Step 2: Apply shadow clipping with optional black preservation
-    if preserve_blacks and effective_black_point > 0:
-        # Find true black reference (1st percentile)
-        true_black = np.percentile(channel, 1)
-        
-        # Create smooth transition from true blacks to normal stretch
-        is_black = channel <= true_black
-        is_normal = channel > effective_black_point
-        is_transition = ~is_black & ~is_normal
-        
-        result = np.zeros_like(channel)
-        result[is_black] = 0.0  # True blacks stay black
-        
-        if np.any(is_transition):
-            # Smooth transition zone
-            t = (channel[is_transition] - true_black) / (effective_black_point - true_black + 1e-10)
-            t = t * t * (3 - 2 * t)  # Smoothstep
-            stretched_val = (channel[is_transition] - effective_black_point) / (1.0 - effective_black_point)
-            stretched_val = np.clip(stretched_val, 0, 1)
-            result[is_transition] = t * stretched_val
-        
-        if np.any(is_normal):
-            normal_vals = np.clip(channel[is_normal], effective_black_point, 1.0)
-            result[is_normal] = (normal_vals - effective_black_point) / (1.0 - effective_black_point)
-        
-        channel = result
-    elif effective_black_point > 0:
-        # Standard hard clip (original behavior)
-        channel = np.clip(channel, effective_black_point, 1.0)
-        channel = (channel - effective_black_point) / (1.0 - effective_black_point)
-    
-    # Step 3: Calculate current median after clipping
-    current_median = np.median(channel)
-    
-    # Skip MTF if already at target or very dark
-    if abs(current_median - target_median) < 0.01 or current_median < 0.0001:
-        return channel
-    
-    # Step 4: Calculate MTF midtone parameter and apply stretch
-    midtone = _calculate_mtf_midtone(current_median, target_median)
-    
-    if channel_name:
-        app_logger.debug(f"MTF {channel_name}: post-clip_median={current_median:.4f}, midtone={midtone:.4f}")
-    
-    return mtf_stretch(channel, midtone)
-
-
-def _calculate_mtf_midtone(current_median, target_median):
-    """
-    Calculate the MTF midtone parameter to map current_median to target_median.
-    
-    Given MTF(x, m) = (m - 1) * x / ((2*m - 1) * x - m) = y
-    Solving for m: m = x*(y - 1) / (x*(2*y - 1) - y)
-    where x = current_median, y = target_median
-    
-    Args:
-        current_median: Current median of the image/channel (0-1)
-        target_median: Desired median after stretch (0-1)
-    
-    Returns:
-        Midtone parameter for MTF function
-    """
-    # Prevent edge cases
-    x = np.clip(current_median, 0.0001, 0.9999)  # current
-    y = np.clip(target_median, 0.0001, 0.9999)   # target
-    
-    # If current is already at target, return 0.5 (identity transform)
-    if abs(x - y) < 0.001:
-        return 0.5
-    
-    # Derived midtone formula: m = x*(y - 1) / (x*(2*y - 1) - y)
-    numerator = x * (y - 1.0)
-    denominator = x * (2.0 * y - 1.0) - y
-    
-    if abs(denominator) < 1e-10:
-        return 0.5
-    
-    midtone = numerator / denominator
-    
-    # Clamp to valid range
-    return np.clip(midtone, 0.0001, 0.9999)
 
 
 def build_output_filename(pattern, metadata, output_format='PNG'):
@@ -1118,22 +109,18 @@ def build_output_filename(pattern, metadata, output_format='PNG'):
     Supports tokens: {filename}, {session}, {timestamp}
     """
     result = pattern
-    
-    # Replace filename token (without extension)
+
     if '{filename}' in result:
         filename_no_ext = os.path.splitext(metadata.get('FILENAME', 'image'))[0]
         result = result.replace('{filename}', filename_no_ext)
-    
-    # Replace session token
+
     if '{session}' in result:
         result = result.replace('{session}', metadata.get('SESSION', 'unknown'))
-    
-    # Replace timestamp token
+
     if '{timestamp}' in result:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         result = result.replace('{timestamp}', timestamp)
-    
-    # Determine extension from format
+
     ext_map = {
         'PNG': '.png',
         'JPG': '.jpg',
@@ -1142,11 +129,10 @@ def build_output_filename(pattern, metadata, output_format='PNG'):
         'TIFF': '.tiff'
     }
     extension = ext_map.get(output_format.upper(), '.jpg')
-    
-    # Add extension if not present
+
     if not any(result.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']):
         result += extension
-    
+
     return result
 
 
@@ -1172,50 +158,40 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
     1. Parse sidecar file OR use provided metadata
     2. Add overlays
     3. Save to output directory
-    
+
     Args:
         image_path: Path to image file OR PIL Image object
         config: Config object
         metadata_dict: Optional pre-built metadata dictionary (for camera capture)
-    
+
     Returns: (success: bool, output_path: str, error: str)
     """
     try:
-        # Get configuration
         output_dir = config.get('output_directory', '')
         output_pattern = config.get('output_pattern', '{session}_{filename}')
         overlays = config.get_overlays()
         resize_percent = config.get('resize_percent', 100)
         show_timestamp = config.get('show_timestamp_corner', False)
         timestamp_corner = config.get('timestamp_corner', 'Top-Right')
-        
+
         if not output_dir:
             return False, None, "Output directory not configured"
-        
-        # Ensure output directory exists
+
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Handle metadata
+
         if metadata_dict:
-            # Use provided metadata (camera capture mode)
             metadata = metadata_dict
             image_filename = metadata.get('FILENAME', 'image.png')
             parent_folder = metadata.get('SESSION', 'session')
         else:
-            # Directory watch mode - parse from file
             image_filename = os.path.basename(image_path)
             parent_folder = os.path.basename(os.path.dirname(image_path))
-            
-            # Look for sidecar file
+
             sidecar_path = image_path + '.txt'
-            
-            # Parse sidecar file
+
             metadata = parse_sidecar_file(sidecar_path)
-            
-            # Derive additional metadata
             metadata = derive_metadata(metadata, image_filename, parent_folder)
-        
-        # Add timestamp corner overlay if enabled
+
         overlays_to_apply = overlays.copy()
         if show_timestamp:
             timestamp_overlay = {
@@ -1228,8 +204,7 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
                 'background': True
             }
             overlays_to_apply.append(timestamp_overlay)
-        
-        # === ML tokens (watch mode) ===
+
         ml_config = config.get('ml_models', {})
         if ml_config.get('enabled', False):
             try:
@@ -1246,7 +221,6 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
             except Exception as e:
                 app_logger.debug(f"ML prediction skipped: {e}")
 
-        # Star detection tokens (gated: sun below civil twilight, and roof open if ML enabled)
         try:
             from .star_detection import analyze_stars, should_run_star_detection
             if should_run_star_detection(config, metadata):
@@ -1258,102 +232,65 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
         except Exception as e:
             app_logger.debug(f"Star detection skipped: {e}")
 
-        # Apply auto-stretch (MTF) BEFORE overlays for best results
+        raw_img = Image.open(image_path) if isinstance(image_path, str) else image_path
+
         auto_stretch_config = config.get('auto_stretch', {})
         if auto_stretch_config.get('enabled', False):
-            # Load raw image for stretching
-            if isinstance(image_path, str):
-                raw_img = Image.open(image_path)
-            else:
-                raw_img = image_path
-
-            # Convert to RGB if needed for stretching
             if raw_img.mode not in ('RGB', 'RGBA', 'L'):
                 raw_img = raw_img.convert('RGB')
-
-            # Apply MTF stretch
             raw_img = auto_stretch_image(raw_img, auto_stretch_config)
 
-            # Inject all-sky overlay config into metadata for add_overlays()
-            _inject_allsky_metadata(config, metadata)
-            # Add overlays to stretched image
-            processed_img = add_overlays(raw_img, overlays_to_apply, metadata, weather_service=weather_service)
-        else:
-            # Inject all-sky overlay config into metadata for add_overlays()
-            _inject_allsky_metadata(config, metadata)
-            # Add overlays to image (no stretch)
-            processed_img = add_overlays(image_path, overlays_to_apply, metadata, weather_service=weather_service)
+        if resize_percent > 0 and resize_percent != 100:
+            new_width = int(raw_img.width * resize_percent / 100)
+            new_height = int(raw_img.height * resize_percent / 100)
+            raw_img = raw_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-        # Apply auto brightness if enabled (for saved images)
+        _inject_allsky_metadata(config, metadata)
+        processed_img = add_overlays(raw_img, overlays_to_apply, metadata, weather_service=weather_service)
+
         if config.get('auto_brightness', False):
             from PIL import ImageEnhance
-            import numpy as np
-            
-            # Analyze image brightness
-            img_array = np.array(processed_img.convert('L'))  # Convert to grayscale for analysis
+
+            img_array = np.array(processed_img.convert('L'))
             mean_brightness = np.mean(img_array)
-            
-            # Calculate adaptive enhancement factor
-            # Target brightness: 128 (mid-gray)
-            # If image is dark (e.g., mean=30), boost by 128/30 = 4.27x
-            # If image is bright (e.g., mean=200), reduce by 128/200 = 0.64x
+
             target_brightness = 128
-            auto_factor = target_brightness / max(mean_brightness, 10)  # Avoid division by zero
-            
-            # Clamp factor to reasonable range (0.5 - 4.0)
+            auto_factor = target_brightness / max(mean_brightness, 10)
             auto_factor = max(0.5, min(auto_factor, 4.0))
-            
-            # Apply manual brightness factor as additional adjustment
+
             manual_factor = config.get('brightness_factor', 1.0)
             final_factor = auto_factor * manual_factor
-            
+
             enhancer = ImageEnhance.Brightness(processed_img)
             processed_img = enhancer.enhance(final_factor)
-            
+
             app_logger.debug(f"Auto brightness: mean={mean_brightness:.1f}, auto_factor={auto_factor:.2f}, manual={manual_factor:.2f}, final={final_factor:.2f}")
-        
-        # Apply saturation adjustment if not neutral
+
         saturation_factor = config.get('saturation_factor', 1.0)
         if saturation_factor != 1.0:
             from PIL import ImageEnhance
             enhancer = ImageEnhance.Color(processed_img)
             processed_img = enhancer.enhance(saturation_factor)
             app_logger.debug(f"Saturation adjusted: factor={saturation_factor:.2f}")
-        
-        # Resize image if needed
-        if resize_percent > 0 and resize_percent != 100:
-            original_width, original_height = processed_img.size
-            new_width = int(original_width * resize_percent / 100)
-            new_height = int(original_height * resize_percent / 100)
-            processed_img = processed_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        
-        # Build output filename
+
         output_format = config.get('output_format', 'JPG')
         output_filename = build_output_filename(output_pattern, metadata, output_format)
         output_path = os.path.join(output_dir, output_filename)
-        
-        # Get output mode configuration
-        output_mode = config.get('output', {}).get('mode', 'file')
-        
-        # Save processed image with format-specific options (REL-001: atomic writes)
+
         if output_format.upper() in ['JPG', 'JPEG']:
-            # Convert RGBA to RGB for JPG (JPG doesn't support transparency)
             if processed_img.mode == 'RGBA':
-                # Create black background (better for astrophotography)
                 rgb_img = Image.new('RGB', processed_img.size, (0, 0, 0))
-                rgb_img.paste(processed_img, mask=processed_img.split()[3])  # Use alpha channel as mask
+                rgb_img.paste(processed_img, mask=processed_img.split()[3])
                 processed_img = rgb_img
             elif processed_img.mode != 'RGB':
                 processed_img = processed_img.convert('RGB')
-            
+
             jpg_quality = config.get('jpg_quality', 85)
             save_image_atomic(processed_img, output_path, 'JPEG', quality=jpg_quality, optimize=True)
         else:
             save_image_atomic(processed_img, output_path, output_format.upper())
-        
-        # Return processed image and path for output mode handlers
-        # processed_img is returned so webserver can use it without reloading
+
         return True, output_path, None, processed_img
-    
+
     except Exception as e:
         return False, None, str(e), None

@@ -1,10 +1,4 @@
-"""
-Editor UI builders for OverlaySettingsPanel.
-
-Provided as a mixin so widget creation preserves the panel's direct
-attribute access (self.name_edit, self.type_combo, ...) and the exact
-signal-connect order the panel depends on.
-"""
+"""Editor UI builders for OverlaySettingsPanel."""
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame, QStackedWidget,
     QTextEdit,
@@ -50,7 +44,6 @@ class OverlayEditorUIMixin:
                 self.token_combo.addItem(label)
 
     def _create_editor_card(self) -> QScrollArea:
-        """Flat scrollable editor area (Windows 11 Settings style)."""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)

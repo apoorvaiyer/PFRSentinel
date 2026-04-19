@@ -66,7 +66,6 @@ class OverlaySettingsPanel(OverlayEditorUIMixin, QWidget):
         main_layout.addWidget(editor_card, stretch=3)
 
     def _create_list_card(self) -> CardWidget:
-        """Overlay list with Add/Duplicate/Delete controls."""
         card = CardWidget()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(Spacing.card_padding, Spacing.card_padding,
@@ -182,6 +181,28 @@ class OverlaySettingsPanel(OverlayEditorUIMixin, QWidget):
             self.overlay_table.selectRow(saved_index)
 
         self.overlay_table.blockSignals(False)
+
+    def _update_list_row(self, index: int):
+        """Update only the display cells for one row without rebuilding the table."""
+        if index < 0 or index >= len(self._overlays) or index >= self.overlay_table.rowCount():
+            return
+        overlay = self._overlays[index]
+        name = overlay.get('name', 'Unnamed')
+        otype = overlay.get('type', 'text').capitalize()
+        if otype == 'Image':
+            path = overlay.get('image_path', '')
+            summary = os.path.basename(path) if path else overlay.get('anchor', 'Bottom-Right')
+        else:
+            text = overlay.get('text', '')
+            summary = text[:35].replace('\n', ' ')
+            if len(text) > 35:
+                summary += '...'
+            if not summary:
+                summary = overlay.get('anchor', 'Bottom-Left')
+        if self.overlay_table.item(index, 0):
+            self.overlay_table.item(index, 0).setText(name)
+            self.overlay_table.item(index, 1).setText(otype)
+            self.overlay_table.item(index, 2).setText(summary)
 
     def _show_add_menu(self):
         from qfluentwidgets import RoundMenu, Action
@@ -430,17 +451,17 @@ class OverlaySettingsPanel(OverlayEditorUIMixin, QWidget):
         type_map = {"Text": 0, "Image": 1, "Compass": 2}
         self.editor_stack.setCurrentIndex(type_map.get(text, 0))
         self._update_current_overlay()
-        self._refresh_list()
+        self._update_list_row(self._selected_index)
         self._update_preview()
 
     def _on_name_changed(self, text):
         self._update_current_overlay()
-        self._refresh_list()
+        self._update_list_row(self._selected_index)
 
     def _on_text_changed(self):
         if self._selected_index >= 0:
             self._update_current_overlay()
-            self._refresh_list()
+            self._update_list_row(self._selected_index)
             self._update_preview()
 
     def _on_appearance_changed(self):
@@ -458,12 +479,12 @@ class OverlaySettingsPanel(OverlayEditorUIMixin, QWidget):
 
     def _on_compass_field_changed(self):
         self._update_current_overlay()
-        self._refresh_list()
+        self._update_list_row(self._selected_index)
         self._update_preview()
 
     def _on_image_changed(self):
         self._update_current_overlay()
-        self._refresh_list()
+        self._update_list_row(self._selected_index)
         self._update_preview()
 
     def _on_image_size_changed(self):

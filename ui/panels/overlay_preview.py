@@ -1,10 +1,4 @@
-"""
-Overlay preview rendering.
-
-Self-contained preview card used by OverlaySettingsPanel. Also exposes
-the shared token catalogue + sample-value substitution used by the
-editor UI.
-"""
+"""Overlay preview card plus the shared token catalogue and sample-value substitution."""
 import math
 import os
 import random
@@ -16,6 +10,10 @@ from PySide6.QtGui import QPixmap, QPainter, QColor, QFont, QPen, QPolygonF
 from qfluentwidgets import CardWidget, SubtitleLabel
 
 from ..theme.tokens import Colors, Spacing, Layout
+from services.compass_overlay import (
+    COMPASS_CIRCLE_R, COMPASS_CARDINAL_LEN, COMPASS_ORDINAL_LEN,
+    COMPASS_HALF_BASE, COMPASS_INNER_R, COMPASS_LABEL_R,
+)
 
 
 TOKENS = [
@@ -76,6 +74,25 @@ COLOR_OPTIONS = [
 ]
 
 
+def _anchor_xy(anchor, offset_x, offset_y, width, height, elem_w, elem_h, margin=0):
+    """Return top-left (x, y) for an element given anchor, offsets, and margin."""
+    if 'Left' in anchor:
+        x = margin + offset_x
+    elif 'Right' in anchor:
+        x = width - elem_w - margin - offset_x
+    else:
+        x = (width - elem_w) // 2 + offset_x
+
+    if 'Top' in anchor:
+        y = margin + offset_y
+    elif 'Bottom' in anchor:
+        y = height - elem_h - margin - offset_y
+    else:
+        y = (height - elem_h) // 2 + offset_y
+
+    return x, y
+
+
 def substitute_tokens(text: str) -> str:
     """Replace tokens with sample values for preview rendering."""
     result = text
@@ -117,6 +134,9 @@ def substitute_tokens(text: str) -> str:
     result = result.replace('{SKY_CONDITION}', 'Clear (87%)')
     result = result.replace('{STARS_VISIBLE}', 'Yes')
     result = result.replace('{STAR_DENSITY}', 'High (0.85)')
+    result = result.replace('{STAR_COUNT}', '1247')
+    result = result.replace('{FWHM}', '3.2"')
+    result = result.replace('{SEEING}', 'Good')
     return result
 
 
@@ -127,6 +147,8 @@ class OverlayPreviewCard(CardWidget):
         super().__init__(parent)
         self._current_overlay = None
         self._image_cache = {}
+        self._background_pixmap = None
+        self._background_size = (0, 0)
         self._setup_ui()
         self._update_preview()
 
@@ -177,26 +199,31 @@ class OverlayPreviewCard(CardWidget):
         label_w = max(self.preview_label.width(), 200)
         label_h = max(self.preview_label.height(), 150)
 
-        preview = QPixmap(label_w, label_h)
-        preview.fill(QColor('#0a0e27'))
+        if (label_w, label_h) != self._background_size:
+            bg = QPixmap(label_w, label_h)
+            bg.fill(QColor('#0a0e27'))
+            painter = QPainter(bg)
+            painter.setRenderHint(QPainter.Antialiasing)
+            random.seed(42)
+            for _ in range(80):
+                x = random.randint(5, label_w - 5)
+                y = random.randint(5, label_h - 5)
+                brightness = random.randint(150, 255)
+                size = random.randint(1, 3)
+                painter.setPen(QPen(QColor(brightness, brightness, brightness)))
+                painter.setBrush(QColor(brightness, brightness, brightness))
+                painter.drawEllipse(x, y, size, size)
+            painter.end()
+            self._background_pixmap = bg
+            self._background_size = (label_w, label_h)
 
-        painter = QPainter(preview)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        random.seed(42)
-        for _ in range(80):
-            x = random.randint(5, label_w - 5)
-            y = random.randint(5, label_h - 5)
-            brightness = random.randint(150, 255)
-            size = random.randint(1, 3)
-            painter.setPen(QPen(QColor(brightness, brightness, brightness)))
-            painter.setBrush(QColor(brightness, brightness, brightness))
-            painter.drawEllipse(x, y, size, size)
-
+        preview = QPixmap(self._background_pixmap)
         if self._current_overlay is not None:
+            painter = QPainter(preview)
+            painter.setRenderHint(QPainter.Antialiasing)
             self._render_overlay(painter, self._current_overlay, label_w, label_h)
+            painter.end()
 
-        painter.end()
         self.preview_label.setPixmap(preview)
 
     def _render_overlay(self, painter: QPainter, overlay: dict, width: int, height: int):
@@ -247,19 +274,9 @@ class OverlayPreviewCard(CardWidget):
         scaled_offset_y = int(offset_y * scale)
         margin = int(10 * scale)
 
-        if 'Left' in anchor:
-            base_x = margin + scaled_offset_x
-        elif 'Right' in anchor:
-            base_x = width - text_width - margin - scaled_offset_x
-        else:
-            base_x = (width - text_width) // 2 + scaled_offset_x
-
-        if 'Top' in anchor:
-            y = margin + line_height + scaled_offset_y
-        elif 'Bottom' in anchor:
-            y = height - text_height - margin + line_height - scaled_offset_y
-        else:
-            y = (height - text_height) // 2 + line_height + scaled_offset_y
+        base_x, base_y = _anchor_xy(anchor, scaled_offset_x, scaled_offset_y,
+                                     width, height, text_width, text_height, margin)
+        y = base_y + line_height  # Qt draws text at baseline, not top-left
 
         if bg_enabled and bg_color != 'transparent':
             bg_qcolor = QColor(bg_color)
@@ -304,14 +321,14 @@ class OverlayPreviewCard(CardWidget):
         col_dark = QColor(85, 85, 85, 200)
         col_outline = QColor(255, 255, 255, 230)
 
-        circle_r = radius * 0.72
+        circle_r = radius * COMPASS_CIRCLE_R
         painter.setPen(QPen(col_outline, max(1, scaled_size // 50)))
         painter.setBrush(Qt.NoBrush)
         painter.drawEllipse(QPointF(cx, cy), circle_r, circle_r)
 
-        cardinal_len = radius * 0.68
-        ordinal_len = radius * 0.45
-        half_base = radius * 0.12
+        cardinal_len = radius * COMPASS_CARDINAL_LEN
+        ordinal_len = radius * COMPASS_ORDINAL_LEN
+        half_base = radius * COMPASS_HALF_BASE
 
         for i, angle_deg in enumerate(range(0, 360, 45)):
             is_cardinal = (i % 2 == 0)
@@ -337,7 +354,7 @@ class OverlayPreviewCard(CardWidget):
                 QPointF(cx, cy), QPointF(tip_x, tip_y), QPointF(bx2, by2)
             ]))
 
-        inner_r = radius * 0.07
+        inner_r = radius * COMPASS_INNER_R
         painter.setBrush(col_light)
         painter.setPen(QPen(col_outline, 1))
         painter.drawEllipse(QPointF(cx, cy), inner_r, inner_r)
@@ -349,7 +366,7 @@ class OverlayPreviewCard(CardWidget):
 
         for label_text, angle_deg in [('N', 0), ('E', 90), ('S', 180), ('W', 270)]:
             angle = math.radians(angle_deg) + rot_rad
-            label_r = radius * 0.88
+            label_r = radius * COMPASS_LABEL_R
             lx = cx + label_r * math.sin(angle)
             ly = cy - label_r * math.cos(angle)
 
@@ -413,19 +430,8 @@ class OverlayPreviewCard(CardWidget):
         actual_w = scaled_pixmap.width()
         actual_h = scaled_pixmap.height()
 
-        if 'Left' in anchor:
-            x = margin + scaled_offset_x
-        elif 'Right' in anchor:
-            x = width - actual_w - margin - scaled_offset_x
-        else:
-            x = (width - actual_w) // 2 + scaled_offset_x
-
-        if 'Top' in anchor:
-            y = margin + scaled_offset_y
-        elif 'Bottom' in anchor:
-            y = height - actual_h - margin - scaled_offset_y
-        else:
-            y = (height - actual_h) // 2 + scaled_offset_y
+        x, y = _anchor_xy(anchor, scaled_offset_x, scaled_offset_y,
+                           width, height, actual_w, actual_h, margin)
 
         old_opacity = painter.opacity()
         painter.setOpacity(opacity)
