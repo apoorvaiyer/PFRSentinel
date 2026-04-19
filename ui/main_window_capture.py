@@ -112,7 +112,7 @@ class _MainWindowCaptureMixin:
 
             saved_name = self.config.get('zwo_selected_camera_name', '')
 
-            self.capture_panel.camera_combo.blockSignals(True)
+            self.capture_panel.camera_widget.camera_combo.blockSignals(True)
 
             # Strip any old "(Index: N)" suffix from saved name for clean matching
             if '(Index:' in saved_name:
@@ -125,7 +125,7 @@ class _MainWindowCaptureMixin:
                     # cam format: "ZWO ASI676MC (Index: 2)"
                     cam_clean = cam.split(' (Index:')[0] if '(Index:' in cam else cam
                     if saved_name == cam_clean:
-                        self.capture_panel.camera_combo.setCurrentIndex(i)
+                        self.capture_panel.camera_widget.camera_combo.setCurrentIndex(i)
                         actual_index = i
                         if '(Index: ' in cam:
                             try:
@@ -152,13 +152,14 @@ class _MainWindowCaptureMixin:
                         actual_index = int(cam.split('(Index: ')[1].rstrip(')'))
                     except (IndexError, ValueError):
                         pass
-                self.capture_panel.camera_combo.setCurrentIndex(0)
+                self.capture_panel.camera_widget.camera_combo.setCurrentIndex(0)
                 self.config.set('zwo_selected_camera', actual_index)
                 self.config.set('zwo_selected_camera_name', cam_clean)
                 self.config.save()
                 app_logger.info(f"Auto-selected camera: '{cam_clean}' (SDK Index: {actual_index})")
 
-            self.capture_panel.camera_combo.blockSignals(False)
+            self.capture_panel.camera_widget.camera_combo.blockSignals(False)
+            self.capture_panel.camera_widget.load_from_config(self.config)
 
         self._update_start_button()
 

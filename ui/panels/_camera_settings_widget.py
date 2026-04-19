@@ -314,6 +314,7 @@ class CameraSettingsWidget(QWidget):
                 pass
         self.main_window.config.set('zwo_selected_camera', actual_index)
         self.main_window.config.set('zwo_selected_camera_name', self._clean_camera_name(camera_name))
+        self.load_from_config(self.main_window.config)
         self.settings_changed.emit()
 
     def _save_to_camera_profile(self, **kwargs):
