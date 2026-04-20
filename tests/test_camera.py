@@ -400,6 +400,94 @@ class TestCaptureLoopReconnectHeartbeat:
         )
 
 
+class TestDetectNeverSwapsCameraSilently:
+    """On a multi-camera rig (imaging + guide + all-sky), silently swapping
+    to a different camera when the saved one is missing would hijack the
+    wrong device and potentially disrupt NINA / PHD2 sessions. The fallback
+    must only fire when there's genuinely no saved selection (fresh install)."""
+
+    def test_on_cameras_detected_refuses_to_auto_swap(self):
+        import inspect
+        from ui import main_window_capture
+        src = inspect.getsource(
+            main_window_capture._MainWindowCaptureMixin._on_cameras_detected
+        )
+        # The fresh-install branch: auto-select only when saved_name is empty
+        assert "elif not saved_name and cameras:" in src, (
+            "Detect must only auto-select on fresh install (no saved name), "
+            "never swap to a different camera when the saved one is missing."
+        )
+        # The old silent-swap branch must be gone
+        assert "(not saved_name or not found)" not in src, (
+            "Detect no longer auto-selects when saved camera is missing — "
+            "multi-camera rigs cannot tolerate silent swaps."
+        )
+        # And it must emit a user-visible error when the saved camera vanishes
+        assert "not detected" in src, (
+            "User must see a clear notification when their saved camera is "
+            "missing, not a silent config rewrite."
+        )
+
+    def test_placeholder_camera_name_gets_cleared(self):
+        import inspect
+        from ui import main_window_capture
+        src = inspect.getsource(
+            main_window_capture._MainWindowCaptureMixin._on_cameras_detected
+        )
+        # Placeholder names like "Camera 0" from the earlier detection bug
+        # must be cleared, otherwise the user is locked out of auto-recovery.
+        assert r"re.fullmatch(r'Camera \d+'" in src or \
+               r'"Camera \\d+"' in src or \
+               "placeholder camera name" in src.lower(), (
+            "Migration to clear 'Camera N' placeholder names is missing. "
+            "Users with corrupted configs from the earlier bug would never "
+            "auto-recover without this."
+        )
+
+
+class TestResolveCameraIndexRefusesToSwap:
+    """The auto-recovery path must also refuse to silently connect to a
+    different camera when the saved one is missing."""
+
+    def _build_controller(self):
+        from ui.controllers.camera_controller import CameraControllerQt
+        main_window = MagicMock()
+        main_window.config = MagicMock()
+        ctrl = CameraControllerQt.__new__(CameraControllerQt)
+        ctrl.config = main_window.config
+        return ctrl
+
+    def test_missing_saved_camera_raises_rather_than_swapping(self):
+        ctrl = self._build_controller()
+        # Pretend the user's saved camera is ASI676MC but only the ASI462MM
+        # is on the bus. The controller MUST raise — not connect to ASI462MM.
+        with patch('zwoasi.init'), \
+                patch('zwoasi.get_num_cameras', return_value=1), \
+                patch('zwoasi.list_cameras', return_value=['ZWO ASI462MM']), \
+                patch('os.path.exists', return_value=True):
+            with pytest.raises(Exception, match="ZWO ASI676MC.*not found"):
+                ctrl._resolve_camera_index(
+                    sdk_path='fake.dll',
+                    camera_name='ZWO ASI676MC',
+                    saved_index=0,
+                )
+
+    def test_found_saved_camera_still_works(self):
+        """Regression guard: the no-swap fix mustn't break the happy path."""
+        ctrl = self._build_controller()
+        with patch('zwoasi.init'), \
+                patch('zwoasi.get_num_cameras', return_value=2), \
+                patch('zwoasi.list_cameras',
+                      return_value=['ZWO ASI676MC', 'ZWO ASI462MM']), \
+                patch('os.path.exists', return_value=True):
+            idx = ctrl._resolve_camera_index(
+                sdk_path='fake.dll',
+                camera_name='ZWO ASI462MM',
+                saved_index=1,
+            )
+            assert idx == 1
+
+
 class TestDetectCamerasNoPhantomPlaceholder:
     """Regression for 2026-04-20 10:15: the SDK briefly reported
     num_cameras=2 but list_cameras returned only 1 entry, and detection

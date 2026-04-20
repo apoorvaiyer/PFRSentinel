@@ -136,15 +136,25 @@ class _MainWindowCaptureMixin:
 
             self.capture_panel.camera_widget.camera_combo.blockSignals(True)
 
-            # Strip any old "(Index: N)" suffix from saved name for clean matching
             if '(Index:' in saved_name:
                 saved_name = saved_name.split('(Index:')[0].strip()
                 self.config.set('zwo_selected_camera_name', saved_name)
 
+            # Placeholder names like "Camera 0" came from a previous detection
+            # bug (fixed 2026-04-20) and must be cleared — otherwise the user
+            # is locked out of auto-recovery on this rig forever.
+            if saved_name and re.fullmatch(r'Camera \d+', saved_name.strip()):
+                app_logger.warning(
+                    f"Clearing placeholder camera name '{saved_name}' from config "
+                    "(artefact of a previous detection bug)"
+                )
+                self.config.set('zwo_selected_camera_name', '')
+                self.config.save()
+                saved_name = ''
+
+            found = False
             if saved_name and cameras:
-                found = False
                 for i, cam in enumerate(cameras):
-                    # cam format: "ZWO ASI676MC (Index: 2)"
                     cam_clean = cam.split(' (Index:')[0] if '(Index:' in cam else cam
                     if saved_name == cam_clean:
                         self.capture_panel.camera_widget.camera_combo.setCurrentIndex(i)
@@ -156,16 +166,31 @@ class _MainWindowCaptureMixin:
                                 pass
                         self.config.set('zwo_selected_camera', actual_index)
                         self.config.save()
-                        app_logger.info(f"Restored camera by name: '{saved_name}' (SDK Index: {actual_index})")
+                        app_logger.info(
+                            f"Restored camera by name: '{saved_name}' "
+                            f"(SDK Index: {actual_index})"
+                        )
                         found = True
                         break
 
-                if not found:
-                    app_logger.warning(f"Saved camera '{saved_name}' not found in detected cameras")
-
-            if (not saved_name or not found) and cameras:
-                # No saved name (fresh install) or saved camera not found —
-                # auto-select the first detected camera so capture works immediately
+            if saved_name and not found:
+                # Multi-camera rigs (guide cam, NINA imaging cam, etc.) share
+                # the USB bus. Silently swapping to a different camera could
+                # hijack another process's session or capture the wrong sky.
+                # Keep the saved selection; the user must explicitly choose.
+                app_logger.error(
+                    f"Saved camera '{saved_name}' not found in detected cameras "
+                    f"— refusing to auto-select a different camera on a "
+                    f"multi-camera rig. Pick one manually on the Capture tab."
+                )
+                self._notify(
+                    f"Saved camera '{saved_name}' not detected — select a camera manually",
+                    "error",
+                )
+                self.capture_panel.camera_widget.camera_combo.setCurrentIndex(-1)
+            elif not saved_name and cameras:
+                # Fresh install (no prior selection): auto-pick the first so
+                # the user isn't staring at an empty combo.
                 cam = cameras[0]
                 cam_clean = cam.split(' (Index:')[0] if '(Index:' in cam else cam
                 actual_index = 0
@@ -178,7 +203,10 @@ class _MainWindowCaptureMixin:
                 self.config.set('zwo_selected_camera', actual_index)
                 self.config.set('zwo_selected_camera_name', cam_clean)
                 self.config.save()
-                app_logger.info(f"Auto-selected camera: '{cam_clean}' (SDK Index: {actual_index})")
+                app_logger.info(
+                    f"Auto-selected camera (first install, no saved name): "
+                    f"'{cam_clean}' (SDK Index: {actual_index})"
+                )
 
             self.capture_panel.camera_widget.camera_combo.blockSignals(False)
             self.capture_panel.camera_widget.load_from_config(self.config)
