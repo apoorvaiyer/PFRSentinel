@@ -21,7 +21,7 @@ from .camera_utils import (
     calculate_image_stats,
     debayer_raw_image,
 )
-from .posthog_service import capture_error
+from ..posthog_service import capture_error
 
 if TYPE_CHECKING:
     from .zwo_camera import ZWOCamera

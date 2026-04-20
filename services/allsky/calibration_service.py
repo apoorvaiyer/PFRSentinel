@@ -501,7 +501,7 @@ class CalibrationService(QObject):
     def _save_model(model: FisheyeModel) -> None:
         """Save model to the production calibration file."""
         try:
-            from app_config import APP_DATA_FOLDER
+            from services.app_config import APP_DATA_FOLDER
             cal_dir = os.path.join(
                 os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER,
             )

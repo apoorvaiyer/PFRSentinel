@@ -10,38 +10,38 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QIcon
 
 # Add parent directory for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from app_config import APP_DISPLAY_NAME, APP_SUBTITLE, APP_AUTHOR
+from services.app_config import APP_DISPLAY_NAME, APP_SUBTITLE, APP_AUTHOR
 from services.config import Config
 from services.logger import app_logger
 from services.web_output import WebOutputServer
 from services.ml_data_collector import init_ml_collector
 from version import __version__
 
-from .theme import apply_theme, apply_accent_theme, get_stylesheet
-from .theme.tokens import Colors, Typography, Spacing, Layout
-from .components.app_bar import AppBar
-from .components.nav_rail import NavRail
-from .panels.live_monitoring import LiveMonitoringPanel
-from .panels.capture_settings import CaptureSettingsPanel
-from .panels.output_settings import OutputSettingsPanel
-from .panels.image_processing import ImageProcessingPanel
-from .panels.overlay_settings import OverlaySettingsPanel
-from .panels.timelapse_panel import TimelapsePanel
-from .panels.settings_panel import SettingsPanel
-from .panels.logs_panel import LogsPanel
-from .panels.allsky_settings import AllSkySettingsPanel
-from .panels.meteor_panel import MeteorPanel
-from .controllers.image_processor import ImageProcessor
-from .controllers.timelapse_controller import TimelapseController
-from .controllers.allsky_controller import AllSkyController
-from .controllers.meteor_controller import MeteorController
+from ..theme import apply_theme, apply_accent_theme, get_stylesheet
+from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..components.app_bar import AppBar
+from ..components.nav_rail import NavRail
+from ..panels.live_monitoring import LiveMonitoringPanel
+from ..panels.capture_settings import CaptureSettingsPanel
+from ..panels.output_settings import OutputSettingsPanel
+from ..panels.image_processing import ImageProcessingPanel
+from ..panels.overlay_settings import OverlaySettingsPanel
+from ..panels.timelapse_panel import TimelapsePanel
+from ..panels.settings_panel import SettingsPanel
+from ..panels.logs_panel import LogsPanel
+from ..panels.allsky_settings import AllSkySettingsPanel
+from ..panels.meteor_panel import MeteorPanel
+from ..controllers.image_processor import ImageProcessor
+from ..controllers.timelapse_controller import TimelapseController
+from ..controllers.allsky_controller import AllSkyController
+from ..controllers.meteor_controller import MeteorController
 
-from .main_window_capture import _MainWindowCaptureMixin
-from .main_window_output import _MainWindowOutputMixin
-from .main_window_settings import _MainWindowSettingsMixin
-from .main_window_lifecycle import _MainWindowLifecycleMixin
+from .capture import _MainWindowCaptureMixin
+from .output import _MainWindowOutputMixin
+from .settings import _MainWindowSettingsMixin
+from .lifecycle import _MainWindowLifecycleMixin
 
 
 class MainWindow(
@@ -94,7 +94,7 @@ class MainWindow(
         self._setup_connections()
         self._apply_styles()
 
-        from .theme import configure_widget_cursors
+        from ..theme import configure_widget_cursors
         configure_widget_cursors(self)
 
         self._start_timers()
@@ -129,7 +129,7 @@ class MainWindow(
         self.setMinimumSize(900, 600)
 
         try:
-            from utils_paths import resource_path
+            from services.utils_paths import resource_path
             icon_path = resource_path('assets/app_icon.ico')
             if os.path.exists(icon_path):
                 self.setWindowIcon(QIcon(icon_path))

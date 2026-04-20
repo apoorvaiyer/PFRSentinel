@@ -184,7 +184,7 @@ class AllSkyController(QObject):
     # ------------------------------------------------------------------
 
     def _on_calibration_done(self, model) -> None:
-        from app_config import APP_DATA_FOLDER
+        from services.app_config import APP_DATA_FOLDER
         import os
 
         self._model = model
@@ -256,7 +256,7 @@ class AllSkyController(QObject):
         self._model = model
         info = self.get_calibration_info()
         # Update config path (service already saved the file)
-        from app_config import APP_DATA_FOLDER
+        from services.app_config import APP_DATA_FOLDER
         cal_path = os.path.join(
             os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER,
             'allsky_calibration.json',

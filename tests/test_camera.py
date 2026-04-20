@@ -95,7 +95,7 @@ class TestCameraUtilities:
     
     def test_scheduled_window_check(self):
         """Test scheduled capture window detection"""
-        from services.camera_utils import is_within_scheduled_window
+        from services.camera import is_within_scheduled_window
         from datetime import datetime
         
         # Test case: capture window 17:00 - 09:00 (overnight)
@@ -129,7 +129,7 @@ class TestRecoveryRaces:
 
     def _make_connection(self, asi_mock):
         """Build a CameraConnection with its zwoasi module mocked out."""
-        from services.camera_connection import CameraConnection
+        from services.camera import CameraConnection
         conn = CameraConnection(sdk_path=None, logger=lambda _: None)
         conn.asi = asi_mock
         return conn
@@ -222,7 +222,7 @@ class TestCleanCameraName:
         (None, ""),
     ])
     def test_strips_index_suffix(self, raw, expected):
-        from services.camera_utils import clean_camera_name
+        from services.camera import clean_camera_name
         assert clean_camera_name(raw) == expected
 
 
@@ -232,8 +232,8 @@ class TestWaitForCaptureThreadExit:
     def _make_camera(self):
         # Patch the CameraConnection constructor so it doesn't look for the
         # real SDK — the test only needs ZWOCamera's thread-join logic.
-        from services.zwo_camera import ZWOCamera
-        with patch('services.zwo_camera.CameraConnection') as conn_cls:
+        from services.camera import ZWOCamera
+        with patch('services.camera.zwo_camera.CameraConnection') as conn_cls:
             conn_cls.return_value = MagicMock(asi=None, camera=None, sdk_lock=MagicMock())
             cam = ZWOCamera(sdk_path=None)
         cam.on_log_callback = lambda _: None
@@ -386,7 +386,7 @@ class TestCaptureLoopReconnectHeartbeat:
         silently drop it.
         """
         import inspect
-        from services import zwo_capture_worker
+        from services.camera import zwo_capture_worker
         src = inspect.getsource(zwo_capture_worker.capture_loop)
         # The reconnect branch starts at '✓ Camera reconnected successfully'.
         # Must be followed (before the next 'except') by an assignment that

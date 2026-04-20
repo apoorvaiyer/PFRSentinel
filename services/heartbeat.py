@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from app_config import APP_DATA_FOLDER
+from .app_config import APP_DATA_FOLDER
 from .logger import app_logger
 
 # Default heartbeat interval in seconds

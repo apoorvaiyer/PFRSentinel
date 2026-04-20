@@ -133,10 +133,15 @@ class LogsPanel(QScrollArea):
         
         layout.addWidget(log_card, 1)
     
+    def load_from_config(self, config):
+        saved = config.get('ui_log_level', 'Info+')
+        if saved in [self.level_filter.itemText(i) for i in range(self.level_filter.count())]:
+            self.level_filter.setCurrentText(saved)
+
     def _on_filter_changed(self, level):
-        """Handle log level filter change"""
-        # Will be implemented with actual filtering
-        pass
+        if self.main_window and hasattr(self.main_window, 'config'):
+            self.main_window.config.set('ui_log_level', level)
+            self.main_window.config.save()
     
     def _on_search_changed(self, text):
         """Handle search text change"""

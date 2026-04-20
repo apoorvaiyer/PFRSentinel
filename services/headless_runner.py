@@ -15,7 +15,7 @@ from datetime import datetime
 
 from .logger import app_logger
 from .config import Config
-from .zwo_camera import ZWOCamera
+from .camera import ZWOCamera
 from .web_output import WebOutputServer
 from .processor import add_overlays
 from .cleanup import run_cleanup
