@@ -236,9 +236,17 @@ def capture_single_frame(camera: "ZWOCamera"):
 def capture_loop(camera: "ZWOCamera"):
     """Background capture loop with automatic recovery and scheduled capture support."""
     camera.log("=== Capture Loop Started ===")
-    if camera.scheduled_capture_enabled:
+    mode = getattr(camera, 'scheduled_capture_mode', 'always')
+    if mode == "gated":
         camera.log(
-            f"Scheduled capture enabled: {camera.scheduled_start_time} - {camera.scheduled_end_time}"
+            f"Scheduled capture (gated): {camera.scheduled_start_time} - "
+            f"{camera.scheduled_end_time} — paused outside window"
+        )
+    elif mode == "variable":
+        camera.log(
+            f"Scheduled capture (variable rates): {camera.scheduled_window_interval}s inside "
+            f"{camera.scheduled_start_time}-{camera.scheduled_end_time}, "
+            f"{camera.capture_interval}s outside"
         )
     else:
         camera.log("Scheduled capture disabled: will run continuously")
@@ -451,7 +459,7 @@ def capture_loop(camera: "ZWOCamera"):
                     pass
 
                 if camera.is_capturing:
-                    wait_end = time.time() + camera.capture_interval
+                    wait_end = time.time() + camera.effective_capture_interval
                     while camera.is_capturing and time.time() < wait_end:
                         time.sleep(0.2)
 

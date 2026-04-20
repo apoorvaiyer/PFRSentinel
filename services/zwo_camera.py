@@ -23,7 +23,9 @@ class ZWOCamera:
                  auto_exposure=False, max_exposure_sec=30.0, auto_wb=False,
                  wb_mode='asi_auto', wb_config=None, bayer_pattern='BGGR',
                  scheduled_capture_enabled=False, scheduled_start_time="17:00",
-                 scheduled_end_time="09:00", status_callback=None, camera_name=None,
+                 scheduled_end_time="09:00", scheduled_capture_mode=None,
+                 scheduled_window_interval=5.0,
+                 status_callback=None, camera_name=None,
                  config_callback=None):
         # Initialize log callback FIRST (before CameraConnection uses self.log)
         self.on_log_callback = None
@@ -74,9 +76,16 @@ class ZWOCamera:
         self.use_raw16 = False  # Use RAW16 mode for full bit depth (set by dev mode)
         
         # Scheduled capture settings
-        self.scheduled_capture_enabled = scheduled_capture_enabled
+        # mode: "always" | "gated" | "variable" — see services/config.py for semantics.
+        # If caller didn't specify a mode, derive it from the legacy boolean so older
+        # entry points (tests, headless runner pre-migration) still get sensible behaviour.
+        self.scheduled_capture_mode = scheduled_capture_mode or (
+            "gated" if scheduled_capture_enabled else "always"
+        )
+        self.scheduled_capture_enabled = self.scheduled_capture_mode != "always"
         self.scheduled_start_time = scheduled_start_time  # Format: "HH:MM"
         self.scheduled_end_time = scheduled_end_time      # Format: "HH:MM"
+        self.scheduled_window_interval = scheduled_window_interval  # seconds (variable mode)
         
         # Exposure tracking for UI
         self.exposure_start_time = None
@@ -167,15 +176,35 @@ class ZWOCamera:
     
     def is_within_scheduled_window(self):
         """
-        Check if current time is within the scheduled capture window.
-        Handles overnight captures (e.g., 17:00 - 09:00).
-        Returns True if scheduled capture is disabled or if within window.
+        Whether capture is currently permitted (i.e. we should NOT pause).
+
+        Only ``gated`` mode ever pauses capture — ``always`` and ``variable``
+        both keep the camera live around the clock. The time window still
+        matters in ``variable`` mode, but only for interval selection, which
+        is handled by :pyattr:`effective_capture_interval`.
         """
+        if self.scheduled_capture_mode != "gated":
+            return True
         return check_scheduled_window(
-            self.scheduled_capture_enabled,
+            True,
             self.scheduled_start_time,
             self.scheduled_end_time
         )
+
+    def is_in_time_window(self):
+        """True when the current clock falls inside the configured window, mode-independent."""
+        return check_scheduled_window(
+            True,
+            self.scheduled_start_time,
+            self.scheduled_end_time
+        )
+
+    @property
+    def effective_capture_interval(self):
+        """The interval (seconds) to wait before the next capture, honouring the schedule mode."""
+        if self.scheduled_capture_mode == "variable" and self.is_in_time_window():
+            return max(1.0, float(self.scheduled_window_interval))
+        return self.capture_interval
     
     def initialize_sdk(self):
         """Initialize the ZWO ASI SDK (delegates to connection manager)"""

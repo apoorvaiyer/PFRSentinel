@@ -294,9 +294,10 @@ class CameraControllerQt(QObject):
                 max_exposure_sec=max_exposure_ms / 1000.0,
                 bayer_pattern=bayer_pattern,
                 wb_config=wb_config,
-                scheduled_capture_enabled=self.config.get('scheduled_capture_enabled', False),
+                scheduled_capture_mode=self.config.get('scheduled_capture_mode', 'always'),
                 scheduled_start_time=self.config.get('scheduled_start_time', '17:00'),
                 scheduled_end_time=self.config.get('scheduled_end_time', '09:00'),
+                scheduled_window_interval=self.config.get('scheduled_window_interval', 5.0),
                 camera_name=clean_camera_name  # Pass clean name for profile tracking
             )
             
@@ -769,14 +770,17 @@ class CameraControllerQt(QObject):
             self.zwo_camera.bayer_pattern = bayer
 
             # --- Scheduled capture ---
-            self.zwo_camera.scheduled_capture_enabled = self.config.get(
-                'scheduled_capture_enabled', False
-            )
+            mode = self.config.get('scheduled_capture_mode', 'always')
+            self.zwo_camera.scheduled_capture_mode = mode
+            self.zwo_camera.scheduled_capture_enabled = mode != 'always'
             self.zwo_camera.scheduled_start_time = self.config.get(
                 'scheduled_start_time', '17:00'
             )
             self.zwo_camera.scheduled_end_time = self.config.get(
                 'scheduled_end_time', '09:00'
+            )
+            self.zwo_camera.scheduled_window_interval = self.config.get(
+                'scheduled_window_interval', 5.0
             )
 
             # --- White balance config ---

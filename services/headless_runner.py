@@ -177,9 +177,10 @@ class HeadlessRunner:
                 bayer_pattern=profile.get('bayer_pattern', DEFAULT_CAMERA_PROFILE['bayer_pattern']),
                 wb_mode=self.config.get('white_balance', {}).get('mode', 'asi_auto'),
                 wb_config=self.config.get('white_balance', {}),
-                scheduled_capture_enabled=self.config.get('scheduled_capture_enabled', False),
+                scheduled_capture_mode=self.config.get('scheduled_capture_mode', 'always'),
                 scheduled_start_time=self.config.get('scheduled_start_time', '17:00'),
-                scheduled_end_time=self.config.get('scheduled_end_time', '09:00')
+                scheduled_end_time=self.config.get('scheduled_end_time', '09:00'),
+                scheduled_window_interval=self.config.get('scheduled_window_interval', 5.0)
             )
             
             # Set capture interval
@@ -220,8 +221,6 @@ class HeadlessRunner:
     
     def _capture_loop(self):
         """Main capture loop"""
-        interval = self.config.get('zwo_interval', 5.0)
-        
         while self.running and not self._shutdown_event.is_set():
             try:
                 # Check scheduled capture window
@@ -246,9 +245,9 @@ class HeadlessRunner:
                 # Run cleanup if enabled
                 self._run_cleanup()
                 
-                # Wait for next interval
+                # Wait for next interval (honours variable-rate schedules)
                 elapsed = time.time() - start_time
-                wait_time = max(0, interval - elapsed)
+                wait_time = max(0, self.zwo_camera.effective_capture_interval - elapsed)
                 if wait_time > 0:
                     self._shutdown_event.wait(wait_time)
                     

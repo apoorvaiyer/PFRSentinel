@@ -83,9 +83,16 @@ DEFAULT_CONFIG = {
     "zwo_auto_exposure": False,   # auto-exposure algorithm enabled (global toggle)
     
     # Scheduled capture settings
-    "scheduled_capture_enabled": False,
-    "scheduled_start_time": "17:00",  # 5:00 PM
-    "scheduled_end_time": "09:00",    # 9:00 AM (next day for overnight captures)
+    # mode:
+    #   "always"   — capture 24/7 using zwo_interval (default)
+    #   "gated"    — only capture inside the time window; disconnect camera outside
+    #   "variable" — always capture, but use scheduled_window_interval inside the
+    #                window and zwo_interval outside (e.g. fast at night, slow by day)
+    "scheduled_capture_mode": "always",
+    "scheduled_capture_enabled": False,     # legacy flag — kept in sync with mode for back-compat
+    "scheduled_start_time": "17:00",        # 5:00 PM — window start (24hr)
+    "scheduled_end_time": "09:00",          # 9:00 AM — window end (next day for overnight)
+    "scheduled_window_interval": 5.0,       # seconds between captures when inside the window (variable mode only)
     
     # White Balance configuration
     "white_balance": {
@@ -500,6 +507,13 @@ class Config:
                                 config[key].update(value)
                             else:
                                 config[key] = value
+
+                        # Back-compat: derive scheduled_capture_mode from legacy
+                        # scheduled_capture_enabled if mode wasn't stored.
+                        if 'scheduled_capture_mode' not in loaded:
+                            config['scheduled_capture_mode'] = (
+                                'gated' if config.get('scheduled_capture_enabled') else 'always'
+                            )
 
                         return config
                 except Exception as e:
