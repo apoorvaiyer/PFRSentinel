@@ -474,19 +474,15 @@ def capture_loop(camera: "ZWOCamera"):
                         if camera.reconnect_camera_safe():
                             camera.log("✓ Camera reconnected successfully")
                             consecutive_errors = 0
-                            # With multiple USB cameras the bus needs time to settle.
-                            # Probe the camera before resuming to confirm it's live.
                             camera.log("Waiting 3s for USB bus to stabilise...")
                             wait_end = time.time() + 3.0
                             while camera.is_capturing and time.time() < wait_end:
                                 time.sleep(0.2)
-                            try:
-                                camera.camera.get_camera_property()
-                            except Exception as probe_err:
-                                raise Exception(
-                                    f"Camera not responding after reconnect: {probe_err}"
-                                )
-                            # Suppress watchdog during the first post-reconnect exposure.
+                            # No explicit probe here: an SDK call that hangs
+                            # (e.g. get_camera_property after a wedged USB bus)
+                            # would block forever since it cannot be interrupted.
+                            # capture_single_frame on the next loop iteration
+                            # has bounded timeouts and will raise cleanly.
                             camera._last_frame_time = time.time()
                             continue
                         else:

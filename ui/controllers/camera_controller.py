@@ -29,6 +29,11 @@ _UNRECOVERABLE_ERROR_PATTERNS = (
 _DISCORD_ERROR_SUPPRESS_AFTER_ATTEMPTS = 3
 _WEDGED_THREAD_JOIN_TIMEOUT_SEC = 3.0
 _SUSTAINED_CAPTURE_RESET_SEC = 300
+# Max consecutive recovery firings that skip because the old capture thread
+# is still blocked in the ZWO SDK. After this, the SDK is deemed unrecoverable
+# and the user is asked to restart. Windows USB IO usually times out in
+# 30–60s, so 6 × 30s delays covers the pathological case.
+_MAX_WEDGED_SKIPS = 6
 
 
 class CameraControllerQt(QObject):
@@ -45,6 +50,11 @@ class CameraControllerQt(QObject):
     frame_ready = Signal(object, dict)  # PIL Image, metadata
     error = Signal(str)
     calibration_status = Signal(bool)  # True=calibrating, False=complete
+    # Fired from the USB-reset worker thread. Payload: True = reset succeeded
+    # (→ schedule a retry); False = reset failed (→ unrecoverable). A Qt
+    # Signal crosses threads via a queued connection; QTimer.singleShot
+    # from a non-Qt worker thread does NOT fire — see log 2026-04-20 08:03.
+    _usb_reset_done = Signal(bool)
     
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -70,6 +80,11 @@ class CameraControllerQt(QObject):
         self._unrecoverable_mode = False
         self._usb_reset_attempted = False
         self._suppress_discord_errors = False
+        # Count of consecutive recovery attempts skipped because the dying
+        # capture thread is still wedged inside the SDK.
+        self._wedged_skip_count = 0
+
+        self._usb_reset_done.connect(self._on_usb_reset_done)
 
     def detect_cameras(self):
         """Detect connected ZWO cameras"""
@@ -352,6 +367,7 @@ class CameraControllerQt(QObject):
         self._unrecoverable_mode = False
         self._usb_reset_attempted = False
         self._suppress_discord_errors = False
+        self._wedged_skip_count = 0
         self._dying_camera = None
 
         try:
@@ -498,7 +514,8 @@ class CameraControllerQt(QObject):
             app_logger.info("Auto-recovery: capture already running — cancelled")
             return
 
-        self._join_dying_camera()
+        if not self._join_or_skip_dying_camera():
+            return
 
         app_logger.info(
             f"Auto-recovery: attempting capture restart "
@@ -513,18 +530,48 @@ class CameraControllerQt(QObject):
             app_logger.error(f"Auto-recovery restart raised: {e}")
             self._schedule_auto_recovery()
 
-    def _join_dying_camera(self):
+    def _join_or_skip_dying_camera(self) -> bool:
+        """Wait for the previous capture thread to exit; skip recovery if it
+        is still wedged.
+
+        Returns True if it's safe to proceed with SDK calls, False if the
+        caller must abort this recovery cycle.  Calling the ZWO SDK while
+        another thread is blocked inside it crashes the DLL (SEH 0xe06d7363);
+        Windows USB IO usually times out within 30–60s, so we prefer to
+        re-schedule rather than race.
+        """
         dying = self._dying_camera
         if dying is None:
-            return
+            self._wedged_skip_count = 0
+            return True
         try:
-            dying.wait_for_capture_thread_exit(
+            joined = dying.wait_for_capture_thread_exit(
                 timeout=_WEDGED_THREAD_JOIN_TIMEOUT_SEC
             )
         except Exception as e:
             app_logger.warning(f"Error while joining dying capture thread: {e}")
-        finally:
+            joined = False
+        if joined:
             self._dying_camera = None
+            self._wedged_skip_count = 0
+            return True
+        self._wedged_skip_count += 1
+        if self._wedged_skip_count >= _MAX_WEDGED_SKIPS:
+            app_logger.error(
+                f"Previous capture thread still wedged after "
+                f"{self._wedged_skip_count} recovery attempts — giving up."
+            )
+            self._enter_unrecoverable_mode(
+                "capture thread stuck inside ZWO SDK; process restart required"
+            )
+            return False
+        app_logger.warning(
+            f"Previous capture thread still wedged "
+            f"(skip {self._wedged_skip_count}/{_MAX_WEDGED_SKIPS}) — "
+            "rescheduling retry to avoid concurrent SDK crash."
+        )
+        self._schedule_auto_recovery()
+        return False
 
     @staticmethod
     def _is_unrecoverable_error(message: str) -> bool:
@@ -536,14 +583,15 @@ class CameraControllerQt(QObject):
     def _start_usb_reset_worker(self):
         """Run the USB disable/enable cycle off the Qt main thread.
 
-        The underlying Windows call sleeps for 15+ s while the driver re-binds;
-        running it inline would freeze the UI. When the worker finishes, the
-        next recovery attempt is scheduled via QTimer.singleShot(0, ...) which
-        marshals back to the main thread.
+        The Windows API sleeps 15+ s while the driver re-binds; running it
+        inline would freeze the UI. Completion is reported via the
+        _usb_reset_done Signal so cross-thread marshalling goes through
+        Qt's queued-connection machinery (QTimer.singleShot from a non-Qt
+        worker thread silently never fires — see logs 2026-04-20 08:03).
         """
         if sys.platform != 'win32':
             app_logger.info("USB reset unavailable: not on Windows.")
-            self._schedule_auto_recovery()
+            self._on_usb_reset_done(False)
             return
         from services.camera_utils import clean_camera_name
         camera_name = clean_camera_name(
@@ -551,7 +599,7 @@ class CameraControllerQt(QObject):
         )
         if not camera_name:
             app_logger.warning("USB reset skipped: no saved camera name.")
-            self._schedule_auto_recovery()
+            self._on_usb_reset_done(False)
             return
 
         app_logger.warning(
@@ -559,6 +607,7 @@ class CameraControllerQt(QObject):
         )
 
         def worker():
+            ok = False
             try:
                 from services.usb_reset_win import (
                     disable_enable_zwo_camera_usb, is_usb_reset_available,
@@ -566,20 +615,33 @@ class CameraControllerQt(QObject):
                 if not is_usb_reset_available():
                     app_logger.warning("USB reset API unavailable.")
                 else:
-                    ok = disable_enable_zwo_camera_usb(
+                    ok = bool(disable_enable_zwo_camera_usb(
                         camera_name=camera_name,
                         logger=lambda m: app_logger.info(m),
-                    )
+                    ))
                     app_logger.info(
                         f"USB reset {'succeeded' if ok else 'did not complete'}"
                     )
             except Exception as e:
                 app_logger.error(f"USB reset raised: {e}")
             finally:
-                QTimer.singleShot(0, self._schedule_auto_recovery)
+                self._usb_reset_done.emit(ok)
 
         import threading
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_usb_reset_done(self, success: bool):
+        """Slot for the USB-reset worker's completion signal (main thread)."""
+        if success:
+            self._schedule_auto_recovery()
+            return
+        # Failure is usually admin denial (CM_Disable_DevNode 0x17). Without
+        # a successful reset, the ZWO DLL stays corrupt for the process
+        # lifetime; retrying just crashes again.
+        self._enter_unrecoverable_mode(
+            "USB reset failed — run the application as Administrator or "
+            "restart it to recover"
+        )
 
     def _enter_unrecoverable_mode(self, last_error: str):
         self._unrecoverable_mode = True

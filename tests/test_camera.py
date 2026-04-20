@@ -543,21 +543,110 @@ class TestControllerRecoveryWiring:
             assert reset_completed.wait(timeout=2.0), "worker did not finish"
         assert worker_thread_id.get('id') not in (None, main_thread_id)
 
-    def test_usb_reset_worker_skips_when_no_camera_name(self, qt_app):
+    def test_usb_reset_worker_goes_unrecoverable_when_no_camera_name(self, qt_app):
+        """No saved camera name → no reset target → unrecoverable.  Silently
+        scheduling a retry would just crash into the SDK again."""
         ctrl = self._build_controller()
         ctrl.config.get = MagicMock(return_value='')
-        ctrl._schedule_auto_recovery = MagicMock()
         with patch('sys.platform', 'win32'):
             ctrl._start_usb_reset_worker()
-        # Should fall through to scheduling a retry synchronously rather than
-        # spinning up a worker with no target.
+        assert ctrl._unrecoverable_mode is True
+
+    def test_usb_reset_success_schedules_retry(self, qt_app):
+        import threading, time
+        ctrl = self._build_controller()
+        ctrl.config.get = MagicMock(return_value='ZWO ASI676MC')
+        ctrl._schedule_auto_recovery = MagicMock()
+        done = threading.Event()
+        with patch('sys.platform', 'win32'), \
+                patch('services.usb_reset_win.is_usb_reset_available', return_value=True), \
+                patch('services.usb_reset_win.disable_enable_zwo_camera_usb',
+                      side_effect=lambda **kw: done.set() or True):
+            ctrl._start_usb_reset_worker()
+            assert done.wait(timeout=2.0)
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not ctrl._schedule_auto_recovery.called:
+                qt_app.processEvents()
+                time.sleep(0.01)
+        assert ctrl._schedule_auto_recovery.called
+        assert ctrl._unrecoverable_mode is False
+
+    def test_usb_reset_failure_marks_unrecoverable(self, qt_app):
+        """disable_enable returns False (e.g. admin denied CM_Disable_DevNode
+        0x17) — controller must stop retrying and emit the final error."""
+        import threading, time
+        ctrl = self._build_controller()
+        ctrl.config.get = MagicMock(return_value='ZWO ASI676MC')
+        error_spy = []
+        ctrl.error.connect(lambda m: error_spy.append(m))
+        done = threading.Event()
+        with patch('sys.platform', 'win32'), \
+                patch('services.usb_reset_win.is_usb_reset_available', return_value=True), \
+                patch('services.usb_reset_win.disable_enable_zwo_camera_usb',
+                      side_effect=lambda **kw: done.set() or False):
+            ctrl._start_usb_reset_worker()
+            assert done.wait(timeout=2.0)
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not ctrl._unrecoverable_mode:
+                qt_app.processEvents()
+                time.sleep(0.01)
+        assert ctrl._unrecoverable_mode is True
+        assert any("restart" in m.lower() for m in error_spy)
+
+    def test_usb_reset_worker_non_windows_marks_unrecoverable(self, qt_app):
+        ctrl = self._build_controller()
+        ctrl.config.get = MagicMock(return_value='ZWO ASI676MC')
+        with patch('sys.platform', 'linux'):
+            ctrl._start_usb_reset_worker()
+        assert ctrl._unrecoverable_mode is True
+
+    def test_wedged_dying_camera_skips_instead_of_crashing(self, qt_app):
+        """If the previous capture thread is still blocked in the SDK when
+        recovery fires, we MUST NOT issue any new SDK calls — they crash
+        the DLL.  Instead the controller reschedules and waits longer."""
+        ctrl = self._build_controller()
+        wedged = MagicMock()
+        wedged.wait_for_capture_thread_exit = MagicMock(return_value=False)
+        ctrl._dying_camera = wedged
+        ctrl.start_capture = MagicMock()
+        ctrl._schedule_auto_recovery = MagicMock()
+        ctrl._on_auto_recovery_fire()
+        ctrl.start_capture.assert_not_called()
         ctrl._schedule_auto_recovery.assert_called_once()
+        assert ctrl._wedged_skip_count == 1
+        assert ctrl._dying_camera is wedged  # still held for next attempt
+
+    def test_wedged_dying_camera_enters_unrecoverable_after_max_skips(self, qt_app):
+        from ui.controllers.camera_controller import _MAX_WEDGED_SKIPS
+        ctrl = self._build_controller()
+        wedged = MagicMock()
+        wedged.wait_for_capture_thread_exit = MagicMock(return_value=False)
+        ctrl._dying_camera = wedged
+        ctrl.start_capture = MagicMock()
+        ctrl._schedule_auto_recovery = MagicMock()
+        for _ in range(_MAX_WEDGED_SKIPS):
+            ctrl._on_auto_recovery_fire()
+        assert ctrl._unrecoverable_mode is True
+        ctrl.start_capture.assert_not_called()
+
+    def test_wedged_skip_count_resets_when_thread_finally_exits(self, qt_app):
+        ctrl = self._build_controller()
+        ctrl._wedged_skip_count = 3
+        dying = MagicMock()
+        dying.wait_for_capture_thread_exit = MagicMock(return_value=True)
+        ctrl._dying_camera = dying
+        ctrl.start_capture = MagicMock()
+        ctrl._on_auto_recovery_fire()
+        assert ctrl._wedged_skip_count == 0
+        assert ctrl._dying_camera is None
+        ctrl.start_capture.assert_called_once()
 
     def test_user_stop_clears_unrecoverable_state(self, qt_app):
         ctrl = self._build_controller()
         ctrl._unrecoverable_mode = True
         ctrl._usb_reset_attempted = True
         ctrl._suppress_discord_errors = True
+        ctrl._wedged_skip_count = 3
         ctrl._dying_camera = MagicMock()
         ctrl.is_capturing = True
         ctrl.zwo_camera = MagicMock()
@@ -565,6 +654,7 @@ class TestControllerRecoveryWiring:
         assert ctrl._unrecoverable_mode is False
         assert ctrl._usb_reset_attempted is False
         assert ctrl._suppress_discord_errors is False
+        assert ctrl._wedged_skip_count == 0
         assert ctrl._dying_camera is None
 
 
