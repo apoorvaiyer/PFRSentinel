@@ -400,6 +400,123 @@ class TestCaptureLoopReconnectHeartbeat:
         )
 
 
+class TestConfigureRaw16Fallback:
+    """Production log 2026-04-20 10:31: set_roi at full-res RAW16 returned
+    ASI_ERROR_INVALID_SIZE. The old code swallowed the exception, leaving
+    the SDK with a stale ROI, and every subsequent frame crashed in
+    reshape (cannot reshape 2121856 into (3552,3552))."""
+
+    def _asi_module_mock(self):
+        asi = MagicMock()
+        asi.ASI_IMG_RAW8 = 0
+        asi.ASI_IMG_RAW16 = 2
+        asi.ASI_GAIN = 0
+        asi.ASI_EXPOSURE = 1
+        asi.ASI_BANDWIDTHOVERLOAD = 6
+        asi.ASI_BRIGHTNESS = 5
+        asi.ASI_FLIP = 9
+        asi.ASI_AUTO_MAX_BRIGHTNESS = 12
+        asi.ASI_WB_R = 3
+        asi.ASI_WB_B = 4
+        return asi
+
+    def _camera_mock(self, *, raw16_set_roi_raises=False):
+        camera = MagicMock()
+        camera.get_camera_property.return_value = {
+            'Name': 'ZWO ASI676MC',
+            'MaxWidth': 3552,
+            'MaxHeight': 3552,
+        }
+        camera.get_controls.return_value = {}
+
+        def set_roi(*, start_x, start_y, width, height, bins, image_type):
+            if raw16_set_roi_raises and image_type == 2:
+                raise Exception("Invalid size")
+
+        camera.set_roi.side_effect = set_roi
+        return camera
+
+    def test_raw16_success_keeps_raw16(self):
+        from services.camera_config import configure_camera
+        asi = self._asi_module_mock()
+        camera = self._camera_mock(raw16_set_roi_raises=False)
+        settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': True}
+        image_type, bit_depth = configure_camera(
+            camera, asi, settings, supports_raw16=True, log=lambda _: None
+        )
+        assert image_type == asi.ASI_IMG_RAW16
+        assert bit_depth == 16
+
+    def test_raw16_failure_falls_back_to_raw8(self):
+        from services.camera_config import configure_camera
+        asi = self._asi_module_mock()
+        camera = self._camera_mock(raw16_set_roi_raises=True)
+        settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': True}
+        image_type, bit_depth = configure_camera(
+            camera, asi, settings, supports_raw16=True, log=lambda _: None
+        )
+        assert image_type == asi.ASI_IMG_RAW8
+        assert bit_depth == 8
+        # Both set_roi calls must have happened: RAW16 (failed) then RAW8
+        set_roi_calls = camera.set_roi.call_args_list
+        assert len(set_roi_calls) == 2
+        assert set_roi_calls[0].kwargs['image_type'] == asi.ASI_IMG_RAW16
+        assert set_roi_calls[1].kwargs['image_type'] == asi.ASI_IMG_RAW8
+
+    def test_raw8_failure_raises(self):
+        """When RAW8 itself fails, propagate — there's no further fallback
+        and the caller must fail the connection."""
+        from services.camera_config import configure_camera
+        asi = self._asi_module_mock()
+        camera = self._camera_mock()
+        camera.set_roi.side_effect = Exception("Invalid size")
+        settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': False}
+        with pytest.raises(Exception, match="Invalid size"):
+            configure_camera(
+                camera, asi, settings, supports_raw16=True, log=lambda _: None
+            )
+
+
+class TestConfigureErrorPropagation:
+    """CameraConnection.configure used to swallow exceptions and log them,
+    leaving the SDK in a stale-ROI state that crashed every subsequent
+    capture. Now it raises so connect() can fail cleanly."""
+
+    def _conn(self):
+        from services.camera_connection import CameraConnection
+        conn = CameraConnection(sdk_path=None, logger=lambda _: None)
+        conn.asi = MagicMock(
+            ASI_IMG_RAW8=0, ASI_IMG_RAW16=2, ASI_GAIN=0, ASI_EXPOSURE=1,
+            ASI_BANDWIDTHOVERLOAD=6, ASI_BRIGHTNESS=5, ASI_FLIP=9,
+            ASI_AUTO_MAX_BRIGHTNESS=12, ASI_WB_R=3, ASI_WB_B=4,
+        )
+        conn.camera = MagicMock()
+        conn.camera.get_camera_property.return_value = {
+            'Name': 'ZWO ASI676MC', 'MaxWidth': 3552, 'MaxHeight': 3552,
+        }
+        conn.camera.get_controls.return_value = {}
+        conn.camera_name = 'ZWO ASI676MC'
+        conn.supports_raw16 = True
+        return conn
+
+    def test_configure_propagates_set_roi_failure(self):
+        conn = self._conn()
+        # Both RAW16 and RAW8 set_roi fail — configure must raise, not return.
+        conn.camera.set_roi.side_effect = Exception("Invalid size")
+        settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': False}
+        with pytest.raises(Exception, match="Invalid size"):
+            conn.configure(settings)
+
+    def test_configure_raises_on_identity_mismatch(self):
+        conn = self._conn()
+        conn.camera.get_camera_property.return_value = {
+            'Name': 'ZWO ASI462MM',  # wrong camera
+            'MaxWidth': 1936, 'MaxHeight': 1096,
+        }
+        with pytest.raises(Exception, match="identity mismatch"):
+            conn.configure({'gain': 100, 'exposure_sec': 0.1})
+
+
 class TestDetectNeverSwapsCameraSilently:
     """On a multi-camera rig (imaging + guide + all-sky), silently swapping
     to a different camera when the saved one is missing would hijack the

@@ -101,17 +101,35 @@ def configure_camera(camera, asi, settings: Dict[str, Any], supports_raw16: bool
         camera.set_control_value(asi.ASI_FLIP, 2)
 
     use_raw16 = settings.get('use_raw16', False) and supports_raw16
-    image_type = asi.ASI_IMG_RAW16 if use_raw16 else asi.ASI_IMG_RAW8
-    current_bit_depth = 16 if use_raw16 else 8
+    width = camera_info['MaxWidth']
+    height = camera_info['MaxHeight']
 
     # Set ROI to full frame — required on every connect because the SDK can
     # retain a stale ROI from a prior session, causing reshape failures.
-    camera.set_roi(start_x=0, start_y=0, width=camera_info['MaxWidth'],
-                   height=camera_info['MaxHeight'], bins=1, image_type=image_type)
-    camera.set_image_type(image_type)
+    # RAW16 at full res can fail with ASI_ERROR_INVALID_SIZE under USB-bus
+    # contention or post-recovery SDK state; fall back to RAW8 so capture
+    # continues rather than spiralling into a reshape crash loop.
+    image_type = asi.ASI_IMG_RAW16 if use_raw16 else asi.ASI_IMG_RAW8
+    current_bit_depth = 16 if use_raw16 else 8
+    try:
+        camera.set_roi(start_x=0, start_y=0, width=width, height=height,
+                       bins=1, image_type=image_type)
+        camera.set_image_type(image_type)
+    except Exception as e:
+        if not use_raw16:
+            raise
+        log(
+            f"  ⚠ set_roi failed at RAW16 ({width}x{height}): {e} — "
+            "falling back to RAW8 so capture can proceed"
+        )
+        image_type = asi.ASI_IMG_RAW8
+        current_bit_depth = 8
+        camera.set_roi(start_x=0, start_y=0, width=width, height=height,
+                       bins=1, image_type=image_type)
+        camera.set_image_type(image_type)
 
-    mode_str = "RAW16" if use_raw16 else "RAW8"
-    log(f"  ROI: Full frame {camera_info['MaxWidth']}x{camera_info['MaxHeight']} ({mode_str})")
+    mode_str = "RAW16" if current_bit_depth == 16 else "RAW8"
+    log(f"  ROI: Full frame {width}x{height} ({mode_str})")
     log("Camera configuration applied")
 
     return image_type, current_bit_depth

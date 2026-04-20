@@ -418,6 +418,16 @@ class CameraConnection:
             import traceback
             self.log(f"Stack trace: {traceback.format_exc()}")
 
+            # Close any camera handle opened before the failure so the SDK
+            # releases it — otherwise the next open can fail with
+            # "already opened" until the process exits.
+            if self.camera is not None:
+                try:
+                    self.camera.close()
+                except Exception:
+                    pass
+                self.camera = None
+
             # Add diagnostic information for "Invalid ID" errors
             if "Invalid ID" in str(e):
                 self._log_invalid_id_diagnostics(camera_index)
@@ -540,22 +550,24 @@ class CameraConnection:
         return verify_camera_identity(self.camera, self.camera_name, self.log)
 
     def configure(self, settings: Dict[str, Any]) -> None:
-        """Configure camera settings."""
+        """Configure camera settings.
+
+        Raises on SDK errors so the caller can fail the connection cleanly.
+        Silently swallowing caused the SDK to keep a stale ROI after a
+        failed set_roi, which then produced a reshape crash on every frame
+        (see production log 2026-04-20 10:31).
+        """
         if not self.camera:
             self.log("Cannot configure: camera not connected")
             return
         self.log("Configuring camera settings...")
-        try:
-            if not verify_camera_identity(self.camera, self.camera_name, self.log):
-                self.log("Aborting configure — camera identity mismatch")
-                return
-            image_type, bit_depth = configure_camera(
-                self.camera, self.asi, settings, self.supports_raw16, self.log
-            )
-            self.current_image_type = image_type
-            self.current_bit_depth = bit_depth
-        except Exception as e:
-            self.log(f"Error configuring camera: {e}")
+        if not verify_camera_identity(self.camera, self.camera_name, self.log):
+            raise Exception("Camera identity mismatch — aborting configure")
+        image_type, bit_depth = configure_camera(
+            self.camera, self.asi, settings, self.supports_raw16, self.log
+        )
+        self.current_image_type = image_type
+        self.current_bit_depth = bit_depth
 
     # =========================================================================
     # Camera Disconnection
