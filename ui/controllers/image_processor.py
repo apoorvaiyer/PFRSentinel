@@ -294,18 +294,23 @@ class ImageProcessorWorker(QThread):
             except Exception as e:
                 app_logger.debug(f"Star detection skipped: {e}")
 
-            # Feed frame to background calibration service (before overlays)
+            # Feed frame to background calibration service (before overlays).
+            # Same gate as the overlay itself: sun below civil twilight and
+            # (if ML is on) roof open — calibration is pointless otherwise and
+            # wastes ~30s of CPU on each cooldown cycle during the day.
             allsky_cfg = config.get('allsky_overlay', {})
             if self._calibration_service and allsky_cfg.get('enabled', False):
                 try:
-                    weather_cfg = config.get('weather', {})
-                    cal_lat = float(weather_cfg.get('latitude', 0) or 0)
-                    cal_lon = float(weather_cfg.get('longitude', 0) or 0)
-                    if cal_lat != 0 or cal_lon != 0:
-                        from datetime import timezone as _tz
-                        self._calibration_service.feed_frame(
-                            img, datetime.now(_tz.utc), cal_lat, cal_lon,
-                        )
+                    from services.observing_window import is_observing_window
+                    if is_observing_window(config, metadata, feature="All-sky calibration"):
+                        weather_cfg = config.get('weather', {})
+                        cal_lat = float(weather_cfg.get('latitude', 0) or 0)
+                        cal_lon = float(weather_cfg.get('longitude', 0) or 0)
+                        if cal_lat != 0 or cal_lon != 0:
+                            from datetime import timezone as _tz
+                            self._calibration_service.feed_frame(
+                                img, datetime.now(_tz.utc), cal_lat, cal_lon,
+                            )
                 except Exception as e:
                     app_logger.debug(f"Calibration feed skipped: {e}")
 

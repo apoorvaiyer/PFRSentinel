@@ -416,7 +416,8 @@ class CameraControllerQt(QObject):
         metadata['filename'] = f"capture_{datetime.now().strftime('%H%M%S')}.jpg"
         metadata['timestamp'] = datetime.now().strftime('%H:%M:%S')
         
-        # Emit signal (thread-safe way to update Qt UI)
+        # Emit signal (thread-safe way to update Qt UI — AutoConnection
+        # marshals to the main thread because this runs on the capture thread).
         self.frame_ready.emit(pil_image, metadata)
 
         # Reset the retry budget after a sustained stream — otherwise a rig
@@ -430,10 +431,6 @@ class CameraControllerQt(QObject):
                 self._suppress_discord_errors = False
                 self._usb_reset_attempted = False
         self._last_successful_frame_ts = now
-
-        # Also notify main window directly
-        if self.main_window:
-            self.main_window.on_image_captured(pil_image, metadata)
     
     def _on_camera_error(self, error_msg, is_fatal: bool = False):
         """Callback from ZWOCamera on errors.

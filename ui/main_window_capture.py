@@ -484,6 +484,10 @@ class _MainWindowCaptureMixin:
             self.camera_controller = CameraControllerQt(self)
             self.camera_controller.calibration_status.connect(self.on_calibration_status)
             self.camera_controller.error.connect(self._on_camera_error)
+            # Emitted on the camera worker thread; AutoConnection marshals to
+            # the main thread so on_image_captured can safely touch Qt widgets
+            # (StatusSprite's QTimer in particular has thread affinity to the GUI).
+            self.camera_controller.frame_ready.connect(self.on_image_captured)
             # When the capture loop terminates itself (fatal error), sync the
             # main window state so the AppBar, tray menu, etc. don't keep
             # pretending capture is running.

@@ -989,8 +989,6 @@ class TestControllerRecoveryWiring:
         # 5-minute gate clears on the current frame.
         import time as _t
         ctrl._last_successful_frame_ts = _t.time() - 3600
-        # Fake main_window.on_image_captured to avoid extra complexity.
-        ctrl.main_window.on_image_captured = MagicMock()
         ctrl._on_frame_captured(MagicMock(), {})
         assert ctrl._suppress_discord_errors is False
         assert ctrl._usb_reset_attempted is False
