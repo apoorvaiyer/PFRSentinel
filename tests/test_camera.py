@@ -400,6 +400,116 @@ class TestCaptureLoopReconnectHeartbeat:
         )
 
 
+class TestSelfHealingRecoveryFlag:
+    """P1/P2 follow-up (2026-04-20): the UI watchdog no longer tears down
+    state from the main thread; it sets _recovery_requested on the camera
+    and the capture thread self-heals on its next poll point."""
+
+    def _make_camera(self):
+        from services.zwo_camera import ZWOCamera
+        with patch('services.zwo_camera.CameraConnection') as conn_cls:
+            conn_cls.return_value = MagicMock(asi=None, camera=None, sdk_lock=MagicMock())
+            cam = ZWOCamera(sdk_path=None)
+        cam.on_log_callback = lambda _: None
+        return cam
+
+    def test_recovery_flag_defaults_false(self):
+        cam = self._make_camera()
+        assert cam._recovery_requested is False
+
+    def test_stop_capture_clears_recovery_flag(self):
+        cam = self._make_camera()
+        cam._recovery_requested = True
+        cam.is_capturing = True
+        cam.stop_capture()
+        assert cam._recovery_requested is False
+
+    def test_capture_single_frame_raises_immediately_when_flag_set(self):
+        from services import zwo_capture_worker
+        cam = self._make_camera()
+        cam.camera = MagicMock()
+        cam._recovery_requested = True
+        with pytest.raises(Exception, match="Recovery requested by watchdog"):
+            zwo_capture_worker.capture_single_frame(cam)
+        # Flag is consumed so subsequent frames do not re-trigger
+        assert cam._recovery_requested is False
+
+    def test_capture_single_frame_proceeds_when_flag_cleared(self):
+        """If _recovery_requested is False, the normal exposure path runs.
+        We short-circuit after the set_control_value calls to avoid building
+        a full SDK mock for the debayer pipeline."""
+        from services import zwo_capture_worker
+        cam = self._make_camera()
+        cam.camera = MagicMock()
+        cam.camera.set_control_value = MagicMock()
+        cam.camera.start_exposure = MagicMock(
+            side_effect=Exception("stop here")
+        )
+        cam.asi = MagicMock(ASI_EXPOSURE=1, ASI_GAIN=0)
+        cam._connection.sdk_lock = MagicMock()
+        cam._connection.sdk_lock.__enter__ = MagicMock(return_value=None)
+        cam._connection.sdk_lock.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(Exception, match="stop here"):
+            zwo_capture_worker.capture_single_frame(cam)
+        cam.camera.set_control_value.assert_called()
+
+
+class TestWatchdogSelfHeal:
+    """The UI watchdog should nudge the capture thread, not run SDK calls
+    itself.  Production log 2026-04-20 showed that calling get_num_cameras
+    from the main thread while the capture thread is still blocked in an
+    SDK call crashes the DLL (SEH 0xe06d7363)."""
+
+    @pytest.fixture
+    def qt_app(self):
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            pytest.skip("PySide6 not installed")
+        app = QApplication.instance() or QApplication([])
+        yield app
+
+    def test_threshold_uses_nina_style_buffer(self):
+        """Watchdog threshold: max(3*interval, 180s, exposure + 60s)."""
+        # Mirror the formula inline since importing main_window_capture
+        # pulls in qfluentwidgets.  If the formula changes, this test
+        # documents the intent.
+        def threshold(interval, exposure_sec):
+            return max(3 * interval, 180.0, exposure_sec + 60.0)
+
+        assert threshold(interval=5.0, exposure_sec=0.1) == 180.0
+        assert threshold(interval=5.0, exposure_sec=10.0) == 180.0
+        # 150s exposure → 210s floor beats 180
+        assert threshold(interval=5.0, exposure_sec=150.0) == 210.0
+        # 120s interval → 360s beats everything
+        assert threshold(interval=120.0, exposure_sec=0.1) == 360.0
+
+    def test_watchdog_sets_flag_does_not_declare_fatal(self, qt_app):
+        """Regression: the watchdog must not call is_fatal=True or touch
+        is_capturing; doing so races the SDK call the capture thread is
+        blocked inside."""
+        import inspect
+        from ui import main_window_capture
+        src = inspect.getsource(main_window_capture)
+        # Find the watchdog function body
+        wd_start = src.index("def _check_capture_watchdog")
+        wd_end = src.index("\n    def ", wd_start + 1)
+        wd_body = src[wd_start:wd_end]
+        # Must set the self-heal flag
+        assert "_recovery_requested" in wd_body, (
+            "watchdog must nudge the capture thread via _recovery_requested"
+        )
+        # Must NOT declare fatal or flip is_capturing from the main thread
+        assert "is_fatal=True" not in wd_body, (
+            "watchdog must not declare fatal — that path drives SDK calls "
+            "from the main thread and races the capture thread"
+        )
+        assert "cam.is_capturing = False" not in wd_body, (
+            "watchdog must not flip is_capturing; let the capture thread "
+            "exit naturally via its own reconnect path"
+        )
+
+
 class TestControllerRecoveryWiring:
     """Integration tests for the controller recovery path (requires Qt)."""
 

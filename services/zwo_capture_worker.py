@@ -46,6 +46,14 @@ def capture_single_frame(camera: "ZWOCamera"):
     if not camera.camera:
         raise Exception("Camera not connected")
 
+    # Honour a watchdog-requested self-heal before opening a new exposure.
+    # See ZWOCamera._recovery_requested.
+    if getattr(camera, '_recovery_requested', False):
+        camera._recovery_requested = False
+        raise Exception(
+            "Recovery requested by watchdog — triggering internal reconnect"
+        )
+
     sdk_lock = camera._connection.sdk_lock
 
     try:
@@ -96,6 +104,15 @@ def capture_single_frame(camera: "ZWOCamera"):
                     raise Exception("Capture stopped during exposure")
                 if camera.camera is None:
                     raise Exception("Camera disconnected during exposure")
+                if getattr(camera, '_recovery_requested', False):
+                    camera._recovery_requested = False
+                    try:
+                        camera.camera.stop_exposure()
+                    except Exception:
+                        pass
+                    raise Exception(
+                        "Recovery requested by watchdog mid-exposure"
+                    )
 
                 status = camera.camera.get_exposure_status()
                 if status == camera.asi.ASI_EXP_SUCCESS:

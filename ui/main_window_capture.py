@@ -199,11 +199,12 @@ class _MainWindowCaptureMixin:
             return
 
         interval = getattr(cam, 'capture_interval', 5.0) or 5.0
-        # Threshold: 3× capture interval or 60s, whichever is larger.
-        # Also needs a floor of (exposure + 10s) to avoid false positives
-        # on long exposures.
+        # Match NINA's generous pattern: a frame may still arrive up to ~60s
+        # after exposure end before we declare it lost, and the floor is raised
+        # to 3 minutes so legitimate reconnects (which can take 20–30s on a
+        # shared USB bus) don't trip the watchdog.
         exposure_sec = getattr(cam, 'exposure_seconds', 0.0) or 0.0
-        threshold = max(3 * interval, 60.0, exposure_sec + 10.0)
+        threshold = max(3 * interval, 180.0, exposure_sec + 60.0)
         stale_for = time.time() - last_frame
 
         if stale_for < threshold:
@@ -217,16 +218,24 @@ class _MainWindowCaptureMixin:
             self._watchdog_alerted = True
             app_logger.error(
                 f"⚠ Capture watchdog: no frames for {stale_for:.0f}s "
-                f"(threshold {threshold:.0f}s) — capture loop may be wedged"
+                f"(threshold {threshold:.0f}s) — nudging capture thread to self-heal"
             )
-            cam.is_capturing = False
+            # Self-healing: request that the capture thread run its own
+            # reconnect-and-retry on the next poll point.  We deliberately do
+            # NOT declare fatal or touch is_capturing — that path drives SDK
+            # calls from the main thread and races the still-running capture
+            # thread, which has repeatedly corrupted the ZWO DLL (SEH
+            # 0xe06d7363).  If the thread is truly wedged inside a C SDK
+            # call, the flag check never fires; Windows USB IO eventually
+            # times out and the thread picks up the flag then.
+            cam._recovery_requested = True
             try:
                 self.camera_controller._on_camera_error(
-                    f"Capture wedged — no frames for {int(stale_for)}s",
-                    is_fatal=True,
+                    f"Capture wedged — no frames for {int(stale_for)}s; "
+                    f"requesting capture thread to self-heal",
+                    is_fatal=False,
                 )
             except TypeError:
-                # Older signature fallback
                 self.camera_controller._on_camera_error(
                     f"Capture wedged — no frames for {int(stale_for)}s"
                 )

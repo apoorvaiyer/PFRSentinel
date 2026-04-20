@@ -46,6 +46,10 @@ class ZWOCamera:
         # Capture state
         self.is_capturing = False
         self.capture_thread = None
+        # Set by the UI-level watchdog to nudge the capture thread into
+        # running its own reconnect on the next poll point.  Kept here (not
+        # on the connection) because the capture worker reads it directly.
+        self._recovery_requested = False
         self.status_callback = status_callback  # Callback for schedule status updates
         
         # Capture settings
@@ -456,6 +460,7 @@ class ZWOCamera:
 
         self.log("Stopping capture...")
         self.is_capturing = False
+        self._recovery_requested = False
 
         # Abort any running calibration so its loop exits quickly
         if self.calibration_manager:
