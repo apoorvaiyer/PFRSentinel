@@ -30,7 +30,7 @@ from ui.theme import apply_theme
 from services.logger import app_logger
 from services.posthog_service import posthog, get_distinct_id, capture_event, is_enabled as posthog_enabled
 from version import __version__
-from app_config import APP_DISPLAY_NAME, APP_SUBTITLE
+from services.app_config import APP_DISPLAY_NAME, APP_SUBTITLE
 
 
 def _install_crash_handlers():

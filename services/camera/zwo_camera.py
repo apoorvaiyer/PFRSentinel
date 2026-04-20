@@ -11,7 +11,7 @@ import time
 from .camera_calibration import CameraCalibration
 from .camera_connection import CameraConnection
 from .camera_utils import is_within_scheduled_window as check_scheduled_window
-from .logger import app_logger
+from ..logger import app_logger
 from . import zwo_capture_worker
 
 
@@ -568,7 +568,7 @@ class ZWOCamera:
         self.calibration_mode = False
 
         # PostHog: calibration results
-        from .posthog_service import capture_event
+        from ..posthog_service import capture_event
         cal_history = getattr(self.calibration_manager, 'calibration_history', [])
         capture_event('calibration_completed', {
             'success': success,

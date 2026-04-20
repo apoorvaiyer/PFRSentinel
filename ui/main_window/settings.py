@@ -74,6 +74,7 @@ class _MainWindowSettingsMixin:
             self.meteor_panel.load_from_config(self.config.get('meteor', {}))
             self.allsky_controller.load_from_config()
             self.settings_panel.load_from_config(self.config)
+            self.logs_panel.load_from_config(self.config)
 
             ml_config = self.config.get('ml_models', {})
             ml_enabled = ml_config.get('enabled', False) and ml_config.get('show_in_preview', True)

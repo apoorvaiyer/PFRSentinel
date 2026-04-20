@@ -489,7 +489,7 @@ class MeteorController(QObject):
         return os.path.join(self._appdata_dir(), "meteor_thumbnails")
 
     def _appdata_dir(self) -> str:
-        from app_config import APP_DATA_FOLDER
+        from services.app_config import APP_DATA_FOLDER
         return os.path.join(os.getenv("LOCALAPPDATA", ""), APP_DATA_FOLDER)
 
     @staticmethod

@@ -22,7 +22,7 @@ from services.logger import app_logger as log
 def _star_data_path(filename: str) -> str:
     """Return absolute path to a file in star_data/, works for dev and PyInstaller."""
     try:
-        from utils_paths import resource_path
+        from services.utils_paths import resource_path
         return resource_path(os.path.join('star_data', filename))
     except Exception:
         base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

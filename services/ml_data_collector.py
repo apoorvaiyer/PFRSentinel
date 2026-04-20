@@ -18,7 +18,7 @@ from typing import Optional, Dict, Any, Tuple
 import numpy as np
 
 from services.logger import app_logger
-from utils_paths import get_ml_contribution_dir
+from .utils_paths import get_ml_contribution_dir
 
 # Optional: astropy for FITS
 # Astropy is excluded from PyInstaller builds to save ~30MB.

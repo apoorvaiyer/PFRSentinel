@@ -7,14 +7,11 @@ All auto-exposure, calibration, scheduled windows, etc. are handled by ZWOCamera
 """
 from PySide6.QtCore import QObject, QTimer, Signal
 from datetime import datetime
+import sys
 import time
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
 from services.logger import app_logger
-from services.zwo_camera import ZWOCamera
+from services.camera import ZWOCamera
 
 
 # ZWO SDK errors that corrupt the DLL for the process lifetime — only a
@@ -591,7 +588,7 @@ class CameraControllerQt(QObject):
             app_logger.info("USB reset unavailable: not on Windows.")
             self._on_usb_reset_done(False)
             return
-        from services.camera_utils import clean_camera_name
+        from services.camera import clean_camera_name
         camera_name = clean_camera_name(
             self.config.get('zwo_selected_camera_name', '') or ''
         )

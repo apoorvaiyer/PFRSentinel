@@ -10,7 +10,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from services.camera_utils import calculate_brightness, check_clipping, is_within_scheduled_window
+from services.camera import calculate_brightness, check_clipping, is_within_scheduled_window
 
 
 class TestBrightnessCalculation:

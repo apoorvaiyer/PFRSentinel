@@ -34,7 +34,7 @@ from datetime import datetime
 # Add project root (parent of scripts/) to path so we can import utils_paths
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils_paths import get_app_data_dir
+from services.utils_paths import get_app_data_dir
 
 
 def backup_config():

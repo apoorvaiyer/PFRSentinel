@@ -9,7 +9,7 @@ import requests
 from datetime import datetime, timezone
 from PIL import Image
 from .logger import app_logger
-from app_config import APP_DISPLAY_NAME
+from .app_config import APP_DISPLAY_NAME
 
 # Max height for images posted to Discord periodic updates (reduces bandwidth)
 DISCORD_IMAGE_MAX_HEIGHT = 750

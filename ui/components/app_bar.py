@@ -97,7 +97,7 @@ class AppBar(QFrame):
         self.app_icon.setFixedSize(28, 28)
         self.app_icon.setScaledContents(False)  # Don't stretch to fill
         try:
-            from utils_paths import resource_path
+            from services.utils_paths import resource_path
             icon_path = resource_path('assets/app_icon.png')
             if os.path.exists(icon_path):
                 pixmap = QPixmap(icon_path).scaled(

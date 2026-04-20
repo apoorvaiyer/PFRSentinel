@@ -43,7 +43,7 @@ class _MainWindowLifecycleMixin:
         self._show_update_dialog(update_info)
 
     def _show_update_dialog(self, update_info):
-        from .dialogs.update_dialog import show_update_dialog
+        from ..dialogs.update_dialog import show_update_dialog
 
         if not self.isVisible() and self.system_tray:
             try:
@@ -177,7 +177,7 @@ class _MainWindowLifecycleMixin:
         """
         if enabled and self.system_tray is None:
             try:
-                from .system_tray_qt import SystemTrayQt, PYSTRAY_AVAILABLE
+                from ..system_tray_qt import SystemTrayQt, PYSTRAY_AVAILABLE
 
                 if not PYSTRAY_AVAILABLE:
                     app_logger.warning("System tray mode requires pystray package")

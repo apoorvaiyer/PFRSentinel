@@ -71,7 +71,7 @@ class CameraConnection:
         if self._logger:
             self._logger(message)
         else:
-            from .logger import app_logger
+            from ..logger import app_logger
             app_logger.debug(message)
 
     def _init_usb_reset(self) -> None:
@@ -80,7 +80,7 @@ class CameraConnection:
             return  # USB reset only supported on Windows
 
         try:
-            from .usb_reset_win import (
+            from services.usb_reset_win import (
                 reset_zwo_camera_usb, disable_enable_zwo_camera_usb,
                 is_usb_reset_available
             )

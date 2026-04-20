@@ -301,7 +301,7 @@ class WeatherService:
             import os
             
             # Get data directory (consistent with config.py pattern)
-            from app_config import APP_DATA_FOLDER
+            from services.app_config import APP_DATA_FOLDER
             data_dir = os.path.join(os.getenv('LOCALAPPDATA'), APP_DATA_FOLDER)
             
             icon_dir = os.path.join(data_dir, "weather_icons")

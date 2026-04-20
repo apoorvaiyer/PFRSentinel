@@ -7,7 +7,7 @@ import sys
 
 # Import app configuration for centralized naming
 try:
-    from app_config import APP_DATA_FOLDER
+    from .app_config import APP_DATA_FOLDER
 except ImportError:
     APP_DATA_FOLDER = "PFRSentinel"  # Fallback
 
@@ -15,10 +15,10 @@ except ImportError:
 def resource_path(relative_path):
     """
     Get absolute path to resource, works for dev and for PyInstaller
-    
+
     Args:
         relative_path: Path relative to application root
-        
+
     Returns:
         Absolute path to resource
     """
@@ -28,14 +28,14 @@ def resource_path(relative_path):
     except AttributeError:
         # Running from source - use script directory
         base_path = os.path.dirname(os.path.abspath(__file__))
-    
+
     return os.path.join(base_path, relative_path)
 
 
 def get_app_data_dir():
     r"""
     Get application data directory (for logs, user config, etc.)
-    
+
     Returns:
         Path to %LOCALAPPDATA%\{APP_DATA_FOLDER} (Windows)
     """
@@ -49,17 +49,17 @@ def get_app_data_dir():
     else:
         # Fallback for other platforms (though this is Windows-focused)
         app_dir = os.path.join(os.path.expanduser('~'), f'.{APP_DATA_FOLDER}')
-    
+
     # Create directory if it doesn't exist
     os.makedirs(app_dir, exist_ok=True)
-    
+
     return app_dir
 
 
 def get_log_dir():
     r"""
     Get log directory path
-    
+
     Returns:
         Path to %LOCALAPPDATA%\{APP_DATA_FOLDER}\Logs
     """
@@ -71,7 +71,7 @@ def get_log_dir():
 def get_ml_contribution_dir():
     r"""
     Get ML data contribution directory path.
-    
+
     Returns:
         Path to %LOCALAPPDATA%\{APP_DATA_FOLDER}\ml_contribution
     """
@@ -83,7 +83,7 @@ def get_ml_contribution_dir():
 def get_exe_dir():
     """
     Get the directory where the EXE is installed/running from.
-    
+
     Returns:
         Absolute path to the directory containing the executable (or script in dev mode)
     """
