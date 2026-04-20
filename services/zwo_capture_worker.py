@@ -164,16 +164,30 @@ def capture_single_frame(camera: "ZWOCamera"):
                 raise Exception("Camera disconnected before data readout")
             img_data = camera.camera.get_data_after_exposure()
             camera_info = camera.camera.get_camera_property()
-            width = camera_info['MaxWidth']
-            height = camera_info['MaxHeight']
+            # Use the SDK's view of the active ROI rather than the sensor's
+            # MaxWidth/MaxHeight. If set_roi was ever silently rejected or
+            # another process left the SDK with a non-default ROI, these
+            # diverge — and trusting MaxWidth then crashes in reshape.
+            roi_width, roi_height, _bins, roi_image_type = camera.camera.get_roi_format()
+
+        active_bit_depth = (
+            16 if roi_image_type == camera.asi.ASI_IMG_RAW16 else 8
+        )
+        expected_bytes = roi_width * roi_height * (active_bit_depth // 8)
+        if len(img_data) != expected_bytes:
+            raise Exception(
+                f"Frame size mismatch: SDK delivered {len(img_data)} bytes but "
+                f"ROI {roi_width}x{roi_height} @ {active_bit_depth}-bit expects "
+                f"{expected_bytes}. Camera may have been reset by another process."
+            )
+        width, height = roi_width, roi_height
 
         temp_info = _get_temperature(camera)
 
-        # Pass bit_depth for RAW16 mode support, request raw16 for dev mode
         img_rgb, img_rgb_raw16 = debayer_raw_image(
             img_data, width, height, camera.bayer_pattern,
-            bit_depth=camera.current_bit_depth,
-            return_raw16=(camera.current_bit_depth == 16),
+            bit_depth=active_bit_depth,
+            return_raw16=(active_bit_depth == 16),
         )
         img_rgb_no_wb = img_rgb.copy()
         img_rgb = apply_white_balance(img_rgb, camera.wb_config)
@@ -206,7 +220,7 @@ def capture_single_frame(camera: "ZWOCamera"):
             'RAW_RGB_NO_WB': img_rgb_no_wb,
             'RAW_RGB_16BIT': img_rgb_raw16,
             'CAMERA_BIT_DEPTH': camera_info.get('BitDepth', 8),
-            'IMAGE_BIT_DEPTH': camera.current_bit_depth,
+            'IMAGE_BIT_DEPTH': active_bit_depth,
             'BAYER_PATTERN': camera.bayer_pattern,
             'PIXEL_SIZE': camera_info.get('PixelSize', 0),
             'ELEC_PER_ADU': camera_info.get('ElecPerADU', 1.0),

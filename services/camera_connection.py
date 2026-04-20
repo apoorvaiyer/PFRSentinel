@@ -346,21 +346,27 @@ class CameraConnection:
 
             # Validate camera identity — if we expected a specific camera, make sure
             # the SDK gave us the right one.  SDK indices can silently shift when
-            # cameras are hot-plugged, so this catches cross-wiring.
-            if expected_camera_name and expected_camera_name not in actual_name:
-                self.log(
-                    f"✗ Camera identity mismatch! Expected '{expected_camera_name}' "
-                    f"at index {camera_index}, but SDK returned '{actual_name}' "
-                    f"({camera_info['MaxWidth']}x{camera_info['MaxHeight']}, "
-                    f"{camera_info['PixelSize']}µm)"
-                )
-                self.log("  Closing wrong camera and failing connection.")
-                try:
-                    self.camera.close()
-                except Exception:
-                    pass
-                self.camera = None
-                return False
+            # cameras are hot-plugged, so this catches cross-wiring.  We require
+            # an exact name match (after strip) rather than substring — writing
+            # one camera's ROI/gain to a different camera of the same model
+            # family could still mis-configure the hardware.
+            if expected_camera_name:
+                expected = expected_camera_name.strip()
+                actual = (actual_name or '').strip()
+                if expected != actual:
+                    self.log(
+                        f"✗ Camera identity mismatch! Expected '{expected}' "
+                        f"at index {camera_index}, but SDK returned '{actual}' "
+                        f"({camera_info['MaxWidth']}x{camera_info['MaxHeight']}, "
+                        f"{camera_info['PixelSize']}µm)"
+                    )
+                    self.log("  Closing wrong camera and failing connection.")
+                    try:
+                        self.camera.close()
+                    except Exception:
+                        pass
+                    self.camera = None
+                    return False
 
             # Store camera name for future reconnection
             self.camera_name = actual_name

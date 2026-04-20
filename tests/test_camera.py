@@ -400,6 +400,132 @@ class TestCaptureLoopReconnectHeartbeat:
         )
 
 
+class TestConfigureVerifiesRoiReadback:
+    """After set_roi, we must read back the active ROI and use that for
+    capture. If the SDK silently ignored our request (seen in production
+    after USB-bus contention), trusting the request causes every debayer
+    reshape to crash."""
+
+    def _asi(self):
+        return MagicMock(ASI_IMG_RAW8=0, ASI_IMG_RAW16=2, ASI_GAIN=0,
+                         ASI_EXPOSURE=1, ASI_BANDWIDTHOVERLOAD=6,
+                         ASI_BRIGHTNESS=5, ASI_FLIP=9,
+                         ASI_AUTO_MAX_BRIGHTNESS=12, ASI_WB_R=3, ASI_WB_B=4)
+
+    def _camera(self, *, actual_roi):
+        cam = MagicMock()
+        cam.get_camera_property.return_value = {
+            'Name': 'ZWO ASI676MC', 'MaxWidth': 3552, 'MaxHeight': 3552,
+        }
+        cam.get_controls.return_value = {}
+        cam.get_roi_format.return_value = actual_roi
+        return cam
+
+    def test_roi_matches_request(self):
+        from services.camera_config import configure_camera
+        asi = self._asi()
+        # SDK accepts our 3552x3552 RAW8 ask and reports it back.
+        cam = self._camera(actual_roi=[3552, 3552, 1, 0])
+        settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': False}
+        image_type, bit_depth = configure_camera(
+            cam, asi, settings, supports_raw16=True, log=lambda _: None
+        )
+        assert image_type == 0  # RAW8
+        assert bit_depth == 8
+
+    def test_roi_mismatch_uses_actual_bit_depth(self):
+        """SDK silently downgraded RAW16→RAW8: we must follow reality, not
+        keep claiming RAW16."""
+        from services.camera_config import configure_camera
+        asi = self._asi()
+        # set_roi call succeeds but the readback says RAW8 somehow
+        cam = self._camera(actual_roi=[3552, 3552, 1, 0])  # actual is RAW8
+        settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': True}
+        image_type, bit_depth = configure_camera(
+            cam, asi, settings, supports_raw16=True, log=lambda _: None
+        )
+        assert image_type == asi.ASI_IMG_RAW8
+        assert bit_depth == 8
+
+    def test_roi_mismatch_width_height_follows_actual(self):
+        """If the SDK reports a different active ROI size than what we set,
+        the returned bit_depth must correspond to what the SDK actually has."""
+        from services.camera_config import configure_camera
+        asi = self._asi()
+        cam = self._camera(actual_roi=[1776, 1776, 2, 2])  # binned 2x, RAW16
+        settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': True}
+        image_type, bit_depth = configure_camera(
+            cam, asi, settings, supports_raw16=True, log=lambda _: None
+        )
+        assert image_type == asi.ASI_IMG_RAW16
+        assert bit_depth == 16
+
+
+class TestIdentityMatchIsExact:
+    """Substring match could accept a similarly-named-but-different camera
+    (e.g. saved 'ZWO ASI662MM' accidentally matching 'ZWO ASI662MM Pro').
+    On a multi-camera rig, writing settings to the wrong camera is a real
+    hazard — exact match only."""
+
+    def test_exact_match_accepted(self):
+        from services.camera_config import verify_camera_identity
+        camera = MagicMock()
+        camera.get_camera_property.return_value = {'Name': 'ZWO ASI676MC'}
+        assert verify_camera_identity(camera, 'ZWO ASI676MC', lambda _: None) is True
+
+    def test_leading_trailing_whitespace_tolerated(self):
+        """SDK occasionally returns names with trailing nulls/spaces."""
+        from services.camera_config import verify_camera_identity
+        camera = MagicMock()
+        camera.get_camera_property.return_value = {'Name': '  ZWO ASI676MC  '}
+        assert verify_camera_identity(camera, 'ZWO ASI676MC', lambda _: None) is True
+
+    def test_substring_no_longer_accepted(self):
+        from services.camera_config import verify_camera_identity
+        camera = MagicMock()
+        camera.get_camera_property.return_value = {'Name': 'ZWO ASI676MC Pro'}
+        # Previously a substring check would accept this; we require exact
+        # match now because "Pro" variants can have different ROI constraints.
+        assert verify_camera_identity(camera, 'ZWO ASI676MC', lambda _: None) is False
+
+    def test_different_model_rejected(self):
+        from services.camera_config import verify_camera_identity
+        camera = MagicMock()
+        camera.get_camera_property.return_value = {'Name': 'ZWO ASI462MM'}
+        assert verify_camera_identity(camera, 'ZWO ASI676MC', lambda _: None) is False
+
+
+class TestCaptureUsesActualRoi:
+    """Source-level regression guard: capture_single_frame must derive
+    width/height from get_roi_format(), not MaxWidth/MaxHeight. The latter
+    is the sensor maximum; the active ROI can differ (another app left a
+    crop, or a silent set_roi rejection)."""
+
+    def test_capture_reads_active_roi_not_max_size(self):
+        import inspect
+        from services import zwo_capture_worker
+        src = inspect.getsource(zwo_capture_worker.capture_single_frame)
+        # get_roi_format() call must be present in the capture hot path
+        assert "get_roi_format()" in src, (
+            "capture_single_frame must read the SDK's active ROI to size "
+            "the debayer reshape correctly."
+        )
+        # And we should no longer trust MaxWidth/MaxHeight for reshape
+        assert "width = camera_info['MaxWidth']" not in src, (
+            "MaxWidth/MaxHeight is the sensor's maximum, not the active ROI "
+            "— do not feed it to the debayer reshape."
+        )
+
+    def test_capture_raises_clear_error_on_frame_size_mismatch(self):
+        import inspect
+        from services import zwo_capture_worker
+        src = inspect.getsource(zwo_capture_worker.capture_single_frame)
+        assert "Frame size mismatch" in src, (
+            "A clear error should be raised when delivered bytes don't "
+            "match the expected ROI — better than a cryptic reshape failure."
+        )
+
+
 class TestConfigureRaw16Fallback:
     """Production log 2026-04-20 10:31: set_roi at full-res RAW16 returned
     ASI_ERROR_INVALID_SIZE. The old code swallowed the exception, leaving
@@ -428,12 +554,18 @@ class TestConfigureRaw16Fallback:
             'MaxHeight': 3552,
         }
         camera.get_controls.return_value = {}
+        current_image_type = [0]  # mutable closure
 
         def set_roi(*, start_x, start_y, width, height, bins, image_type):
             if raw16_set_roi_raises and image_type == 2:
                 raise Exception("Invalid size")
+            current_image_type[0] = image_type
 
         camera.set_roi.side_effect = set_roi
+        # Readback reflects whichever image_type last succeeded in set_roi.
+        camera.get_roi_format.side_effect = lambda: [
+            3552, 3552, 1, current_image_type[0]
+        ]
         return camera
 
     def test_raw16_success_keeps_raw16(self):

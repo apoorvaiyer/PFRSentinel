@@ -22,14 +22,17 @@ def verify_camera_identity(camera, camera_name: Optional[str], log) -> bool:
     """
     Verify the open camera handle still points to the expected physical camera.
     Returns True if identity matches, False if mismatch or no camera.
+    Exact name match (after strip) — writing one camera's settings to a
+    different-but-similarly-named camera could mis-configure the hardware.
     """
     if not camera or not camera_name:
         return False
     try:
-        actual_name = camera.get_camera_property()['Name']
-        if camera_name not in actual_name:
+        actual_name = (camera.get_camera_property().get('Name') or '').strip()
+        expected = camera_name.strip()
+        if expected != actual_name:
             log(
-                f"✗ Camera identity MISMATCH: expected '{camera_name}', "
+                f"✗ Camera identity MISMATCH: expected '{expected}', "
                 f"SDK returned '{actual_name}'. Refusing operation."
             )
             return False
@@ -128,8 +131,23 @@ def configure_camera(camera, asi, settings: Dict[str, Any], supports_raw16: bool
                        bins=1, image_type=image_type)
         camera.set_image_type(image_type)
 
+    # Read back the ROI and verify the SDK accepted what we asked for.
+    # Some ZWO drivers silently ignore invalid combinations (e.g. RAW16 at
+    # a specific ROI) and keep the previous setting.  If we trust the
+    # request and the reality differs, every debayer call reshapes into
+    # the wrong dimensions.
+    actual_w, actual_h, _actual_bins, actual_image_type = camera.get_roi_format()
+    if actual_w != width or actual_h != height or actual_image_type != image_type:
+        log(
+            f"  ⚠ set_roi requested {width}x{height} img_type={image_type} "
+            f"but SDK reports {actual_w}x{actual_h} img_type={actual_image_type} "
+            "— using actual ROI for subsequent captures"
+        )
+        image_type = actual_image_type
+        current_bit_depth = 16 if image_type == asi.ASI_IMG_RAW16 else 8
+
     mode_str = "RAW16" if current_bit_depth == 16 else "RAW8"
-    log(f"  ROI: Full frame {width}x{height} ({mode_str})")
+    log(f"  ROI: Full frame {actual_w}x{actual_h} ({mode_str})")
     log("Camera configuration applied")
 
     return image_type, current_bit_depth
