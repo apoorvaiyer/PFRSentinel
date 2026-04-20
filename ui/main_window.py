@@ -330,6 +330,8 @@ class MainWindow(
         self.watchdog_timer.timeout.connect(self._check_capture_watchdog)
         self.watchdog_timer.start(60_000)  # 60s
         self._watchdog_alerted = False
+        self._watchdog_first_fire_ts = None
+        self._watchdog_ui_fatal_sent = False
 
     def _check_admin_privileges(self):
         """Warn once at startup if the app lacks Administrator rights.

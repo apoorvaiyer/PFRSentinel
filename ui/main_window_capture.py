@@ -9,6 +9,11 @@ from PySide6.QtWidgets import QApplication, QProgressDialog
 from services.logger import app_logger
 
 
+# Seconds after the first watchdog fire before we declare UI-fatal.
+# Gives the self-heal nudge time to land; escalates when it clearly hasn't.
+_WATCHDOG_UI_FATAL_GRACE_SEC = 120
+
+
 class _MainWindowCaptureMixin:
 
     # =========================================================================
@@ -218,30 +223,30 @@ class _MainWindowCaptureMixin:
     # =========================================================================
 
     def _check_capture_watchdog(self):
-        """Detect a wedged capture loop.
+        """Two-stage watchdog for wedged capture loops.
 
-        If the UI says we're capturing but no frames have arrived in 3× the
-        capture interval (and we're not inside scheduled off-peak hours or
-        long-retry mode), the SDK call is probably wedged. We can't unwedge
-        it from here, but we can:
+        Stage 1 (soft): frames are stale past ``threshold`` — nudge the
+        capture thread via ``_recovery_requested`` and fire a non-fatal
+        error for Discord/toast visibility. Healthy-but-slow recoveries
+        self-heal here without the UI ever going through teardown.
 
-          1. Log a loud warning.
-          2. Fire the on_error callback once (→ Discord alert).
-          3. Flip the camera's is_capturing flag so when the SDK call
-             finally returns (many ZWO SDK calls have internal timeouts),
-             the capture thread exits cleanly via the fatal-exit path.
+        Stage 2 (hard): still stale ``_WATCHDOG_UI_FATAL_GRACE_SEC`` after
+        stage 1 — the thread is genuinely wedged inside a C SDK call and
+        can't see our flag. Declare fatal so the UI reflects reality; the
+        dying_camera + _join_or_skip_dying_camera machinery handles the
+        wedged thread asynchronously so we don't race its SDK call.
         """
         if not self.is_capturing or not self.camera_controller:
-            self._watchdog_alerted = False
+            self._reset_watchdog_state()
             return
 
         cam = getattr(self.camera_controller, 'zwo_camera', None)
         if not cam:
-            self._watchdog_alerted = False
+            self._reset_watchdog_state()
             return
 
         if getattr(cam, 'is_capturing', False) is False:
-            self._watchdog_alerted = False
+            self._reset_watchdog_state()
             return
 
         last_frame = getattr(cam, '_last_frame_time', None)
@@ -249,16 +254,12 @@ class _MainWindowCaptureMixin:
             return
 
         interval = getattr(cam, 'capture_interval', 5.0) or 5.0
-        # Match NINA's generous pattern: a frame may still arrive up to ~60s
-        # after exposure end before we declare it lost, and the floor is raised
-        # to 3 minutes so legitimate reconnects (which can take 20–30s on a
-        # shared USB bus) don't trip the watchdog.
         exposure_sec = getattr(cam, 'exposure_seconds', 0.0) or 0.0
         threshold = max(3 * interval, 180.0, exposure_sec + 60.0)
         stale_for = time.time() - last_frame
 
         if stale_for < threshold:
-            self._watchdog_alerted = False
+            self._reset_watchdog_state()
             return
 
         if getattr(cam, 'long_retry_mode_public', False):
@@ -266,18 +267,11 @@ class _MainWindowCaptureMixin:
 
         if not self._watchdog_alerted:
             self._watchdog_alerted = True
+            self._watchdog_first_fire_ts = time.time()
             app_logger.error(
                 f"⚠ Capture watchdog: no frames for {stale_for:.0f}s "
                 f"(threshold {threshold:.0f}s) — nudging capture thread to self-heal"
             )
-            # Self-healing: request that the capture thread run its own
-            # reconnect-and-retry on the next poll point.  We deliberately do
-            # NOT declare fatal or touch is_capturing — that path drives SDK
-            # calls from the main thread and races the still-running capture
-            # thread, which has repeatedly corrupted the ZWO DLL (SEH
-            # 0xe06d7363).  If the thread is truly wedged inside a C SDK
-            # call, the flag check never fires; Windows USB IO eventually
-            # times out and the thread picks up the flag then.
             cam._recovery_requested = True
             try:
                 self.camera_controller._on_camera_error(
@@ -289,6 +283,38 @@ class _MainWindowCaptureMixin:
                 self.camera_controller._on_camera_error(
                     f"Capture wedged — no frames for {int(stale_for)}s"
                 )
+            return
+
+        # Stage 2: still stale long enough after the first fire that the
+        # nudge clearly didn't take — the capture thread is most likely
+        # stuck inside a C SDK call (seen with hung get_num_cameras after
+        # USB churn). Declare fatal so the UI reflects reality; the
+        # dying_camera machinery handles the wedged thread asynchronously.
+        if self._watchdog_ui_fatal_sent:
+            return
+        since_first = time.time() - (self._watchdog_first_fire_ts or time.time())
+        if since_first >= _WATCHDOG_UI_FATAL_GRACE_SEC:
+            self._watchdog_ui_fatal_sent = True
+            app_logger.error(
+                f"⚠ Capture still stalled after {int(since_first)}s since first "
+                "alert — SDK call not returning. Syncing UI state."
+            )
+            try:
+                self.camera_controller._on_camera_error(
+                    "Capture thread appears permanently wedged inside the ZWO SDK. "
+                    "Auto-recovery will keep trying; the app may need a manual "
+                    "restart if this persists.",
+                    is_fatal=True,
+                )
+            except TypeError:
+                self.camera_controller._on_camera_error(
+                    "Capture thread appears permanently wedged inside the ZWO SDK."
+                )
+
+    def _reset_watchdog_state(self):
+        self._watchdog_alerted = False
+        self._watchdog_first_fire_ts = None
+        self._watchdog_ui_fatal_sent = False
 
     # =========================================================================
     # CAPTURE CONTROL

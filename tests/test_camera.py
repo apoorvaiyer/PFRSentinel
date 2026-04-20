@@ -853,6 +853,34 @@ class TestWatchdogSelfHeal:
         # 120s interval → 360s beats everything
         assert threshold(interval=120.0, exposure_sec=0.1) == 360.0
 
+    def test_watchdog_has_two_stage_escalation(self, qt_app):
+        """Stage-1 nudges, stage-2 declares fatal if the nudge didn't take.
+        Source-level check because the full watchdog has too much Qt UI
+        state to drive cleanly with mocks."""
+        import inspect
+        from ui import main_window_capture
+        src = inspect.getsource(
+            main_window_capture._MainWindowCaptureMixin._check_capture_watchdog
+        )
+        # Stage 1: non-fatal nudge (unchanged)
+        assert "is_fatal=False" in src, (
+            "Watchdog must still start with a non-fatal nudge to give the "
+            "capture thread a chance to self-heal."
+        )
+        # Stage 2: eventual escalation to fatal so UI syncs when the thread
+        # is genuinely wedged inside a C SDK call (see 2026-04-20 17:23 log)
+        assert "is_fatal=True" in src, (
+            "Watchdog must escalate to is_fatal=True when the self-heal "
+            "nudge doesn't take — otherwise the UI says 'capturing' forever."
+        )
+        assert "_watchdog_first_fire_ts" in src, (
+            "Stage-2 escalation must be time-gated off the first-fire timestamp."
+        )
+        assert "_WATCHDOG_UI_FATAL_GRACE_SEC" in src, (
+            "Grace period before escalation must be configurable via the "
+            "module-level constant, not a magic number."
+        )
+
     def test_capture_started_signal_is_wired_to_main_window(self, qt_app):
         """Regression for 2026-04-20: auto-recovery called controller
         start_capture() but the main window never knew, so the AppBar
@@ -873,29 +901,29 @@ class TestWatchdogSelfHeal:
         assert "self.is_capturing = True" in handler_src
         assert "set_capturing(True)" in handler_src
 
-    def test_watchdog_sets_flag_does_not_declare_fatal(self, qt_app):
-        """Regression: the watchdog must not call is_fatal=True or touch
-        is_capturing; doing so races the SDK call the capture thread is
-        blocked inside."""
+    def test_watchdog_first_fire_is_non_fatal(self, qt_app):
+        """The first watchdog fire must use is_fatal=False so the capture
+        thread has time to self-heal before we force UI teardown. Stage-2
+        escalation is covered by a separate test."""
         import inspect
         from ui import main_window_capture
-        src = inspect.getsource(main_window_capture)
-        # Find the watchdog function body
-        wd_start = src.index("def _check_capture_watchdog")
-        wd_end = src.index("\n    def ", wd_start + 1)
-        wd_body = src[wd_start:wd_end]
-        # Must set the self-heal flag
-        assert "_recovery_requested" in wd_body, (
-            "watchdog must nudge the capture thread via _recovery_requested"
+        src = inspect.getsource(
+            main_window_capture._MainWindowCaptureMixin._check_capture_watchdog
         )
-        # Must NOT declare fatal or flip is_capturing from the main thread
-        assert "is_fatal=True" not in wd_body, (
-            "watchdog must not declare fatal — that path drives SDK calls "
-            "from the main thread and races the capture thread"
+        # Find stage-1 block: the "if not self._watchdog_alerted:" branch
+        stage1_start = src.index("if not self._watchdog_alerted:")
+        stage1_end = src.index("# Stage 2", stage1_start)
+        stage1 = src[stage1_start:stage1_end]
+        assert "_recovery_requested" in stage1, (
+            "Stage 1 must nudge via _recovery_requested"
         )
-        assert "cam.is_capturing = False" not in wd_body, (
-            "watchdog must not flip is_capturing; let the capture thread "
-            "exit naturally via its own reconnect path"
+        assert "is_fatal=False" in stage1, (
+            "Stage 1 must be non-fatal — gives self-heal a chance before "
+            "teardown"
+        )
+        assert "cam.is_capturing = False" not in stage1, (
+            "Stage 1 must not flip is_capturing; the capture thread's own "
+            "reconnect path handles exit"
         )
 
 
