@@ -400,6 +400,38 @@ class TestCaptureLoopReconnectHeartbeat:
         )
 
 
+class TestDetectCamerasNoPhantomPlaceholder:
+    """Regression for 2026-04-20 10:15: the SDK briefly reported
+    num_cameras=2 but list_cameras returned only 1 entry, and detection
+    filled the missing slot with a placeholder name ('Camera 0') that
+    was then auto-saved as the user's selected camera — clobbering the
+    real ZWO ASI462MM config entry.
+
+    The fix lives in ui.main_window_capture._on_detect_cameras'
+    detect_thread closure. Checking behaviour end-to-end requires the UI
+    stack (qfluentwidgets, QApplication), so the assertion is source-level:
+    no 'Camera {i}' style fallback name should be appended when the SDK
+    enumeration is short."""
+
+    def test_no_phantom_placeholder_in_detect_thread(self):
+        import inspect
+        from ui import main_window_capture
+        src = inspect.getsource(main_window_capture._MainWindowCaptureMixin._on_detect_cameras)
+        # Before the fix, the loop had: cameras.append(f"Camera {i}") in the
+        # except branch. If any future edit re-introduces a placeholder name,
+        # this test fails — and so will the user's config.
+        assert 'f"Camera {i}"' not in src, (
+            "Phantom placeholder name in detect_thread — would get auto-saved "
+            "as the selected camera and wreck the user's config. See log "
+            "2026-04-20 10:15."
+        )
+        # Must include retry logic for the enumeration race.
+        assert "enumeration race" in src.lower(), (
+            "detect_thread should retry when list_cameras disagrees with "
+            "get_num_cameras (documented SDK race)."
+        )
+
+
 class TestSelfHealingRecoveryFlag:
     """P1/P2 follow-up (2026-04-20): the UI watchdog no longer tears down
     state from the main thread; it sets _recovery_requested on the camera
@@ -483,6 +515,26 @@ class TestWatchdogSelfHeal:
         assert threshold(interval=5.0, exposure_sec=150.0) == 210.0
         # 120s interval → 360s beats everything
         assert threshold(interval=120.0, exposure_sec=0.1) == 360.0
+
+    def test_capture_started_signal_is_wired_to_main_window(self, qt_app):
+        """Regression for 2026-04-20: auto-recovery called controller
+        start_capture() but the main window never knew, so the AppBar
+        Start/Stop button kept showing "Start" while capture ran."""
+        import inspect
+        from ui import main_window_capture
+        src = inspect.getsource(
+            main_window_capture._MainWindowCaptureMixin._start_camera_capture
+        )
+        assert "capture_started.connect" in src, (
+            "camera_controller.capture_started must be wired to the main "
+            "window so auto-recovery success reflects in the UI."
+        )
+        # And the handler must flip is_capturing + update the app bar
+        handler_src = inspect.getsource(
+            main_window_capture._MainWindowCaptureMixin._on_camera_capture_started
+        )
+        assert "self.is_capturing = True" in handler_src
+        assert "set_capturing(True)" in handler_src
 
     def test_watchdog_sets_flag_does_not_declare_fatal(self, qt_app):
         """Regression: the watchdog must not call is_fatal=True or touch

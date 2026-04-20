@@ -74,13 +74,35 @@ class _MainWindowCaptureMixin:
                         main_window.cameras_detected.emit([], "No cameras detected")
                         return
 
-                for i in range(num_cameras):
-                    try:
-                        name = asi.list_cameras()[i]
-                        cameras.append(f"{name} (Index: {i})")
-                        app_logger.info(f"Camera {i}: {name}")
-                    except Exception:
-                        cameras.append(f"Camera {i}")
+                # Snapshot list_cameras() once and retry if it disagrees with
+                # get_num_cameras — the SDK has a race during hot-plug where
+                # get_num_cameras briefly reports N but list_cameras returns
+                # fewer names. Filling the missing slot with a placeholder
+                # like "Camera 0" used to auto-save the placeholder as the
+                # user's selected camera, clobbering the real camera_name in
+                # config (see production log 2026-04-20 10:15).
+                camera_list = []
+                for poll_attempt in range(3):
+                    camera_list = list(asi.list_cameras())
+                    if len(camera_list) >= num_cameras:
+                        break
+                    app_logger.warning(
+                        f"SDK enumeration race: get_num_cameras={num_cameras} "
+                        f"but list_cameras returned {len(camera_list)} — "
+                        f"retrying in 1s ({poll_attempt + 1}/3)"
+                    )
+                    time.sleep(1.0)
+
+                for i, name in enumerate(camera_list):
+                    cameras.append(f"{name} (Index: {i})")
+                    app_logger.info(f"Camera {i}: {name}")
+
+                if len(camera_list) != num_cameras:
+                    app_logger.warning(
+                        f"Enumeration still inconsistent after retries: "
+                        f"num_cameras={num_cameras}, enumerated={len(camera_list)} "
+                        "— trusting the enumerated list"
+                    )
 
                 app_logger.info(f"Detection complete: {len(cameras)} camera(s)")
                 main_window.cameras_detected.emit(cameras, "")
@@ -438,6 +460,11 @@ class _MainWindowCaptureMixin:
             # main window state so the AppBar, tray menu, etc. don't keep
             # pretending capture is running.
             self.camera_controller.capture_stopped.connect(self._on_camera_capture_stopped)
+            # When auto-recovery restarts capture successfully, the controller
+            # fires this signal. Without wiring it up, the main window's own
+            # is_capturing stays False and the AppBar shows "Start Capture"
+            # while capture is actually running.
+            self.camera_controller.capture_started.connect(self._on_camera_capture_started)
 
         self.camera_controller.start_capture()
 
@@ -506,6 +533,23 @@ class _MainWindowCaptureMixin:
 
         app_logger.warning("Capture ended unexpectedly — syncing UI state")
         self.stop_capture()
+
+    def _on_camera_capture_started(self):
+        """Handle controller capture_started signal.
+
+        Fires when the controller starts capture — usually from the user's
+        own button click (where we've already mirrored the state), but also
+        from auto-recovery, which otherwise leaves the AppBar's Start/Stop
+        button showing "Start" while capture is actually running.
+        """
+        if self.is_capturing:
+            return
+        app_logger.info("Capture resumed by auto-recovery — syncing UI state")
+        self.is_capturing = True
+        self.app_bar.set_capturing(True)
+        self.app_bar.set_status('waiting')
+        self.app_bar.camera_chip.set_status('connected')
+        self.app_bar.camera_chip.set_label('Connected')
 
     def _on_raw16_mode_changed(self, enabled: bool):
         if not self.camera_controller or not self.camera_controller.is_capturing:
