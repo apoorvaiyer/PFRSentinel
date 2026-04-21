@@ -1,6 +1,7 @@
 import io
 import os
 import random
+import threading
 import traceback
 from datetime import datetime
 
@@ -57,59 +58,61 @@ class _MainWindowOutputMixin:
             self.output_panel.set_discord_test_result(False, str(e)[:50])
 
     def _send_discord_startup(self):
-        try:
-            discord_config = self.config.get('discord', {})
-            if not discord_config.get('enabled', False):
-                return
+        discord_config = self.config.get('discord', {})
+        if not discord_config.get('enabled', False):
+            return
+        if not discord_config.get('startup_enabled', True):
+            return
 
-            if not discord_config.get('startup_enabled', True):
-                return
+        def _send():
+            try:
+                from services.discord_alerts import DiscordAlerts
+                alerts = DiscordAlerts(self.config)
+                if alerts.is_enabled():
+                    alerts.send_startup_message()
+                    app_logger.info("Discord startup notification sent")
+            except Exception as e:
+                app_logger.error(f"Failed to send Discord startup notification: {e}")
 
-            from services.discord_alerts import DiscordAlerts
-            alerts = DiscordAlerts(self.config)
-
-            if alerts.is_enabled():
-                alerts.send_startup_message()
-                app_logger.info("Discord startup notification sent")
-        except Exception as e:
-            app_logger.error(f"Failed to send Discord startup notification: {e}")
+        threading.Thread(target=_send, daemon=True).start()
 
     def _send_discord_error(self, error_msg: str):
-        try:
-            discord_config = self.config.get('discord', {})
-            if not discord_config.get('enabled', False):
-                return
+        discord_config = self.config.get('discord', {})
+        if not discord_config.get('enabled', False):
+            return
+        if not discord_config.get('post_errors', False):
+            return
 
-            # Check post_errors setting (config key is 'post_errors', not 'error_enabled')
-            if not discord_config.get('post_errors', False):
-                return
+        def _send():
+            try:
+                from services.discord_alerts import DiscordAlerts
+                alerts = DiscordAlerts(self.config)
+                if alerts.is_enabled():
+                    alerts.send_error_message(error_msg)
+                    app_logger.debug("Discord error notification sent")
+            except Exception as e:
+                app_logger.error(f"Failed to send Discord error notification: {e}")
 
-            from services.discord_alerts import DiscordAlerts
-            alerts = DiscordAlerts(self.config)
-
-            if alerts.is_enabled():
-                alerts.send_error_message(error_msg)
-                app_logger.debug("Discord error notification sent")
-        except Exception as e:
-            app_logger.error(f"Failed to send Discord error notification: {e}")
+        threading.Thread(target=_send, daemon=True).start()
 
     def _send_discord_shutdown(self):
-        try:
-            discord_config = self.config.get('discord', {})
-            if not discord_config.get('enabled', False):
-                return
+        discord_config = self.config.get('discord', {})
+        if not discord_config.get('enabled', False):
+            return
+        if not discord_config.get('post_startup_shutdown', False):
+            return
 
-            if not discord_config.get('post_startup_shutdown', False):
-                return
+        def _send():
+            try:
+                from services.discord_alerts import DiscordAlerts
+                alerts = DiscordAlerts(self.config)
+                if alerts.is_enabled():
+                    alerts.send_shutdown_message()
+                    app_logger.info("Discord shutdown notification sent")
+            except Exception as e:
+                app_logger.error(f"Failed to send Discord shutdown notification: {e}")
 
-            from services.discord_alerts import DiscordAlerts
-            alerts = DiscordAlerts(self.config)
-
-            if alerts.is_enabled():
-                alerts.send_shutdown_message()
-                app_logger.info("Discord shutdown notification sent")
-        except Exception as e:
-            app_logger.error(f"Failed to send Discord shutdown notification: {e}")
+        threading.Thread(target=_send, daemon=True).start()
 
     # =========================================================================
     # IMAGE HANDLING
@@ -339,72 +342,63 @@ class _MainWindowOutputMixin:
                             )
 
                 if should_post:
-                    success = self._send_discord_periodic_update(image_path)
-                    if success:
-                        if not self.first_image_posted_to_discord:
-                            self.first_image_posted_to_discord = True
-                        # Recalculate jitter for next cycle (0–300 seconds / 0–5 minutes)
-                        self._discord_jitter_seconds = random.randint(0, 300)
-                        app_logger.debug(f"Next Discord jitter: -{self._discord_jitter_seconds}s")
+                    self._send_discord_periodic_update(image_path)
 
         except Exception as e:
             app_logger.error(f"Error pushing to output servers: {e}")
 
     def _send_discord_periodic_update(self, image_path: str):
-        """Send periodic update to Discord with latest image
+        from services.discord_alerts import DiscordAlerts
+        alerts = DiscordAlerts(self.config)
+        if not alerts.is_enabled():
+            return
 
-        Returns:
-            bool: True if sent successfully, False otherwise
-        """
-        try:
-            from services.discord_alerts import DiscordAlerts
+        # Collect UI state on the main thread before handing off to worker.
+        mode = "ZWO Camera" if self.is_capturing else "Directory Watch"
+        count = self.image_count
 
-            alerts = DiscordAlerts(self.config)
-
-            if not alerts.is_enabled():
-                return False
-
-            mode = "ZWO Camera" if self.is_capturing else "Directory Watch"
-            count = self.image_count
-
-            camera_info = ""
-            if self.is_capturing and self.camera_controller and self.camera_controller.zwo_camera:
-                from services.discord_alerts import format_exposure_time
-                exposure_seconds = self.camera_controller.zwo_camera.exposure_seconds
-                gain = self.camera_controller.zwo_camera.gain
-                exposure_formatted = format_exposure_time(exposure_seconds)
-                camera_info = f"\n**Exposure:** {exposure_formatted}\n**Gain:** {gain}"
-
-            message = f"""**Periodic Status Update**
-
-**Mode:** {mode}
-**Images Processed:** {count}{camera_info}
-**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
-
-            discord_config = self.config.get('discord', {})
-            include_image = discord_config.get('include_image', True)
-            attach_image = image_path if include_image else None
-
-            success = alerts.send_discord_message(
-                title=f"{self.config.get('app_name', 'PFRSentinel')} - Status Update",
-                description=message,
-                level="info",
-                image_path=attach_image
+        camera_info = ""
+        if self.is_capturing and self.camera_controller and self.camera_controller.zwo_camera:
+            from services.discord_alerts import format_exposure_time
+            exposure_seconds = self.camera_controller.zwo_camera.exposure_seconds
+            gain = self.camera_controller.zwo_camera.gain
+            camera_info = (
+                f"\n**Exposure:** {format_exposure_time(exposure_seconds)}"
+                f"\n**Gain:** {gain}"
             )
 
-            if success:
-                self.last_discord_post_time = datetime.now()
-                app_logger.info("Discord update sent successfully")
-                from services.posthog_service import capture_event
-                capture_event('discord_post_sent', {
-                    'interval_minutes': discord_config.get('periodic_interval_minutes', 30),
-                    'include_image': include_image,
-                })
-                return True
-            else:
-                app_logger.warning(f"Discord update failed: {alerts.last_send_status}")
-                return False
+        message = (
+            f"**Periodic Status Update**\n\n"
+            f"**Mode:** {mode}\n"
+            f"**Images Processed:** {count}{camera_info}\n"
+            f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
 
-        except Exception as e:
-            app_logger.error(f"Error sending Discord update: {e}")
-            return False
+        discord_config = self.config.get('discord', {})
+        include_image = discord_config.get('include_image', True)
+        interval_minutes = discord_config.get('periodic_interval_minutes', 30)
+        attach_image = image_path if include_image else None
+        title = f"{self.config.get('app_name', 'PFRSentinel')} - Status Update"
+
+        def _send():
+            try:
+                success = alerts.send_discord_message(
+                    title=title, description=message, level="info", image_path=attach_image
+                )
+                if success:
+                    self.last_discord_post_time = datetime.now()
+                    self.first_image_posted_to_discord = True
+                    self._discord_jitter_seconds = random.randint(0, 300)
+                    app_logger.info("Discord update sent successfully")
+                    app_logger.debug(f"Next Discord jitter: -{self._discord_jitter_seconds}s")
+                    from services.posthog_service import capture_event
+                    capture_event('discord_post_sent', {
+                        'interval_minutes': interval_minutes,
+                        'include_image': include_image,
+                    })
+                else:
+                    app_logger.warning(f"Discord update failed: {alerts.last_send_status}")
+            except Exception as e:
+                app_logger.error(f"Discord periodic update failed: {e}")
+
+        threading.Thread(target=_send, daemon=True).start()

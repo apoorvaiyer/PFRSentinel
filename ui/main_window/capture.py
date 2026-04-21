@@ -400,22 +400,23 @@ class _MainWindowCaptureMixin:
         dlg.close()
 
     def _send_discord_capture_started(self):
-        try:
-            discord_config = self.config.get('discord', {})
-            if not discord_config.get('enabled', False):
-                return
+        discord_config = self.config.get('discord', {})
+        if not discord_config.get('enabled', False):
+            return
+        if not discord_config.get('post_startup_shutdown', False):
+            return
 
-            if not discord_config.get('post_startup_shutdown', False):
-                return
+        def _send():
+            try:
+                from services.discord_alerts import DiscordAlerts
+                alerts = DiscordAlerts(self.config)
+                if alerts.is_enabled():
+                    alerts.send_capture_started_message()
+                    app_logger.info("Discord capture started notification sent")
+            except Exception as e:
+                app_logger.error(f"Failed to send Discord capture started notification: {e}")
 
-            from services.discord_alerts import DiscordAlerts
-            alerts = DiscordAlerts(self.config)
-
-            if alerts.is_enabled():
-                alerts.send_capture_started_message()
-                app_logger.info("Discord capture started notification sent")
-        except Exception as e:
-            app_logger.error(f"Failed to send Discord capture started notification: {e}")
+        threading.Thread(target=_send, daemon=True).start()
 
     def _update_start_button(self):
         if self.is_capturing:
