@@ -1,6 +1,7 @@
 """
 Configuration management for AllSky Overlay App
 """
+import copy
 import json
 import os
 import threading
@@ -499,7 +500,7 @@ class Config:
                         loaded = migrate_legacy_camera_keys(loaded)
 
                         # Merge with defaults to ensure new keys exist
-                        config = DEFAULT_CONFIG.copy()
+                        config = copy.deepcopy(DEFAULT_CONFIG)
 
                         # Deep merge for nested configs like discord, white_balance
                         for key, value in loaded.items():
@@ -523,8 +524,8 @@ class Config:
                         app_logger.error(f"Error loading config: {e}")
                     except Exception:
                         pass
-                    return DEFAULT_CONFIG.copy()
-            return DEFAULT_CONFIG.copy()
+                    return copy.deepcopy(DEFAULT_CONFIG)
+            return copy.deepcopy(DEFAULT_CONFIG)
     
     def save(self):
         """Save current configuration to JSON file"""

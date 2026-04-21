@@ -26,8 +26,8 @@ def resource_path(relative_path):
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except AttributeError:
-        # Running from source - use script directory
-        base_path = os.path.dirname(os.path.abspath(__file__))
+        # Running from source - go up to project root (this file is in services/)
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     return os.path.join(base_path, relative_path)
 

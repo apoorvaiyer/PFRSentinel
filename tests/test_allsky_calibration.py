@@ -177,7 +177,8 @@ class TestCalibrationError:
             planted_positions.append((x, y))
 
         img = PILImage.fromarray(img_arr, mode='L')
-        detected = detect_stars(img, max_stars=50, border_px=15)
+        detected = detect_stars(img, max_stars=50, border_px=15,
+                               sky_cx=960, sky_cy=540, sky_radius=1000)
 
         # Should find at least 20 of the 30 planted stars
         assert len(detected) >= 20, f"Found {len(detected)} of 30 planted stars"

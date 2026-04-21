@@ -7,6 +7,7 @@ All auto-exposure, calibration, scheduled windows, etc. are handled by ZWOCamera
 """
 from PySide6.QtCore import QObject, QTimer, Signal
 from datetime import datetime
+import os
 import sys
 import time
 
