@@ -442,7 +442,9 @@ class _MainWindowCaptureMixin:
 
             if mode == 'camera':
                 self._start_camera_capture()
-                if self.camera_controller and not self.camera_controller.is_capturing:
+                if (self.camera_controller
+                        and not self.camera_controller.is_capturing
+                        and not self.camera_controller._capture_starting):
                     app_logger.error("Camera capture failed to start")
                     return
             else:

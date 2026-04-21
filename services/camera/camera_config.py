@@ -4,7 +4,28 @@ Camera configuration helpers for ZWO ASI cameras.
 Pure helper functions used by CameraConnection.configure() — do not import directly
 from other modules; call through the CameraConnection interface.
 """
+import time
 from typing import Any, Dict, Optional, Tuple
+
+
+def _set_roi_with_retry(camera, width, height, image_type, log, attempts=3, delay=0.5):
+    """Call camera.set_roi() and retry on ASI_ERROR_INVALID_SIZE.
+
+    The camera may not be fully settled immediately after open().  Invalid-size
+    errors on a known-good resolution (e.g. full-frame RAW8) are transient; a
+    brief sleep and retry usually succeeds on the next attempt.
+    """
+    for i in range(attempts):
+        try:
+            camera.set_roi(start_x=0, start_y=0, width=width, height=height,
+                           bins=1, image_type=image_type)
+            camera.set_image_type(image_type)
+            return
+        except Exception as e:
+            if i == attempts - 1 or "invalid size" not in str(e).lower():
+                raise
+            log(f"  set_roi attempt {i + 1}/{attempts} returned Invalid size — retrying in {delay}s")
+            time.sleep(delay)
 
 
 def validate_control(controls, control_type, value, name, log) -> Tuple[Any, Optional[Dict]]:
@@ -115,9 +136,13 @@ def configure_camera(camera, asi, settings: Dict[str, Any], supports_raw16: bool
     image_type = asi.ASI_IMG_RAW16 if use_raw16 else asi.ASI_IMG_RAW8
     current_bit_depth = 16 if use_raw16 else 8
     try:
-        camera.set_roi(start_x=0, start_y=0, width=width, height=height,
-                       bins=1, image_type=image_type)
-        camera.set_image_type(image_type)
+        if use_raw16:
+            # Single attempt for RAW16 — fall back to RAW8 immediately on any failure.
+            camera.set_roi(start_x=0, start_y=0, width=width, height=height,
+                           bins=1, image_type=image_type)
+            camera.set_image_type(image_type)
+        else:
+            _set_roi_with_retry(camera, width, height, image_type, log)
     except Exception as e:
         if not use_raw16:
             raise
@@ -127,9 +152,7 @@ def configure_camera(camera, asi, settings: Dict[str, Any], supports_raw16: bool
         )
         image_type = asi.ASI_IMG_RAW8
         current_bit_depth = 8
-        camera.set_roi(start_x=0, start_y=0, width=width, height=height,
-                       bins=1, image_type=image_type)
-        camera.set_image_type(image_type)
+        _set_roi_with_retry(camera, width, height, image_type, log)
 
     # Read back the ROI and verify the SDK accepted what we asked for.
     # Some ZWO drivers silently ignore invalid combinations (e.g. RAW16 at
