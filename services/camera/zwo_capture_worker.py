@@ -464,6 +464,8 @@ def capture_loop(camera: "ZWOCamera"):
                         time.sleep(0.2)
 
             except Exception as e:
+                if not camera.is_capturing:
+                    break
                 consecutive_errors += 1
                 error_msg = str(e)
                 camera.log(f"✗ ERROR in capture loop: {error_msg}")
