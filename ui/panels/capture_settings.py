@@ -188,6 +188,9 @@ class CaptureSettingsPanel(QScrollArea):
     def reset_revive_button(self):
         self.camera_widget.reset_revive_button()
 
+    def clear_camera_selection(self):
+        self.camera_widget.camera_combo.setCurrentIndex(-1)
+
     def update_camera_capabilities(self, supports_raw16: bool, bit_depth: int):
         self.camera_widget.update_camera_capabilities(supports_raw16, bit_depth)
 

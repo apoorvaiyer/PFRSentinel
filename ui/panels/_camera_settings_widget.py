@@ -124,13 +124,7 @@ class CameraSettingsWidget(QWidget):
         return card
 
     def set_missing_camera_warning(self, saved_name: str, phantom_count: int = 0):
-        """Show or hide the missing-camera banner.
-
-        Called by main_window_capture after detection completes. saved_name
-        is the user's selected camera when it's not in the enumerated list;
-        pass an empty string to clear. phantom_count > 0 means the SDK sees
-        more devices than it can open (the revive path is most useful here).
-        """
+        """Pass empty saved_name to hide. phantom_count>0 enables Revive."""
         if not saved_name:
             self._missing_widget.hide()
             self._missing_saved_name = ''

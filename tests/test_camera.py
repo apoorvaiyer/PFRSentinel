@@ -748,11 +748,9 @@ class TestReviveMissingCamera:
         main_window.config = MagicMock()
         ctrl = CameraControllerQt.__new__(CameraControllerQt)
         ctrl.config = main_window.config
-        # Minimal attribute seed — revive_missing_camera doesn't touch the
-        # capture state, just spawns a worker thread.
+        ctrl._usb_reset_in_progress = False
         from PySide6.QtCore import QObject
         QObject.__init__(ctrl)
-        # Connect the signal so tests can listen
         return ctrl
 
     def test_revive_emits_camera_revive_done(self, qt_app=None):
@@ -1043,9 +1041,9 @@ class TestWatchdogSelfHeal:
         src = inspect.getsource(
             main_window_capture._MainWindowCaptureMixin._check_capture_watchdog
         )
-        # Find stage-1 block: the "if not self._watchdog_alerted:" branch
-        stage1_start = src.index("if not self._watchdog_alerted:")
-        stage1_end = src.index("# Stage 2", stage1_start)
+        # Stage 1 is gated on _watchdog_first_fire_ts being None (first fire).
+        stage1_start = src.index("if self._watchdog_first_fire_ts is None:")
+        stage1_end = src.index("if self._watchdog_ui_fatal_sent:", stage1_start)
         stage1 = src[stage1_start:stage1_end]
         assert "_recovery_requested" in stage1, (
             "Stage 1 must nudge via _recovery_requested"
