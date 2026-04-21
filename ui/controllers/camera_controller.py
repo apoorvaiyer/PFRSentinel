@@ -389,7 +389,13 @@ class CameraControllerQt(QObject):
                     return
                 self._enter_unrecoverable_mode(err)
                 return
-            self._schedule_auto_recovery()
+            if self._last_successful_frame_ts > 0:
+                self._schedule_auto_recovery()
+            else:
+                app_logger.warning(
+                    "Capture failed before first frame — not auto-recovering. "
+                    "Check connections and click Start when ready."
+                )
     def stop_capture(self):
         """Stop camera capture"""
         if not self.is_capturing:
