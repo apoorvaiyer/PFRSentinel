@@ -18,6 +18,7 @@ class CaptureSettingsPanel(QScrollArea):
     settings_changed = Signal()
     detect_cameras_clicked = Signal()
     raw16_mode_changed = Signal(bool)
+    revive_camera_clicked = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -77,6 +78,7 @@ class CaptureSettingsPanel(QScrollArea):
         self.camera_widget.settings_changed.connect(self.settings_changed)
         self.camera_widget.detect_cameras_clicked.connect(self.detect_cameras_clicked)
         self.camera_widget.raw16_mode_changed.connect(self.raw16_mode_changed)
+        self.camera_widget.revive_camera_clicked.connect(self.revive_camera_clicked)
         self.settings_stack.addWidget(self.camera_widget)
 
         self.settings_stack.setCurrentIndex(1)
@@ -179,6 +181,15 @@ class CaptureSettingsPanel(QScrollArea):
             duration=5000
         )
         bar.raise_()
+
+    def set_missing_camera_warning(self, saved_name: str, phantom_count: int = 0):
+        self.camera_widget.set_missing_camera_warning(saved_name, phantom_count)
+
+    def reset_revive_button(self):
+        self.camera_widget.reset_revive_button()
+
+    def clear_camera_selection(self):
+        self.camera_widget.camera_combo.setCurrentIndex(-1)
 
     def update_camera_capabilities(self, supports_raw16: bool, bit_depth: int):
         self.camera_widget.update_camera_capabilities(supports_raw16, bit_depth)

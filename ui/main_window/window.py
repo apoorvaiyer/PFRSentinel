@@ -292,6 +292,7 @@ class MainWindow(
         self.capture_panel.raw16_mode_changed.connect(self._on_raw16_mode_changed)
 
         self.capture_panel.detect_cameras_clicked.connect(self._on_detect_cameras)
+        self.capture_panel.revive_camera_clicked.connect(self._on_revive_camera)
 
         self.cameras_detected.connect(self._on_cameras_detected)
 
@@ -329,7 +330,6 @@ class MainWindow(
         self.watchdog_timer = QTimer(self)
         self.watchdog_timer.timeout.connect(self._check_capture_watchdog)
         self.watchdog_timer.start(60_000)  # 60s
-        self._watchdog_alerted = False
         self._watchdog_first_fire_ts = None
         self._watchdog_ui_fatal_sent = False
 

@@ -737,6 +737,134 @@ class TestResolveCameraIndexRefusesToSwap:
             assert idx == 1
 
 
+class TestReviveMissingCamera:
+    """Remote operators can't physically reseat a USB cable; the Capture
+    panel's Revive button runs a USB disable/enable on a specific saved
+    camera name as a software-only recovery action."""
+
+    def _build_controller(self):
+        from ui.controllers.camera_controller import CameraControllerQt
+        main_window = MagicMock()
+        main_window.config = MagicMock()
+        ctrl = CameraControllerQt.__new__(CameraControllerQt)
+        ctrl.config = main_window.config
+        ctrl._usb_reset_in_progress = False
+        from PySide6.QtCore import QObject
+        QObject.__init__(ctrl)
+        return ctrl
+
+    def test_revive_emits_camera_revive_done(self, qt_app=None):
+        """The worker must report completion via the camera_revive_done
+        signal regardless of success/failure — otherwise the UI's Revive
+        button stays greyed out forever."""
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            pytest.skip("PySide6 not installed")
+        app = QApplication.instance() or QApplication([])
+        import threading, time as _t
+
+        ctrl = self._build_controller()
+        seen = []
+        ctrl.camera_revive_done.connect(lambda ok, name: seen.append((ok, name)))
+
+        started = threading.Event()
+        def fake_reset(**kw):
+            started.set()
+            return True
+        with patch('sys.platform', 'win32'), \
+                patch('services.usb_reset_win.is_usb_reset_available', return_value=True), \
+                patch('services.usb_reset_win.disable_enable_zwo_camera_usb',
+                      side_effect=fake_reset):
+            ctrl.revive_missing_camera('ZWO ASI676MC')
+            assert started.wait(timeout=2.0)
+            deadline = _t.time() + 2.0
+            while _t.time() < deadline and not seen:
+                app.processEvents()
+                _t.sleep(0.01)
+        assert seen == [(True, 'ZWO ASI676MC')]
+
+    def test_revive_with_empty_name_emits_false(self):
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            pytest.skip("PySide6 not installed")
+        app = QApplication.instance() or QApplication([])
+        ctrl = self._build_controller()
+        seen = []
+        ctrl.camera_revive_done.connect(lambda ok, name: seen.append((ok, name)))
+        ctrl.revive_missing_camera('')
+        app.processEvents()
+        assert seen == [(False, '')]
+
+    def test_revive_strips_index_suffix(self):
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            pytest.skip("PySide6 not installed")
+        app = QApplication.instance() or QApplication([])
+        import threading, time as _t
+
+        ctrl = self._build_controller()
+        seen = []
+        ctrl.camera_revive_done.connect(lambda ok, name: seen.append((ok, name)))
+        received_names = []
+
+        def fake_reset(*, camera_name, logger, **kw):
+            received_names.append(camera_name)
+            return True
+
+        with patch('sys.platform', 'win32'), \
+                patch('services.usb_reset_win.is_usb_reset_available', return_value=True), \
+                patch('services.usb_reset_win.disable_enable_zwo_camera_usb',
+                      side_effect=fake_reset):
+            ctrl.revive_missing_camera('ZWO ASI676MC (Index: 0)')
+            deadline = _t.time() + 2.0
+            while _t.time() < deadline and not seen:
+                app.processEvents()
+                _t.sleep(0.01)
+        # Saved name with suffix must be cleaned before reaching the USB reset
+        assert received_names == ['ZWO ASI676MC']
+        assert seen == [(True, 'ZWO ASI676MC')]
+
+
+class TestPhantomDeviceLogging:
+    """When get_num_cameras reports more devices than list_cameras returns,
+    we must (a) trust the enumerated list, (b) flag the phantom count, and
+    (c) log a clear explanation so the user knows what Revive is for."""
+
+    def test_phantom_count_is_tracked_on_main_window(self):
+        import inspect
+        from ui.main_window import capture as main_window_capture
+        src = inspect.getsource(main_window_capture._MainWindowCaptureMixin._on_detect_cameras)
+        assert "_sdk_phantom_count" in src, (
+            "detect_thread must stash phantom_count on the main window so "
+            "_on_cameras_detected can pass it to the capture panel's banner."
+        )
+        # Must log an actionable explanation, not a generic warning
+        assert "Revive" in src or "revive" in src.lower(), (
+            "Phantom log message should tell the user about the Revive "
+            "button — otherwise the log is diagnostic-only."
+        )
+
+    def test_detected_handler_calls_missing_warning(self):
+        import inspect
+        from ui.main_window import capture as main_window_capture
+        src = inspect.getsource(
+            main_window_capture._MainWindowCaptureMixin._on_cameras_detected
+        )
+        # Setter must be called with the saved name + phantom count
+        assert "set_missing_camera_warning(saved_name, phantom_count)" in src or \
+               "set_missing_camera_warning(\n" in src, (
+            "Missing-camera path must populate the persistent banner with "
+            "the saved name and phantom count so the user can hit Revive."
+        )
+        # And cleared when we successfully restore the saved camera
+        assert "set_missing_camera_warning('')" in src, (
+            "Banner must be cleared when the saved camera reappears."
+        )
+
+
 class TestDetectCamerasNoPhantomPlaceholder:
     """Regression for 2026-04-20 10:15: the SDK briefly reported
     num_cameras=2 but list_cameras returned only 1 entry, and detection
@@ -744,7 +872,7 @@ class TestDetectCamerasNoPhantomPlaceholder:
     was then auto-saved as the user's selected camera — clobbering the
     real ZWO ASI462MM config entry.
 
-    The fix lives in ui.main_window_capture._on_detect_cameras'
+    The fix lives in ui.main_window.capture._on_detect_cameras'
     detect_thread closure. Checking behaviour end-to-end requires the UI
     stack (qfluentwidgets, QApplication), so the assertion is source-level:
     no 'Camera {i}' style fallback name should be appended when the SDK
@@ -887,8 +1015,11 @@ class TestWatchdogSelfHeal:
         Start/Stop button kept showing "Start" while capture ran."""
         import inspect
         from ui.main_window import capture as main_window_capture
+        # Signal wiring lives in _ensure_camera_controller so it's also
+        # available to user-initiated actions (e.g. Revive Camera) that
+        # run before the first start_capture() click.
         src = inspect.getsource(
-            main_window_capture._MainWindowCaptureMixin._start_camera_capture
+            main_window_capture._MainWindowCaptureMixin._ensure_camera_controller
         )
         assert "capture_started.connect" in src, (
             "camera_controller.capture_started must be wired to the main "
@@ -910,9 +1041,9 @@ class TestWatchdogSelfHeal:
         src = inspect.getsource(
             main_window_capture._MainWindowCaptureMixin._check_capture_watchdog
         )
-        # Find stage-1 block: the "if not self._watchdog_alerted:" branch
-        stage1_start = src.index("if not self._watchdog_alerted:")
-        stage1_end = src.index("# Stage 2", stage1_start)
+        # Stage 1 is gated on _watchdog_first_fire_ts being None (first fire).
+        stage1_start = src.index("if self._watchdog_first_fire_ts is None:")
+        stage1_end = src.index("if self._watchdog_ui_fatal_sent:", stage1_start)
         stage1 = src[stage1_start:stage1_end]
         assert "_recovery_requested" in stage1, (
             "Stage 1 must nudge via _recovery_requested"

@@ -48,11 +48,10 @@ class CameraControllerQt(QObject):
     frame_ready = Signal(object, dict)  # PIL Image, metadata
     error = Signal(str)
     calibration_status = Signal(bool)  # True=calibrating, False=complete
-    # Fired from the USB-reset worker thread. Payload: True = reset succeeded
-    # (→ schedule a retry); False = reset failed (→ unrecoverable). A Qt
-    # Signal crosses threads via a queued connection; QTimer.singleShot
-    # from a non-Qt worker thread does NOT fire — see log 2026-04-20 08:03.
-    _usb_reset_done = Signal(bool)
+    # Queued cross-thread completion signals — QTimer.singleShot from a
+    # non-Qt worker thread silently never fires (log 2026-04-20 08:03).
+    _usb_reset_done = Signal(bool)             # recovery path: ok?
+    camera_revive_done = Signal(bool, str)     # user Revive: (ok, name)
     
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -77,6 +76,7 @@ class CameraControllerQt(QObject):
         self._dying_camera = None
         self._unrecoverable_mode = False
         self._usb_reset_attempted = False
+        self._usb_reset_in_progress = False
         self._suppress_discord_errors = False
         # Count of consecutive recovery attempts skipped because the dying
         # capture thread is still wedged inside the SDK.
@@ -576,31 +576,30 @@ class CameraControllerQt(QObject):
         lowered = message.lower()
         return any(pat in lowered for pat in _UNRECOVERABLE_ERROR_PATTERNS)
 
-    def _start_usb_reset_worker(self):
-        """Run the USB disable/enable cycle off the Qt main thread.
+    def _run_usb_reset_async(self, camera_name: str, on_done):
+        """Spawn a daemon worker that toggles the camera's USB device and
+        invokes on_done(success: bool, name: str) when finished.
 
-        The Windows API sleeps 15+ s while the driver re-binds; running it
-        inline would freeze the UI. Completion is reported via the
-        _usb_reset_done Signal so cross-thread marshalling goes through
-        Qt's queued-connection machinery (QTimer.singleShot from a non-Qt
-        worker thread silently never fires — see logs 2026-04-20 08:03).
+        Serializes via _usb_reset_in_progress so a user-initiated Revive
+        click and a recovery-triggered reset can't toggle the same device
+        in parallel — concurrent pnputil operations race.
         """
-        if sys.platform != 'win32':
-            app_logger.info("USB reset unavailable: not on Windows.")
-            self._on_usb_reset_done(False)
-            return
         from services.camera import clean_camera_name
-        camera_name = clean_camera_name(
-            self.config.get('zwo_selected_camera_name', '') or ''
-        )
-        if not camera_name:
-            app_logger.warning("USB reset skipped: no saved camera name.")
-            self._on_usb_reset_done(False)
+        name = clean_camera_name(camera_name or '')
+        if sys.platform != 'win32' or not name:
+            if sys.platform != 'win32':
+                app_logger.info("USB reset unavailable: not on Windows.")
+            else:
+                app_logger.warning("USB reset skipped: no camera name.")
+            on_done(False, name)
             return
-
-        app_logger.warning(
-            "Unrecoverable SDK state — starting USB reset in background worker."
-        )
+        if self._usb_reset_in_progress:
+            app_logger.warning(
+                f"USB reset already in progress — ignoring request for '{name}'"
+            )
+            on_done(False, name)
+            return
+        self._usb_reset_in_progress = True
 
         def worker():
             ok = False
@@ -612,31 +611,49 @@ class CameraControllerQt(QObject):
                     app_logger.warning("USB reset API unavailable.")
                 else:
                     ok = bool(disable_enable_zwo_camera_usb(
-                        camera_name=camera_name,
-                        logger=lambda m: app_logger.info(m),
+                        camera_name=name,
+                        logger=app_logger.info,
                     ))
                     app_logger.info(
-                        f"USB reset {'succeeded' if ok else 'did not complete'}"
+                        f"USB reset {'succeeded' if ok else 'did not complete'} "
+                        f"for '{name}'"
                     )
             except Exception as e:
                 app_logger.error(f"USB reset raised: {e}")
             finally:
-                self._usb_reset_done.emit(ok)
+                self._usb_reset_in_progress = False
+                on_done(ok, name)
 
         import threading
         threading.Thread(target=worker, daemon=True).start()
 
+    def _start_usb_reset_worker(self):
+        app_logger.warning(
+            "Unrecoverable SDK state — starting USB reset in background worker."
+        )
+        self._run_usb_reset_async(
+            self.config.get('zwo_selected_camera_name', '') or '',
+            lambda ok, _name: self._usb_reset_done.emit(ok),
+        )
+
     def _on_usb_reset_done(self, success: bool):
-        """Slot for the USB-reset worker's completion signal (main thread)."""
         if success:
             self._schedule_auto_recovery()
             return
-        # Failure is usually admin denial (CM_Disable_DevNode 0x17). Without
-        # a successful reset, the ZWO DLL stays corrupt for the process
-        # lifetime; retrying just crashes again.
+        # Admin denial (CM_Disable_DevNode 0x17) is the usual cause. The ZWO
+        # DLL stays corrupt for the process lifetime without a successful
+        # reset; further retries just re-crash.
         self._enter_unrecoverable_mode(
             "USB reset failed — run the application as Administrator or "
             "restart it to recover"
+        )
+
+    def revive_missing_camera(self, camera_name: str):
+        """Best-effort user-triggered USB reset. Emits camera_revive_done."""
+        app_logger.info(f"User-initiated revive for '{camera_name}'")
+        self._run_usb_reset_async(
+            camera_name,
+            lambda ok, name: self.camera_revive_done.emit(ok, name),
         )
 
     def _enter_unrecoverable_mode(self, last_error: str):
