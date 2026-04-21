@@ -422,7 +422,7 @@ class TestConfigureVerifiesRoiReadback:
         return cam
 
     def test_roi_matches_request(self):
-        from services.camera_config import configure_camera
+        from services.camera.camera_config import configure_camera
         asi = self._asi()
         # SDK accepts our 3552x3552 RAW8 ask and reports it back.
         cam = self._camera(actual_roi=[3552, 3552, 1, 0])
@@ -436,7 +436,7 @@ class TestConfigureVerifiesRoiReadback:
     def test_roi_mismatch_uses_actual_bit_depth(self):
         """SDK silently downgraded RAW16→RAW8: we must follow reality, not
         keep claiming RAW16."""
-        from services.camera_config import configure_camera
+        from services.camera.camera_config import configure_camera
         asi = self._asi()
         # set_roi call succeeds but the readback says RAW8 somehow
         cam = self._camera(actual_roi=[3552, 3552, 1, 0])  # actual is RAW8
@@ -450,7 +450,7 @@ class TestConfigureVerifiesRoiReadback:
     def test_roi_mismatch_width_height_follows_actual(self):
         """If the SDK reports a different active ROI size than what we set,
         the returned bit_depth must correspond to what the SDK actually has."""
-        from services.camera_config import configure_camera
+        from services.camera.camera_config import configure_camera
         asi = self._asi()
         cam = self._camera(actual_roi=[1776, 1776, 2, 2])  # binned 2x, RAW16
         settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': True}
@@ -468,20 +468,20 @@ class TestIdentityMatchIsExact:
     hazard — exact match only."""
 
     def test_exact_match_accepted(self):
-        from services.camera_config import verify_camera_identity
+        from services.camera.camera_config import verify_camera_identity
         camera = MagicMock()
         camera.get_camera_property.return_value = {'Name': 'ZWO ASI676MC'}
         assert verify_camera_identity(camera, 'ZWO ASI676MC', lambda _: None) is True
 
     def test_leading_trailing_whitespace_tolerated(self):
         """SDK occasionally returns names with trailing nulls/spaces."""
-        from services.camera_config import verify_camera_identity
+        from services.camera.camera_config import verify_camera_identity
         camera = MagicMock()
         camera.get_camera_property.return_value = {'Name': '  ZWO ASI676MC  '}
         assert verify_camera_identity(camera, 'ZWO ASI676MC', lambda _: None) is True
 
     def test_substring_no_longer_accepted(self):
-        from services.camera_config import verify_camera_identity
+        from services.camera.camera_config import verify_camera_identity
         camera = MagicMock()
         camera.get_camera_property.return_value = {'Name': 'ZWO ASI676MC Pro'}
         # Previously a substring check would accept this; we require exact
@@ -489,7 +489,7 @@ class TestIdentityMatchIsExact:
         assert verify_camera_identity(camera, 'ZWO ASI676MC', lambda _: None) is False
 
     def test_different_model_rejected(self):
-        from services.camera_config import verify_camera_identity
+        from services.camera.camera_config import verify_camera_identity
         camera = MagicMock()
         camera.get_camera_property.return_value = {'Name': 'ZWO ASI462MM'}
         assert verify_camera_identity(camera, 'ZWO ASI676MC', lambda _: None) is False
@@ -503,7 +503,7 @@ class TestCaptureUsesActualRoi:
 
     def test_capture_reads_active_roi_not_max_size(self):
         import inspect
-        from services import zwo_capture_worker
+        from services.camera import zwo_capture_worker
         src = inspect.getsource(zwo_capture_worker.capture_single_frame)
         # get_roi_format() call must be present in the capture hot path
         assert "get_roi_format()" in src, (
@@ -518,7 +518,7 @@ class TestCaptureUsesActualRoi:
 
     def test_capture_raises_clear_error_on_frame_size_mismatch(self):
         import inspect
-        from services import zwo_capture_worker
+        from services.camera import zwo_capture_worker
         src = inspect.getsource(zwo_capture_worker.capture_single_frame)
         assert "Frame size mismatch" in src, (
             "A clear error should be raised when delivered bytes don't "
@@ -569,7 +569,7 @@ class TestConfigureRaw16Fallback:
         return camera
 
     def test_raw16_success_keeps_raw16(self):
-        from services.camera_config import configure_camera
+        from services.camera.camera_config import configure_camera
         asi = self._asi_module_mock()
         camera = self._camera_mock(raw16_set_roi_raises=False)
         settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': True}
@@ -580,7 +580,7 @@ class TestConfigureRaw16Fallback:
         assert bit_depth == 16
 
     def test_raw16_failure_falls_back_to_raw8(self):
-        from services.camera_config import configure_camera
+        from services.camera.camera_config import configure_camera
         asi = self._asi_module_mock()
         camera = self._camera_mock(raw16_set_roi_raises=True)
         settings = {'gain': 100, 'exposure_sec': 0.1, 'use_raw16': True}
@@ -598,7 +598,7 @@ class TestConfigureRaw16Fallback:
     def test_raw8_failure_raises(self):
         """When RAW8 itself fails, propagate — there's no further fallback
         and the caller must fail the connection."""
-        from services.camera_config import configure_camera
+        from services.camera.camera_config import configure_camera
         asi = self._asi_module_mock()
         camera = self._camera_mock()
         camera.set_roi.side_effect = Exception("Invalid size")
@@ -615,7 +615,7 @@ class TestConfigureErrorPropagation:
     capture. Now it raises so connect() can fail cleanly."""
 
     def _conn(self):
-        from services.camera_connection import CameraConnection
+        from services.camera.camera_connection import CameraConnection
         conn = CameraConnection(sdk_path=None, logger=lambda _: None)
         conn.asi = MagicMock(
             ASI_IMG_RAW8=0, ASI_IMG_RAW16=2, ASI_GAIN=0, ASI_EXPOSURE=1,
@@ -657,7 +657,7 @@ class TestDetectNeverSwapsCameraSilently:
 
     def test_on_cameras_detected_refuses_to_auto_swap(self):
         import inspect
-        from ui import main_window_capture
+        from ui.main_window import capture as main_window_capture
         src = inspect.getsource(
             main_window_capture._MainWindowCaptureMixin._on_cameras_detected
         )
@@ -679,7 +679,7 @@ class TestDetectNeverSwapsCameraSilently:
 
     def test_placeholder_camera_name_gets_cleared(self):
         import inspect
-        from ui import main_window_capture
+        from ui.main_window import capture as main_window_capture
         src = inspect.getsource(
             main_window_capture._MainWindowCaptureMixin._on_cameras_detected
         )
@@ -737,6 +737,136 @@ class TestResolveCameraIndexRefusesToSwap:
             assert idx == 1
 
 
+class TestReviveMissingCamera:
+    """Remote operators can't physically reseat a USB cable; the Capture
+    panel's Revive button runs a USB disable/enable on a specific saved
+    camera name as a software-only recovery action."""
+
+    def _build_controller(self):
+        from ui.controllers.camera_controller import CameraControllerQt
+        main_window = MagicMock()
+        main_window.config = MagicMock()
+        ctrl = CameraControllerQt.__new__(CameraControllerQt)
+        ctrl.config = main_window.config
+        # Minimal attribute seed — revive_missing_camera doesn't touch the
+        # capture state, just spawns a worker thread.
+        from PySide6.QtCore import QObject
+        QObject.__init__(ctrl)
+        # Connect the signal so tests can listen
+        return ctrl
+
+    def test_revive_emits_camera_revive_done(self, qt_app=None):
+        """The worker must report completion via the camera_revive_done
+        signal regardless of success/failure — otherwise the UI's Revive
+        button stays greyed out forever."""
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            pytest.skip("PySide6 not installed")
+        app = QApplication.instance() or QApplication([])
+        import threading, time as _t
+
+        ctrl = self._build_controller()
+        seen = []
+        ctrl.camera_revive_done.connect(lambda ok, name: seen.append((ok, name)))
+
+        started = threading.Event()
+        def fake_reset(**kw):
+            started.set()
+            return True
+        with patch('sys.platform', 'win32'), \
+                patch('services.usb_reset_win.is_usb_reset_available', return_value=True), \
+                patch('services.usb_reset_win.disable_enable_zwo_camera_usb',
+                      side_effect=fake_reset):
+            ctrl.revive_missing_camera('ZWO ASI676MC')
+            assert started.wait(timeout=2.0)
+            deadline = _t.time() + 2.0
+            while _t.time() < deadline and not seen:
+                app.processEvents()
+                _t.sleep(0.01)
+        assert seen == [(True, 'ZWO ASI676MC')]
+
+    def test_revive_with_empty_name_emits_false(self):
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            pytest.skip("PySide6 not installed")
+        app = QApplication.instance() or QApplication([])
+        ctrl = self._build_controller()
+        seen = []
+        ctrl.camera_revive_done.connect(lambda ok, name: seen.append((ok, name)))
+        ctrl.revive_missing_camera('')
+        app.processEvents()
+        assert seen == [(False, '')]
+
+    def test_revive_strips_index_suffix(self):
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            pytest.skip("PySide6 not installed")
+        app = QApplication.instance() or QApplication([])
+        import threading, time as _t
+
+        ctrl = self._build_controller()
+        seen = []
+        ctrl.camera_revive_done.connect(lambda ok, name: seen.append((ok, name)))
+        received_names = []
+
+        def fake_reset(*, camera_name, logger, **kw):
+            received_names.append(camera_name)
+            return True
+
+        with patch('sys.platform', 'win32'), \
+                patch('services.usb_reset_win.is_usb_reset_available', return_value=True), \
+                patch('services.usb_reset_win.disable_enable_zwo_camera_usb',
+                      side_effect=fake_reset):
+            ctrl.revive_missing_camera('ZWO ASI676MC (Index: 0)')
+            deadline = _t.time() + 2.0
+            while _t.time() < deadline and not seen:
+                app.processEvents()
+                _t.sleep(0.01)
+        # Saved name with suffix must be cleaned before reaching the USB reset
+        assert received_names == ['ZWO ASI676MC']
+        assert seen == [(True, 'ZWO ASI676MC')]
+
+
+class TestPhantomDeviceLogging:
+    """When get_num_cameras reports more devices than list_cameras returns,
+    we must (a) trust the enumerated list, (b) flag the phantom count, and
+    (c) log a clear explanation so the user knows what Revive is for."""
+
+    def test_phantom_count_is_tracked_on_main_window(self):
+        import inspect
+        from ui.main_window import capture as main_window_capture
+        src = inspect.getsource(main_window_capture._MainWindowCaptureMixin._on_detect_cameras)
+        assert "_sdk_phantom_count" in src, (
+            "detect_thread must stash phantom_count on the main window so "
+            "_on_cameras_detected can pass it to the capture panel's banner."
+        )
+        # Must log an actionable explanation, not a generic warning
+        assert "Revive" in src or "revive" in src.lower(), (
+            "Phantom log message should tell the user about the Revive "
+            "button — otherwise the log is diagnostic-only."
+        )
+
+    def test_detected_handler_calls_missing_warning(self):
+        import inspect
+        from ui.main_window import capture as main_window_capture
+        src = inspect.getsource(
+            main_window_capture._MainWindowCaptureMixin._on_cameras_detected
+        )
+        # Setter must be called with the saved name + phantom count
+        assert "set_missing_camera_warning(saved_name, phantom_count)" in src or \
+               "set_missing_camera_warning(\n" in src, (
+            "Missing-camera path must populate the persistent banner with "
+            "the saved name and phantom count so the user can hit Revive."
+        )
+        # And cleared when we successfully restore the saved camera
+        assert "set_missing_camera_warning('')" in src, (
+            "Banner must be cleared when the saved camera reappears."
+        )
+
+
 class TestDetectCamerasNoPhantomPlaceholder:
     """Regression for 2026-04-20 10:15: the SDK briefly reported
     num_cameras=2 but list_cameras returned only 1 entry, and detection
@@ -744,7 +874,7 @@ class TestDetectCamerasNoPhantomPlaceholder:
     was then auto-saved as the user's selected camera — clobbering the
     real ZWO ASI462MM config entry.
 
-    The fix lives in ui.main_window_capture._on_detect_cameras'
+    The fix lives in ui.main_window.capture._on_detect_cameras'
     detect_thread closure. Checking behaviour end-to-end requires the UI
     stack (qfluentwidgets, QApplication), so the assertion is source-level:
     no 'Camera {i}' style fallback name should be appended when the SDK
@@ -752,7 +882,7 @@ class TestDetectCamerasNoPhantomPlaceholder:
 
     def test_no_phantom_placeholder_in_detect_thread(self):
         import inspect
-        from ui import main_window_capture
+        from ui.main_window import capture as main_window_capture
         src = inspect.getsource(main_window_capture._MainWindowCaptureMixin._on_detect_cameras)
         # Before the fix, the loop had: cameras.append(f"Camera {i}") in the
         # except branch. If any future edit re-introduces a placeholder name,
@@ -775,8 +905,8 @@ class TestSelfHealingRecoveryFlag:
     and the capture thread self-heals on its next poll point."""
 
     def _make_camera(self):
-        from services.zwo_camera import ZWOCamera
-        with patch('services.zwo_camera.CameraConnection') as conn_cls:
+        from services.camera.zwo_camera import ZWOCamera
+        with patch('services.camera.zwo_camera.CameraConnection') as conn_cls:
             conn_cls.return_value = MagicMock(asi=None, camera=None, sdk_lock=MagicMock())
             cam = ZWOCamera(sdk_path=None)
         cam.on_log_callback = lambda _: None
@@ -794,7 +924,7 @@ class TestSelfHealingRecoveryFlag:
         assert cam._recovery_requested is False
 
     def test_capture_single_frame_raises_immediately_when_flag_set(self):
-        from services import zwo_capture_worker
+        from services.camera import zwo_capture_worker
         cam = self._make_camera()
         cam.camera = MagicMock()
         cam._recovery_requested = True
@@ -807,7 +937,7 @@ class TestSelfHealingRecoveryFlag:
         """If _recovery_requested is False, the normal exposure path runs.
         We short-circuit after the set_control_value calls to avoid building
         a full SDK mock for the debayer pipeline."""
-        from services import zwo_capture_worker
+        from services.camera import zwo_capture_worker
         cam = self._make_camera()
         cam.camera = MagicMock()
         cam.camera.set_control_value = MagicMock()
@@ -858,7 +988,7 @@ class TestWatchdogSelfHeal:
         Source-level check because the full watchdog has too much Qt UI
         state to drive cleanly with mocks."""
         import inspect
-        from ui import main_window_capture
+        from ui.main_window import capture as main_window_capture
         src = inspect.getsource(
             main_window_capture._MainWindowCaptureMixin._check_capture_watchdog
         )
@@ -886,9 +1016,12 @@ class TestWatchdogSelfHeal:
         start_capture() but the main window never knew, so the AppBar
         Start/Stop button kept showing "Start" while capture ran."""
         import inspect
-        from ui import main_window_capture
+        from ui.main_window import capture as main_window_capture
+        # Signal wiring lives in _ensure_camera_controller so it's also
+        # available to user-initiated actions (e.g. Revive Camera) that
+        # run before the first start_capture() click.
         src = inspect.getsource(
-            main_window_capture._MainWindowCaptureMixin._start_camera_capture
+            main_window_capture._MainWindowCaptureMixin._ensure_camera_controller
         )
         assert "capture_started.connect" in src, (
             "camera_controller.capture_started must be wired to the main "
@@ -906,7 +1039,7 @@ class TestWatchdogSelfHeal:
         thread has time to self-heal before we force UI teardown. Stage-2
         escalation is covered by a separate test."""
         import inspect
-        from ui import main_window_capture
+        from ui.main_window import capture as main_window_capture
         src = inspect.getsource(
             main_window_capture._MainWindowCaptureMixin._check_capture_watchdog
         )

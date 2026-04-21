@@ -7,6 +7,7 @@ All auto-exposure, calibration, scheduled windows, etc. are handled by ZWOCamera
 """
 from PySide6.QtCore import QObject, QTimer, Signal
 from datetime import datetime
+import os
 import sys
 import time
 
@@ -52,6 +53,10 @@ class CameraControllerQt(QObject):
     # Signal crosses threads via a queued connection; QTimer.singleShot
     # from a non-Qt worker thread does NOT fire — see log 2026-04-20 08:03.
     _usb_reset_done = Signal(bool)
+    # User-initiated USB revive (from the Capture panel's Revive button).
+    # Payload: (success, camera_name). Distinct from _usb_reset_done so the
+    # recovery-flow and manual-revive paths don't cross-wire.
+    camera_revive_done = Signal(bool, str)
     
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -637,6 +642,57 @@ class CameraControllerQt(QObject):
             "USB reset failed — run the application as Administrator or "
             "restart it to recover"
         )
+
+    def revive_missing_camera(self, camera_name: str):
+        """User-initiated USB disable/enable on a specific camera name.
+
+        Unlike the auto-recovery path (``_start_usb_reset_worker``), this
+        does not touch capture state or enter unrecoverable mode on
+        failure — it's a best-effort "try to wake up a phantom device"
+        action the user triggers from the Capture panel. Remote operators
+        who can't physically reseat a USB cable rely on this.
+
+        Emits ``camera_revive_done(success, camera_name)`` on completion.
+        """
+        from services.camera import clean_camera_name
+        name = clean_camera_name(camera_name or '')
+        if not name:
+            app_logger.warning("Revive requested with empty camera name — ignoring")
+            self.camera_revive_done.emit(False, '')
+            return
+        if sys.platform != 'win32':
+            app_logger.warning("Revive unavailable: USB reset only works on Windows")
+            self.camera_revive_done.emit(False, name)
+            return
+
+        app_logger.info(
+            f"User-initiated revive: running USB disable/enable on '{name}'"
+        )
+
+        def worker():
+            ok = False
+            try:
+                from services.usb_reset_win import (
+                    disable_enable_zwo_camera_usb, is_usb_reset_available,
+                )
+                if not is_usb_reset_available():
+                    app_logger.warning("USB reset API unavailable.")
+                else:
+                    ok = bool(disable_enable_zwo_camera_usb(
+                        camera_name=name,
+                        logger=lambda m: app_logger.info(m),
+                    ))
+                    app_logger.info(
+                        f"Revive {'succeeded' if ok else 'did not complete'} "
+                        f"for '{name}'"
+                    )
+            except Exception as e:
+                app_logger.error(f"Revive raised: {e}")
+            finally:
+                self.camera_revive_done.emit(ok, name)
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
 
     def _enter_unrecoverable_mode(self, last_error: str):
         self._unrecoverable_mode = True

@@ -292,6 +292,7 @@ class MainWindow(
         self.capture_panel.raw16_mode_changed.connect(self._on_raw16_mode_changed)
 
         self.capture_panel.detect_cameras_clicked.connect(self._on_detect_cameras)
+        self.capture_panel.revive_camera_clicked.connect(self._on_revive_camera)
 
         self.cameras_detected.connect(self._on_cameras_detected)
 

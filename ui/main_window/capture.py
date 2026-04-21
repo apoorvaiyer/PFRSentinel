@@ -48,6 +48,7 @@ class _MainWindowCaptureMixin:
             try:
                 import zwoasi as asi
 
+                main_window._sdk_phantom_count = 0
                 try:
                     asi.init(sdk_path)
                     app_logger.info(f"ASI SDK initialized: {sdk_path}")
@@ -102,12 +103,19 @@ class _MainWindowCaptureMixin:
                     cameras.append(f"{name} (Index: {i})")
                     app_logger.info(f"Camera {i}: {name}")
 
-                if len(camera_list) != num_cameras:
-                    app_logger.warning(
-                        f"Enumeration still inconsistent after retries: "
-                        f"num_cameras={num_cameras}, enumerated={len(camera_list)} "
-                        "— trusting the enumerated list"
+                phantom_count = max(0, num_cameras - len(camera_list))
+                if phantom_count:
+                    # Device appears in the Windows USB enumeration (hence
+                    # get_num_cameras counts it) but the ZWO SDK can't open
+                    # it. Usually means the camera's firmware or driver is
+                    # in a bad state; a USB disable/enable can revive it.
+                    app_logger.error(
+                        f"⚠ {phantom_count} camera(s) are driver-visible but "
+                        "not openable by the ZWO SDK — likely in a bad state. "
+                        "If your saved camera is missing below, use the Revive "
+                        "button on the Capture tab to attempt a USB reset."
                     )
+                main_window._sdk_phantom_count = phantom_count
 
                 app_logger.info(f"Detection complete: {len(cameras)} camera(s)")
                 main_window.cameras_detected.emit(cameras, "")
@@ -176,6 +184,8 @@ class _MainWindowCaptureMixin:
                             f"(SDK Index: {actual_index})"
                         )
                         found = True
+                        # Clear any stale missing-camera banner.
+                        self.capture_panel.set_missing_camera_warning('')
                         break
 
             if saved_name and not found:
@@ -188,11 +198,23 @@ class _MainWindowCaptureMixin:
                     f"— refusing to auto-select a different camera on a "
                     f"multi-camera rig. Pick one manually on the Capture tab."
                 )
-                self._notify(
-                    f"Saved camera '{saved_name}' not detected — select a camera manually",
-                    "error",
-                )
+                phantom_count = getattr(self, '_sdk_phantom_count', 0)
+                if phantom_count > 0:
+                    self._notify(
+                        f"Saved camera '{saved_name}' not detected — SDK sees "
+                        f"{phantom_count} device(s) in bad state. Try Revive on "
+                        "the Capture tab.",
+                        "error",
+                    )
+                else:
+                    self._notify(
+                        f"Saved camera '{saved_name}' not detected — select a camera manually",
+                        "error",
+                    )
                 self.capture_panel.camera_widget.camera_combo.setCurrentIndex(-1)
+                self.capture_panel.set_missing_camera_warning(
+                    saved_name, phantom_count
+                )
             elif not saved_name and cameras:
                 # Fresh install (no prior selection): auto-pick the first so
                 # the user isn't staring at an empty combo.
@@ -212,6 +234,7 @@ class _MainWindowCaptureMixin:
                     f"Auto-selected camera (first install, no saved name): "
                     f"'{cam_clean}' (SDK Index: {actual_index})"
                 )
+                self.capture_panel.set_missing_camera_warning('')
 
             self.capture_panel.camera_widget.camera_combo.blockSignals(False)
             self.capture_panel.camera_widget.load_from_config(self.config)
@@ -502,28 +525,65 @@ class _MainWindowCaptureMixin:
         except Exception:
             pass
 
+    def _ensure_camera_controller(self):
+        """Create and wire the camera controller if it doesn't exist yet.
+
+        Factored out of _start_camera_capture so user-initiated actions
+        like Revive-Camera can reach the controller before the user has
+        started a capture session.
+        """
+        from ..controllers.camera_controller import CameraControllerQt
+
+        if self.camera_controller:
+            return
+
+        self.camera_controller = CameraControllerQt(self)
+        self.camera_controller.calibration_status.connect(self.on_calibration_status)
+        self.camera_controller.error.connect(self._on_camera_error)
+        # Emitted on the camera worker thread; AutoConnection marshals to
+        # the main thread so on_image_captured can safely touch Qt widgets
+        # (StatusSprite's QTimer in particular has thread affinity to the GUI).
+        self.camera_controller.frame_ready.connect(self.on_image_captured)
+        # When the capture loop terminates itself (fatal error), sync the
+        # main window state so the AppBar, tray menu, etc. don't keep
+        # pretending capture is running.
+        self.camera_controller.capture_stopped.connect(self._on_camera_capture_stopped)
+        # When auto-recovery restarts capture successfully, the controller
+        # fires this signal. Without wiring it up, the main window's own
+        # is_capturing stays False and the AppBar shows "Start Capture"
+        # while capture is actually running.
+        self.camera_controller.capture_started.connect(self._on_camera_capture_started)
+        self.camera_controller.camera_revive_done.connect(self._on_camera_revive_done)
+
+    def _on_revive_camera(self, camera_name: str):
+        """User clicked Revive on the capture panel — run a USB reset in
+        a worker thread and re-detect when it completes."""
+        self._ensure_camera_controller()
+        app_logger.info(f"Revive requested for '{camera_name}'")
+        self._notify(f"Trying to revive '{camera_name}' via USB reset…", "info")
+        self.camera_controller.revive_missing_camera(camera_name)
+
+    def _on_camera_revive_done(self, success: bool, camera_name: str):
+        """Slot for CameraControllerQt.camera_revive_done. Resets the button
+        and triggers a fresh detection so the user sees the outcome."""
+        if hasattr(self, 'capture_panel'):
+            self.capture_panel.reset_revive_button()
+        if success:
+            self._notify(
+                f"USB reset completed for '{camera_name}' — re-detecting…",
+                "success",
+            )
+        else:
+            self._notify(
+                f"USB reset failed for '{camera_name}'. Admin privileges may "
+                "be required, or the device is unresponsive to disable/enable.",
+                "error",
+            )
+        # Always re-detect — even a failed reset can clarify state.
+        self._on_detect_cameras()
+
     def _start_camera_capture(self):
-        # Import here to avoid circular imports
-        from .controllers.camera_controller import CameraControllerQt
-
-        if not self.camera_controller:
-            self.camera_controller = CameraControllerQt(self)
-            self.camera_controller.calibration_status.connect(self.on_calibration_status)
-            self.camera_controller.error.connect(self._on_camera_error)
-            # Emitted on the camera worker thread; AutoConnection marshals to
-            # the main thread so on_image_captured can safely touch Qt widgets
-            # (StatusSprite's QTimer in particular has thread affinity to the GUI).
-            self.camera_controller.frame_ready.connect(self.on_image_captured)
-            # When the capture loop terminates itself (fatal error), sync the
-            # main window state so the AppBar, tray menu, etc. don't keep
-            # pretending capture is running.
-            self.camera_controller.capture_stopped.connect(self._on_camera_capture_stopped)
-            # When auto-recovery restarts capture successfully, the controller
-            # fires this signal. Without wiring it up, the main window's own
-            # is_capturing stays False and the AppBar shows "Start Capture"
-            # while capture is actually running.
-            self.camera_controller.capture_started.connect(self._on_camera_capture_started)
-
+        self._ensure_camera_controller()
         self.camera_controller.start_capture()
 
         if self.camera_controller.is_capturing:

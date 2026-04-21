@@ -34,6 +34,7 @@ class CameraSettingsWidget(QWidget):
     settings_changed = Signal()
     detect_cameras_clicked = Signal()
     raw16_mode_changed = Signal(bool)
+    revive_camera_clicked = Signal(str)  # Saved camera name to revive via USB reset
 
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -88,7 +89,86 @@ class CameraSettingsWidget(QWidget):
         camera_widget.setLayout(camera_row)
         card.add_row("Camera", camera_widget)
 
+        # Missing-camera warning row — hidden by default. Shown when the
+        # saved camera isn't enumerated by the SDK; offers a one-click USB
+        # reset for remote operators who can't physically reseat the cable.
+        self._missing_label = BodyLabel("")
+        self._missing_label.setWordWrap(True)
+        self._missing_label.setStyleSheet(
+            f"color: {Colors.danger_fg}; font-weight: 500;"
+            if hasattr(Colors, 'danger_fg') else "color: #d13438; font-weight: 500;"
+        )
+        self._missing_revive_btn = PushButton("Revive (USB Reset)")
+        self._missing_revive_btn.setIcon(mdi('restart'))
+        self._missing_revive_btn.setToolTip(
+            "Toggle the USB device off and on in Windows Device Manager. "
+            "Can recover a camera that the driver sees but can't open. "
+            "Requires Administrator privileges."
+        )
+        self._missing_revive_btn.clicked.connect(self._on_revive_camera_clicked)
+
+        self._missing_widget = QWidget()
+        missing_layout = QVBoxLayout(self._missing_widget)
+        missing_layout.setContentsMargins(0, 0, 0, 0)
+        missing_layout.setSpacing(Spacing.xs if hasattr(Spacing, 'xs') else 4)
+        missing_layout.addWidget(self._missing_label)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(Spacing.sm)
+        btn_row.addWidget(self._missing_revive_btn)
+        btn_row.addStretch()
+        missing_layout.addLayout(btn_row)
+        self._missing_widget.hide()
+        self._missing_saved_name = ''
+        card.add_row("", self._missing_widget)
+
         return card
+
+    def set_missing_camera_warning(self, saved_name: str, phantom_count: int = 0):
+        """Show or hide the missing-camera banner.
+
+        Called by main_window_capture after detection completes. saved_name
+        is the user's selected camera when it's not in the enumerated list;
+        pass an empty string to clear. phantom_count > 0 means the SDK sees
+        more devices than it can open (the revive path is most useful here).
+        """
+        if not saved_name:
+            self._missing_widget.hide()
+            self._missing_saved_name = ''
+            self._missing_revive_btn.setEnabled(True)
+            return
+
+        self._missing_saved_name = saved_name
+        if phantom_count > 0:
+            msg = (
+                f"⚠ '{saved_name}' is not connected. The SDK reports "
+                f"{phantom_count} device(s) in a bad state — likely the saved "
+                "camera. Try Revive to attempt a USB reset."
+            )
+            self._missing_revive_btn.setEnabled(True)
+        else:
+            msg = (
+                f"⚠ '{saved_name}' is not connected. Reconnect the camera or "
+                "select a different one from the list above."
+            )
+            # No phantom detected — USB reset won't find anything to toggle.
+            self._missing_revive_btn.setEnabled(False)
+        self._missing_label.setText(msg)
+        self._missing_widget.show()
+
+    def _on_revive_camera_clicked(self):
+        if not self._missing_saved_name:
+            return
+        app_logger.info(
+            f"User requested Revive for camera '{self._missing_saved_name}'"
+        )
+        self._missing_revive_btn.setEnabled(False)
+        self._missing_revive_btn.setText("Resetting USB…")
+        self.revive_camera_clicked.emit(self._missing_saved_name)
+
+    def reset_revive_button(self):
+        """Restore the Revive button after an async reset finishes."""
+        self._missing_revive_btn.setEnabled(True)
+        self._missing_revive_btn.setText("Revive (USB Reset)")
 
     def _build_exposure_card(self):
         card = SettingsCard("Exposure Settings", "Control exposure time and gain")
