@@ -157,13 +157,28 @@ class CameraControllerQt(QObject):
         if num_cameras == 0:
             raise Exception("No ZWO cameras detected. Check USB connections.")
 
-        # Build fresh camera list
-        fresh_cameras = []
-        for i in range(num_cameras):
+        # Build fresh camera list — wrap list_cameras() in a timeout so a
+        # wedged camera in a bad USB state can't hang the capture-start worker.
+        _names = [None]
+        _exc = [None]
+
+        def _list():
             try:
-                fresh_cameras.append((i, asi.list_cameras()[i]))
-            except Exception:
-                pass
+                _names[0] = list(asi.list_cameras())
+            except Exception as _e:
+                _exc[0] = _e
+
+        _t = threading.Thread(target=_list, daemon=True)
+        _t.start()
+        _t.join(8.0)
+        if _t.is_alive():
+            raise Exception(
+                "SDK list_cameras() timed out — camera may be in a bad USB state. "
+                "Try the Revive button."
+            )
+        if _exc[0]:
+            raise _exc[0]
+        fresh_cameras = list(enumerate(_names[0] or []))
 
         if not fresh_cameras:
             raise Exception("No ZWO cameras could be enumerated.")

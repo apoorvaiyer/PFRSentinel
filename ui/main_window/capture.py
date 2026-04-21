@@ -14,6 +14,36 @@ from services.logger import app_logger
 _WATCHDOG_UI_FATAL_GRACE_SEC = 120
 
 
+def _sdk_list_cameras(asi, timeout_sec=8.0):
+    """Call asi.list_cameras() on a daemon thread with a hard timeout.
+
+    list_cameras() is a synchronous C extension call that blocks indefinitely
+    when a camera is in a bad USB/firmware state.  Running it on the calling
+    thread (even a non-GUI daemon thread) means the thread is stuck for the
+    life of the process and the UI "detecting…" spinner never clears.
+    """
+    result = [None]
+    exc = [None]
+
+    def _call():
+        try:
+            result[0] = list(asi.list_cameras())
+        except Exception as e:
+            exc[0] = e
+
+    t = threading.Thread(target=_call, daemon=True)
+    t.start()
+    t.join(timeout_sec)
+    if t.is_alive():
+        raise TimeoutError(
+            f"SDK list_cameras() timed out after {timeout_sec:.0f}s — "
+            "a camera may be in a bad USB state. Try the Revive button."
+        )
+    if exc[0] is not None:
+        raise exc[0]
+    return result[0]
+
+
 class _MainWindowCaptureMixin:
 
     # =========================================================================
@@ -89,7 +119,7 @@ class _MainWindowCaptureMixin:
                 # config (see production log 2026-04-20 10:15).
                 camera_list = []
                 for poll_attempt in range(3):
-                    camera_list = list(asi.list_cameras())
+                    camera_list = _sdk_list_cameras(asi)
                     if len(camera_list) >= num_cameras:
                         break
                     app_logger.warning(
