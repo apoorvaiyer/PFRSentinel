@@ -89,15 +89,19 @@ class CameraSettingsWidget(QWidget):
         camera_widget.setLayout(camera_row)
         card.add_row("Camera", camera_widget)
 
-        # Missing-camera warning row — hidden by default. Shown when the
-        # saved camera isn't enumerated by the SDK; offers a one-click USB
-        # reset for remote operators who can't physically reseat the cable.
+        self._missing_widget = QWidget()
+        self._missing_widget.setObjectName("missingCameraWidget")
+        missing_layout = QVBoxLayout(self._missing_widget)
+        missing_layout.setContentsMargins(Spacing.sm, Spacing.sm, Spacing.sm, Spacing.sm)
+        missing_layout.setSpacing(Spacing.xs)
+
         self._missing_label = BodyLabel("")
         self._missing_label.setWordWrap(True)
-        self._missing_label.setStyleSheet(
-            f"color: {Colors.danger_fg}; font-weight: 500;"
-            if hasattr(Colors, 'danger_fg') else "color: #d13438; font-weight: 500;"
-        )
+
+        self._missing_detect_btn = PushButton("Detect Again")
+        self._missing_detect_btn.setIcon(mdi('refresh'))
+        self._missing_detect_btn.clicked.connect(self._on_detect_cameras)
+
         self._missing_revive_btn = PushButton("Revive (USB Reset)")
         self._missing_revive_btn.setIcon(mdi('restart'))
         self._missing_revive_btn.setToolTip(
@@ -107,46 +111,56 @@ class CameraSettingsWidget(QWidget):
         )
         self._missing_revive_btn.clicked.connect(self._on_revive_camera_clicked)
 
-        self._missing_widget = QWidget()
-        missing_layout = QVBoxLayout(self._missing_widget)
-        missing_layout.setContentsMargins(0, 0, 0, 0)
-        missing_layout.setSpacing(Spacing.xs if hasattr(Spacing, 'xs') else 4)
-        missing_layout.addWidget(self._missing_label)
         btn_row = QHBoxLayout()
         btn_row.setSpacing(Spacing.sm)
+        btn_row.addWidget(self._missing_detect_btn)
         btn_row.addWidget(self._missing_revive_btn)
         btn_row.addStretch()
+
+        missing_layout.addWidget(self._missing_label)
         missing_layout.addLayout(btn_row)
         self._missing_widget.hide()
         self._missing_saved_name = ''
-        card.add_row("", self._missing_widget)
+        card.add_widget(self._missing_widget)
 
         return card
 
     def set_missing_camera_warning(self, saved_name: str, phantom_count: int = 0):
-        """Pass empty saved_name to hide. phantom_count>0 enables Revive."""
+        """Pass empty saved_name to hide. phantom_count>0 shows Revive, else Detect Again."""
         if not saved_name:
             self._missing_widget.hide()
             self._missing_saved_name = ''
             self._missing_revive_btn.setEnabled(True)
+            self._missing_revive_btn.setText("Revive (USB Reset)")
             return
 
         self._missing_saved_name = saved_name
         if phantom_count > 0:
             msg = (
-                f"⚠ '{saved_name}' is not connected. The SDK reports "
-                f"{phantom_count} device(s) in a bad state — likely the saved "
-                "camera. Try Revive to attempt a USB reset."
+                f"'{saved_name}' is stuck — the SDK detects {phantom_count} "
+                "device(s) it can't open. Try Revive to perform a USB reset."
             )
-            self._missing_revive_btn.setEnabled(True)
+            self._missing_detect_btn.hide()
+            self._missing_revive_btn.show()
+            bg, fg = Colors.error_bg, Colors.error_text
         else:
             msg = (
-                f"⚠ '{saved_name}' is not connected. Reconnect the camera or "
-                "select a different one from the list above."
+                f"'{saved_name}' is not connected. "
+                "Check the USB cable, then click Detect Again to scan for cameras."
             )
-            # No phantom detected — USB reset won't find anything to toggle.
-            self._missing_revive_btn.setEnabled(False)
+            self._missing_revive_btn.hide()
+            self._missing_detect_btn.show()
+            bg, fg = Colors.warning_bg, Colors.warning_text
+
         self._missing_label.setText(msg)
+        self._missing_label.setStyleSheet(f"color: {fg}; font-weight: 500;")
+        self._missing_widget.setStyleSheet(f"""
+            QWidget#missingCameraWidget {{
+                background-color: {bg};
+                border-radius: 6px;
+                border: 1px solid {fg}40;
+            }}
+        """)
         self._missing_widget.show()
 
     def _on_revive_camera_clicked(self):

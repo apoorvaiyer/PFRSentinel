@@ -54,6 +54,7 @@ class _MainWindowCaptureMixin:
         sdk_path = self.config.get('zwo_sdk_path', '')
         if sdk_path and os.path.exists(sdk_path):
             app_logger.info("Auto-detecting cameras on startup...")
+            self._startup_detect_retries = 3
             self._on_detect_cameras()
 
     def _on_detect_cameras(self):
@@ -218,6 +219,21 @@ class _MainWindowCaptureMixin:
                         break
 
             if saved_name and not found:
+                phantom_count = getattr(self, '_sdk_phantom_count', 0)
+                retries_left = getattr(self, '_startup_detect_retries', 0)
+                if retries_left > 0 and phantom_count == 0:
+                    # Camera not yet enumerated (common for 676MC which takes a
+                    # few seconds to appear after USB power-on). Retry silently
+                    # rather than flashing an error the user can't act on.
+                    self._startup_detect_retries -= 1
+                    app_logger.info(
+                        f"Saved camera '{saved_name}' not yet enumerated — "
+                        f"retrying in 5s ({retries_left} attempt(s) left)"
+                    )
+                    QTimer.singleShot(5000, self._on_detect_cameras)
+                    self.capture_panel.camera_widget.camera_combo.blockSignals(False)
+                    return
+
                 # Multi-camera rigs (guide cam, NINA imaging cam, etc.) share
                 # the USB bus. Silently swapping would hijack another
                 # process's session or capture the wrong sky.
@@ -226,7 +242,6 @@ class _MainWindowCaptureMixin:
                     f"— refusing to auto-select a different camera on a "
                     f"multi-camera rig. Pick one manually on the Capture tab."
                 )
-                phantom_count = getattr(self, '_sdk_phantom_count', 0)
                 msg = (
                     f"Saved camera '{saved_name}' not detected — SDK sees "
                     f"{phantom_count} device(s) in bad state. Try Revive on "
