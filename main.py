@@ -238,6 +238,24 @@ def main():
     
     # Run event loop
     exit_code = app.exec()
+
+    # Start a shutdown watchdog before cleanup begins.  The ZWO SDK DLL can
+    # block DllMain(DLL_PROCESS_DETACH) indefinitely when a capture thread is
+    # permanently wedged inside native SDK code — sys.exit() then hangs and
+    # Windows shows "Not Responding".  The watchdog force-terminates the
+    # process after 10 s so cleanup still runs on a clean exit but never
+    # stalls an unrecoverable one.
+    if sys.platform == 'win32':
+        import ctypes
+        _wt = threading.Timer(
+            10.0,
+            lambda: ctypes.windll.kernel32.TerminateProcess(
+                ctypes.windll.kernel32.GetCurrentProcess(), 0
+            ),
+        )
+        _wt.daemon = True
+        _wt.start()
+
     capture_event('app_shutdown')
     posthog.shutdown()
     sys.exit(exit_code)
