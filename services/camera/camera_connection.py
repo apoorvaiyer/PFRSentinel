@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import threading
+import concurrent.futures
 from typing import Optional, List, Dict, Callable, Any
 from .camera_config import verify_camera_identity, configure_camera
 
@@ -209,7 +210,12 @@ class CameraConnection:
 
         try:
             self.log("Querying SDK for number of connected cameras...")
-            num_cameras = self.asi.get_num_cameras()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                try:
+                    num_cameras = ex.submit(self.asi.get_num_cameras).result(timeout=10.0)
+                except concurrent.futures.TimeoutError:
+                    self.log("⚠ get_num_cameras() timed out (10s) — SDK wedged, aborting detection")
+                    return []
             self.cameras = []
 
             if num_cameras == 0:
@@ -227,7 +233,12 @@ class CameraConnection:
             # the SDK converge.
             camera_list = []
             for poll_attempt in range(3):
-                camera_list = list(self.asi.list_cameras())
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    try:
+                        camera_list = list(ex.submit(self.asi.list_cameras).result(timeout=10.0))
+                    except concurrent.futures.TimeoutError:
+                        self.log("⚠ list_cameras() timed out (10s) — SDK wedged, aborting detection")
+                        return []
                 if len(camera_list) >= num_cameras:
                     break
                 self.log(

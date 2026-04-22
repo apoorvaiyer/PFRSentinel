@@ -107,7 +107,7 @@ def reconnect_safe(conn, target_camera_name: Optional[str] = None,
             try:
                 if conn._usb_reset_func(camera_name=camera_to_find, logger=conn.log):
                     conn.log("✓ USB soft reset completed, waiting for re-enumeration...")
-                    time.sleep(2)
+                    time.sleep(10)
                 else:
                     conn.log("⚠ USB soft reset failed or not applicable")
             except Exception as e:

@@ -14,20 +14,21 @@ from services.logger import app_logger
 _WATCHDOG_UI_FATAL_GRACE_SEC = 120
 
 
-def _sdk_list_cameras(asi, timeout_sec=8.0):
-    """Call asi.list_cameras() on a daemon thread with a hard timeout.
+def _sdk_call_with_timeout(fn, timeout_sec=10.0, hint=""):
+    """Run a blocking ZWO SDK call on a daemon thread with a hard timeout.
 
-    list_cameras() is a synchronous C extension call that blocks indefinitely
-    when a camera is in a bad USB/firmware state.  Running it on the calling
-    thread (even a non-GUI daemon thread) means the thread is stuck for the
-    life of the process and the UI "detecting…" spinner never clears.
+    Any ZWO SDK C-extension call can block indefinitely when the camera or
+    driver is in a bad state.  Running such calls here (even on a non-GUI
+    thread) means the thread is stuck for the life of the process and the UI
+    'detecting…' spinner never clears.  The daemon thread is abandoned on
+    timeout — it cannot be killed, but it won't prevent process exit.
     """
     result = [None]
     exc = [None]
 
     def _call():
         try:
-            result[0] = list(asi.list_cameras())
+            result[0] = fn()
         except Exception as e:
             exc[0] = e
 
@@ -35,13 +36,22 @@ def _sdk_list_cameras(asi, timeout_sec=8.0):
     t.start()
     t.join(timeout_sec)
     if t.is_alive():
-        raise TimeoutError(
-            f"SDK list_cameras() timed out after {timeout_sec:.0f}s — "
-            "a camera may be in a bad USB state. Try the Revive button."
-        )
+        msg = f"ZWO SDK call timed out after {timeout_sec:.0f}s"
+        if hint:
+            msg += f" — {hint}"
+        raise TimeoutError(msg)
     if exc[0] is not None:
         raise exc[0]
     return result[0]
+
+
+def _sdk_list_cameras(asi, timeout_sec=8.0):
+    raw = _sdk_call_with_timeout(
+        asi.list_cameras,
+        timeout_sec,
+        "a camera may be in a bad USB state. Try the Revive button.",
+    )
+    return list(raw) if raw is not None else []
 
 
 class _MainWindowCaptureMixin:
@@ -81,14 +91,25 @@ class _MainWindowCaptureMixin:
 
                 main_window._sdk_phantom_count = 0
                 try:
-                    asi.init(sdk_path)
+                    _sdk_call_with_timeout(
+                        lambda: asi.init(sdk_path),
+                        timeout_sec=15.0,
+                        hint="SDK init wedged — ZWO driver may need a restart",
+                    )
                     app_logger.info(f"ASI SDK initialized: {sdk_path}")
+                except TimeoutError as e:
+                    main_window.cameras_detected.emit([], str(e))
+                    return
                 except Exception as e:
                     if "already" not in str(e).lower():
                         main_window.cameras_detected.emit([], f"SDK init failed: {e}")
                         return
 
-                num_cameras = asi.get_num_cameras()
+                num_cameras = _sdk_call_with_timeout(
+                    asi.get_num_cameras,
+                    timeout_sec=10.0,
+                    hint="SDK wedged — try the Revive button",
+                )
                 app_logger.info(f"SDK reports {num_cameras} camera(s)")
 
                 if num_cameras == 0:
@@ -104,7 +125,11 @@ class _MainWindowCaptureMixin:
                             app_logger.debug(f"SDK re-init note: {e}")
 
                     time.sleep(1.0)
-                    num_cameras = asi.get_num_cameras()
+                    num_cameras = _sdk_call_with_timeout(
+                        asi.get_num_cameras,
+                        timeout_sec=10.0,
+                        hint="SDK wedged on retry — try the Revive button",
+                    )
                     app_logger.info(f"SDK retry reports {num_cameras} camera(s)")
 
                     if num_cameras == 0:
