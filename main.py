@@ -257,7 +257,10 @@ def main():
         _wt.start()
 
     capture_event('app_shutdown')
-    posthog.shutdown()
+    # Best-effort flush — don't let a slow network stall the exit.
+    _pht = threading.Thread(target=posthog.shutdown, daemon=True)
+    _pht.start()
+    _pht.join(timeout=3.0)
     sys.exit(exit_code)
 
 

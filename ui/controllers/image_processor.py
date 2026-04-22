@@ -436,7 +436,7 @@ class ImageProcessor(QObject):
     def stop(self):
         """Stop the processing worker"""
         self._worker.stop()
-        self._worker.wait(5000)  # Wait up to 5 seconds
+        self._worker.wait(1000)
         app_logger.debug("Image processor stopped")
     
     def process_and_save(self, img: Image.Image, metadata: dict):
