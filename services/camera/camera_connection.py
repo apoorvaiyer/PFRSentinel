@@ -404,9 +404,11 @@ class CameraConnection:
             controls = self.camera.get_controls()
             self.log(f"  Available controls: {len(controls)}")
 
-            # Brief stabilization delay - camera needs time to fully initialize
-            # This helps prevent "Camera closed" errors immediately after connection
-            time.sleep(0.3)
+            # Stabilization delay — camera firmware needs time to fully enumerate
+            # controls after open().  0.3s is enough for a warm reconnect but
+            # not for a cold boot: the ASI676MC reports only 10/17 controls at
+            # 0.3s, causing set_roi to return Invalid size immediately.
+            time.sleep(1.5)
 
             # Apply settings if provided (sets ROI, gain, exposure, etc.)
             if settings:

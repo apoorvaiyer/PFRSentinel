@@ -8,7 +8,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 
-def _set_roi_with_retry(camera, width, height, image_type, log, attempts=3, delay=0.5):
+def _set_roi_with_retry(camera, width, height, image_type, log, attempts=5, delay=1.0):
     """Call camera.set_roi() and retry on ASI_ERROR_INVALID_SIZE.
 
     The camera may not be fully settled immediately after open().  Invalid-size
