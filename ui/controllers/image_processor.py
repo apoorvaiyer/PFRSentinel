@@ -4,6 +4,7 @@ Handles image processing pipeline using services/processor.py functions
 """
 from PySide6.QtCore import QObject, Signal, QThread
 from PIL import Image, ImageEnhance, ImageDraw, ImageFont
+import gc
 import numpy as np
 import os
 import queue
@@ -45,6 +46,7 @@ class ImageProcessorWorker(QThread):
         self._weather_service = None
         self._main_window = None  # Reference to main window for camera access
         self._calibration_service = None  # Background calibration accumulation
+        self._frame_count = 0
     
     def set_weather_service(self, weather_service):
         """Set weather service for overlay tokens"""
@@ -76,6 +78,11 @@ class ImageProcessorWorker(QThread):
                 
                 self._process_task(task)
                 self._queue.task_done()
+
+                self._frame_count += 1
+                if self._frame_count % 100 == 0:
+                    gc.collect()
+                    self._trim_working_set()
                 
             except Exception as e:
                 app_logger.error(f"Processing worker error: {e}")
@@ -92,7 +99,17 @@ class ImageProcessorWorker(QThread):
             self._queue.put_nowait(None)  # Sentinel
         except queue.Full:
             pass
-    
+
+    def _trim_working_set(self):
+        # Ask Windows to page out idle memory — reduces Task Manager RSS without
+        # freeing virtual address space. No-op on non-Windows.
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.kernel32.SetProcessWorkingSetSize(handle, -1, -1)
+        except Exception:
+            pass
+
     def queue_task(self, task: ImageProcessingTask):
         """Queue a processing task"""
         try:
@@ -293,6 +310,8 @@ class ImageProcessorWorker(QThread):
                     metadata.update({'STAR_COUNT': 'N/A', 'FWHM': 'N/A', 'SEEING': 'N/A'})
             except Exception as e:
                 app_logger.debug(f"Star detection skipped: {e}")
+
+            del raw_array  # Last use above — release the 76 MB numpy array before overlay rendering
 
             # Feed frame to background calibration service (before overlays).
             # Same gate as the overlay itself: sun below civil twilight and

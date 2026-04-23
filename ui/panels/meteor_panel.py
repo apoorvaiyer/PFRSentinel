@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QFont
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
-    PushButton, SpinBox, LineEdit,
+    PushButton, SpinBox, LineEdit, FluentIcon,
 )
 
 from ..theme.tokens import Colors, Spacing, Layout

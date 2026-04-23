@@ -71,6 +71,7 @@ class NotificationFlyoutView(FlyoutViewBase):
         self._setup_ui()
 
     def _setup_ui(self):
+        self.setStyleSheet(f"NotificationFlyoutView {{ background-color: {Colors.bg_elevated}; }}")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
