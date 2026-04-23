@@ -337,7 +337,10 @@ def capture_loop(camera: "ZWOCamera"):
                                 camera.log(f"Error disconnecting camera: {e}")
                                 camera.is_capturing = was_capturing
 
-                    wait_end = time.time() + 10.0
+                    # Keep _last_frame_time fresh so the UI watchdog doesn't
+                    # mistake intentional off-peak idle for a wedged capture.
+                    camera._last_frame_time = time.time()
+                    wait_end = time.time() + 30.0
                     while camera.is_capturing and time.time() < wait_end:
                         time.sleep(0.2)
                     continue
