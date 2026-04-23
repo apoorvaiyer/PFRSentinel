@@ -184,10 +184,13 @@ def capture_single_frame(camera: "ZWOCamera"):
 
         temp_info = _get_temperature(camera)
 
+        buf = camera._ensure_frame_buffers(width, height, active_bit_depth)
         img_rgb, img_rgb_raw16 = debayer_raw_image(
             img_data, width, height, camera.bayer_pattern,
             bit_depth=active_bit_depth,
             return_raw16=(active_bit_depth == 16),
+            dst_rgb8=buf['rgb8'],
+            dst_rgb16=buf['rgb16'],
         )
         img_rgb_no_wb = img_rgb.copy()
         img_rgb = apply_white_balance(img_rgb, camera.wb_config)

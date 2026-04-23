@@ -127,12 +127,16 @@ class _MainWindowOutputMixin:
         self.image_count += 1
         self.app_bar.update_image_count(self.image_count)
 
-        # Cache raw frame so image-processing settings changes can
-        # reprocess without waiting for the next exposure.
-        # The metadata dict is shallow-copied so processor pops don't
-        # remove keys from our cache (numpy arrays are shared, not duped).
+        # Cache raw frame for reprocessing on settings changes.
+        # Deep-copy the large numpy arrays so the camera's ping-pong buffer
+        # is free for the next frame as soon as this method returns.
+        # Queue tasks then share this one stable copy via shallow metadata.copy().
         self._cached_raw_image = pil_image.copy()
-        self._cached_raw_metadata = metadata.copy()
+        meta_copy = metadata.copy()
+        for _k in ('RAW_RGB_16BIT', 'RAW_RGB_NO_WB'):
+            if meta_copy.get(_k) is not None:
+                meta_copy[_k] = meta_copy[_k].copy()
+        self._cached_raw_metadata = meta_copy
 
         auto_stretch_enabled = self.config.get('auto_stretch', {}).get('enabled', False)
         if auto_stretch_enabled:

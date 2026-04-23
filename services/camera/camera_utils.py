@@ -144,7 +144,16 @@ def check_clipping(img_array, clipping_threshold=245):
     return clipped_percent, is_clipping
 
 
-def debayer_raw_image(raw_data, width, height, bayer_pattern='BGGR', bit_depth=8, return_raw16=False):
+def _write_dst(src: np.ndarray, dst) -> np.ndarray:
+    """Write src into dst and return dst; return src unchanged when dst is None."""
+    if dst is not None:
+        np.copyto(dst, src)
+        return dst
+    return src
+
+
+def debayer_raw_image(raw_data, width, height, bayer_pattern='BGGR', bit_depth=8, return_raw16=False,
+                      dst_rgb8=None, dst_rgb16=None):
     """
     Convert raw Bayer data to RGB using OpenCV (or fallback).
 
@@ -155,13 +164,14 @@ def debayer_raw_image(raw_data, width, height, bayer_pattern='BGGR', bit_depth=8
         bayer_pattern: Bayer pattern string (RGGB, BGGR, GRBG, GBRG)
         bit_depth: Bit depth of raw data (8 for RAW8, 16 for RAW16)
         return_raw16: If True and bit_depth=16, include the full uint16 RGB in tuple
+        dst_rgb8: Optional pre-allocated (H,W,3) uint8 array to write 8-bit result into
+        dst_rgb16: Optional pre-allocated (H,W,3) uint16 array to write 16-bit result into
 
     Returns:
         tuple: (img_rgb_uint8, img_rgb_raw16_or_None)
             - img_rgb_uint8: Always uint8 RGB array for display/processing pipeline
             - img_rgb_raw16_or_None: uint16 RGB if bit_depth=16 AND return_raw16=True, else None
     """
-    # Choose dtype based on bit depth
     if bit_depth == 16:
         img_array = np.frombuffer(raw_data, dtype=np.uint16).reshape((height, width))
     else:
@@ -176,21 +186,22 @@ def debayer_raw_image(raw_data, width, height, bayer_pattern='BGGR', bit_depth=8
             'GBRG': cv2.COLOR_BayerGB2RGB
         }
         bayer_code = bayer_map.get(bayer_pattern, cv2.COLOR_BayerBG2RGB)
-        img_rgb = cv2.cvtColor(img_array, bayer_code)
+        img_rgb = cv2.cvtColor(img_array, bayer_code)  # cv2 always allocates internally
 
-        # For 16-bit data, create both versions
         if bit_depth == 16:
-            img_rgb_raw16 = img_rgb.copy() if return_raw16 else None
-            # Scale 16-bit to 8-bit for standard processing pipeline (0-65535 -> 0-255)
-            img_rgb = (img_rgb / 257).astype(np.uint8)
+            img_rgb_raw16 = _write_dst(img_rgb, dst_rgb16) if return_raw16 else None
+            # >> 8 avoids float64 promotion that (/ 257) would cause (~304 MB intermediate)
+            img_rgb = _write_dst((img_rgb >> 8).astype(np.uint8), dst_rgb8)
         else:
             img_rgb_raw16 = None
+            img_rgb = _write_dst(img_rgb, dst_rgb8)
 
-        # Always return tuple for consistent unpacking (img_rgb, img_rgb_raw16_or_None)
         return img_rgb, img_rgb_raw16
     except ImportError:
         result = simple_debayer_rggb(img_array, width, height)
-        # Always return tuple for consistent unpacking
+        if dst_rgb8 is not None:
+            np.copyto(dst_rgb8, result)
+            result = dst_rgb8
         return result, None
 
 

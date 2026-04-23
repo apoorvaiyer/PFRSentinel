@@ -60,8 +60,8 @@ class PreviewWidget(QFrame):
             # Cap at 1920px — no need to keep a full 3552×3552 pixmap for a preview widget
             w, h = pil_image.size
             if max(w, h) > 1920:
-                s = 1920 / max(w, h)
-                pil_image = pil_image.resize((int(w * s), int(h * s)), Image.Resampling.LANCZOS)
+                scale = 1920 / max(w, h)
+                pil_image = pil_image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
             data = pil_image.tobytes('raw', 'RGB')
             qimg = QImage(data, pil_image.width, pil_image.height,
                          pil_image.width * 3, QImage.Format_RGB888)
