@@ -395,6 +395,26 @@ Ready to process images."""
             level="error"
         )
     
+    def send_roof_status_change(self, roof_open: bool, confidence: float, image_path=None):
+        """Send notification when ML confirms a roof status change (2 consecutive frames)."""
+        discord_config = self.config.get('discord', {})
+        if not discord_config.get('post_roof_changes', False):
+            return False
+
+        status = "Open" if roof_open else "Closed"
+        emoji = "🔓" if roof_open else "🔒"
+        description = (
+            f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Roof is now **{status}** (confidence: {confidence:.0%})"
+        )
+        img = image_path if image_path and os.path.exists(image_path) else None
+        return self.send_discord_message(
+            f"{emoji} Roof {status}",
+            description,
+            level="warning" if not roof_open else "info",
+            image_path=img,
+        )
+
     def send_periodic_update(self, latest_image_path=None):
         """Send periodic image update"""
         discord_config = self.config.get('discord', {})

@@ -47,7 +47,11 @@ class ImageProcessorWorker(QThread):
         self._main_window = None  # Reference to main window for camera access
         self._calibration_service = None  # Background calibration accumulation
         self._frame_count = 0
-    
+        # Roof status change tracking for Discord notifications
+        self._confirmed_roof_open = None  # None until first ML result
+        self._pending_roof_open = None
+        self._pending_roof_count = 0
+
     def set_weather_service(self, weather_service):
         """Set weather service for overlay tokens"""
         self._weather_service = weather_service
@@ -271,6 +275,8 @@ class ImageProcessorWorker(QThread):
                     f"threshold={sharpening_cfg.get('threshold', 3)}"
                 )
 
+            _ml_roof_status = None  # (roof_status_str, confidence) — set if ML runs
+
             # === ML Models: Add predictions to metadata for overlay tokens ===
             ml_config = config.get('ml_models', {})
             if ml_config.get('enabled', False):
@@ -287,6 +293,10 @@ class ImageProcessorWorker(QThread):
                         # Store full results for preview display and roof-gated timelapse
                         ml_results = ml_service.get_last_results()
                         metadata['_ML_RESULTS'] = ml_results
+                        _ml_roof_status = (
+                            ml_results.get('roof_status'),
+                            ml_results.get('roof_confidence', 0.0),
+                        )
                         if self._main_window:
                             self._main_window.last_ml_results = ml_results
                         
@@ -341,10 +351,16 @@ class ImageProcessorWorker(QThread):
             # When timelapse wants overlays but explicitly excludes all-sky, render twice:
             # once without all-sky for the timelapse sink, once with for the main output.
             timelapse_cfg = config.get('timelapse', {})
+            # Render a separate timelapse frame without the all-sky overlay whenever
+            # allsky is calibrated and the user hasn't explicitly enabled allsky in the
+            # timelapse.  The include_overlays check is intentionally absent: when
+            # include_overlays=False the controller picks clean_image anyway, but we
+            # still need img_for_timelapse to be allsky-free in case include_overlays
+            # is True.  The extra render is negligible and avoids the overlay leaking
+            # regardless of the include_overlays state.
             needs_timelapse_no_allsky = (
                 '__allsky_config' in metadata
                 and timelapse_cfg.get('enabled', False)
-                and timelapse_cfg.get('include_overlays', False)
                 and not timelapse_cfg.get('include_allsky_overlay', False)
             )
             if needs_timelapse_no_allsky:
@@ -379,7 +395,11 @@ class ImageProcessorWorker(QThread):
                 img.save(output_path, 'JPEG', quality=jpg_quality)
             
             app_logger.debug(f"Saved: {os.path.basename(output_path)}")
-            
+
+            # Roof status change detection — fire Discord after 2 confirmed consecutive frames
+            if _ml_roof_status and _ml_roof_status[0] in ('Open', 'Closed'):
+                self._check_roof_change(_ml_roof_status[0] == 'Open', _ml_roof_status[1], output_path)
+
             # Clean up large arrays from metadata before emitting (avoid memory leaks)
             metadata.pop('RAW_RGB_16BIT', None)
             metadata.pop('RAW_RGB_NO_WB', None)
@@ -400,6 +420,40 @@ class ImageProcessorWorker(QThread):
             from services.posthog_service import capture_error
             capture_error(e, context='image_processing')
             self.error_occurred.emit(str(e))
+
+    def _check_roof_change(self, roof_open: bool, confidence: float, image_path: str):
+        """Accumulate consecutive roof readings; fire alert on the 2nd consecutive change."""
+        if self._confirmed_roof_open is None:
+            self._confirmed_roof_open = roof_open
+            return
+
+        if roof_open == self._confirmed_roof_open:
+            self._pending_roof_open = None
+            self._pending_roof_count = 0
+            return
+
+        if self._pending_roof_open == roof_open:
+            self._pending_roof_count += 1
+        else:
+            self._pending_roof_open = roof_open
+            self._pending_roof_count = 1
+
+        if self._pending_roof_count >= 2:
+            self._confirmed_roof_open = roof_open
+            self._pending_roof_open = None
+            self._pending_roof_count = 0
+            self._send_roof_alert(roof_open, confidence, image_path)
+
+    def _send_roof_alert(self, roof_open: bool, confidence: float, image_path: str):
+        """Post roof status change to Discord (called from worker thread)."""
+        if not self._main_window:
+            return
+        try:
+            from services.discord_alerts import DiscordAlerts
+            alerts = DiscordAlerts(self._main_window.config)
+            alerts.send_roof_status_change(roof_open, confidence, image_path)
+        except Exception as e:
+            app_logger.warning(f"Roof change Discord alert failed: {e}")
 
 
 class ImageProcessor(QObject):

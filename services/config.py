@@ -210,6 +210,7 @@ DEFAULT_CONFIG = {
         "avatar_url": "",
         "post_timelapse": False,      # Post timelapse video when session completes
         "post_calibration": False,    # Post notification when all-sky calibration completes
+        "post_roof_changes": False,   # Post notification when ML confirms a roof status change
     },
     
     # All-sky camera settings (for ML training visual reference)
