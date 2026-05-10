@@ -270,20 +270,25 @@ def _best_single_frame_model(frames, lat, lon, cx0, cy0) -> FisheyeModel:
 
 
 def _build_all_matches(frames, model, tol_px: float,
-                       min_per_image: int) -> List[list]:
+                       min_per_image: int,
+                       max_vmag: Optional[float] = None,
+                       _log: bool = True) -> List[list]:
     """Match each frame's detections to catalog using the current model."""
     all_matches = []
     for f in frames:
-        matches = _brightness_match(
-            f['detected'], f['above_horizon'], model, tol_px=tol_px
-        )
+        horizon = f['above_horizon']
+        if max_vmag is not None:
+            horizon = [(s, a, z) for s, a, z in horizon if s.get('vmag', 9.0) <= max_vmag]
+        matches = _brightness_match(f['detected'], horizon, model, tol_px=tol_px)
         if len(matches) >= min_per_image:
             all_matches.append(matches)
-            log.debug(f"  {f['dt'].isoformat()}: {len(matches)} matches "
-                      f"(tol={tol_px:.0f}px)")
+            if _log:
+                log.debug(f"  {f['dt'].isoformat()}: {len(matches)} matches "
+                          f"(tol={tol_px:.0f}px)")
         else:
-            log.debug(f"  {f['dt'].isoformat()}: only {len(matches)} matches "
-                      f"— discarded (min={min_per_image})")
+            if _log:
+                log.debug(f"  {f['dt'].isoformat()}: only {len(matches)} matches "
+                          f"— discarded (min={min_per_image})")
     return all_matches
 
 
@@ -313,14 +318,28 @@ def _joint_iterative_fit(
     seed_cx, seed_cy = model.cx, model.cy
     east_left = model.east_left
 
+    # Bright anchor matches: kept at a fixed large tolerance throughout all iterations
+    # so that easily-identified bright stars (vmag < 3.5) always participate in the
+    # loss even when the tightening regular tolerance would exclude them.  Without
+    # this, the optimizer can settle into a false minimum where hundreds of dim stars
+    # match well but Arcturus/Vega/Antares/Deneb are 50-90 px off.
+    _ANCH_TOL = 100.0
+    _ANCH_MAX_VMAG = 3.5
+    _ANCH_WEIGHT = 4.0  # multiply residuals → 16x contribution to squared loss
+    anchor_matches = _build_all_matches(
+        frames, model, tol_px=_ANCH_TOL, min_per_image=0,
+        max_vmag=_ANCH_MAX_VMAG, _log=False,
+    )
+
     for iteration in range(10):
         params = np.array([
             model.cx, model.cy, model.a1, model.a3, model.a5,
             model.roll, model.axis_alt, model.axis_az,
         ])
 
-        # Capture all_matches by value for the closure
+        # Capture by name; both are reassigned after _least_squares returns.
         current_matches = all_matches
+        current_anchor = anchor_matches
 
         def residuals(p):
             m = _params_to_model(p, east_left)
@@ -332,15 +351,29 @@ def _joint_iterative_fit(
                         res.extend([30.0, 30.0])
                     else:
                         res.extend([dx - xy[0], dy - xy[1]])
+            # Bright anchor terms: fixed large tolerance, high weight.
+            # These prevent the false minimum where dim-star density produces low RMS
+            # but the easily-identified bright anchors are far from any detection.
+            for img_anchors in current_anchor:
+                for (dx, dy), _star, (alt, az) in img_anchors:
+                    xy = m.altaz_to_pixel(alt, az)
+                    if xy is None:
+                        res.extend([30.0 * _ANCH_WEIGHT, 30.0 * _ANCH_WEIGHT])
+                    else:
+                        res.extend([(dx - xy[0]) * _ANCH_WEIGHT,
+                                    (dy - xy[1]) * _ANCH_WEIGHT])
             return res
 
         try:
             # a3/a5 bounds match single-image fit: physical fisheye range.
+            # axis_alt lower bound is 60° (not 45°) to match the grid-search floor —
+            # allowing lower values lets the optimizer drift to a zenith-magnified false
+            # minimum where dim stars cluster densely but bright anchors are missed.
             result = _least_squares(
                 residuals, params,
                 bounds=(
                     [seed_cx - cx_range, seed_cy - cy_range,
-                     50,  -100.0, -1500.0, -np.pi, 45.0, -180.0],
+                     50,  -100.0, -1500.0, -np.pi, 60.0, -180.0],
                     [seed_cx + cx_range, seed_cy + cy_range,
                      2000,   25.0,   500.0,  np.pi, 90.0,  540.0],
                 ),
@@ -359,6 +392,11 @@ def _joint_iterative_fit(
         tol = max(8.0, 50.0 - iteration * 5.0)
         all_matches = _build_all_matches(frames, model, tol_px=tol,
                                          min_per_image=min_per_image)
+        # Rebuild anchor matches with updated model (fixed large tolerance)
+        anchor_matches = _build_all_matches(
+            frames, model, tol_px=_ANCH_TOL, min_per_image=0,
+            max_vmag=_ANCH_MAX_VMAG, _log=False,
+        )
 
         total   = sum(len(m) for m in all_matches)
         rms     = _joint_rms(all_matches, model)

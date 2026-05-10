@@ -497,7 +497,7 @@ def _iterative_fit(
             result = _least_squares(
                 residuals, params,
                 bounds=(
-                    [50,   50,   50,   -100.0, -1500.0, -np.pi, 45.0,   0.0],
+                    [50,   50,   50,   -100.0, -1500.0, -np.pi, 60.0,   0.0],
                     [4000, 4000, 2000,   25.0,   500.0,  np.pi, 90.0, 360.0],
                 ),
                 method='trf',
