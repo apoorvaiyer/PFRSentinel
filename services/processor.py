@@ -1,7 +1,7 @@
 """Image processing and metadata parsing."""
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from PIL import Image
 import numpy as np
 from .logger import app_logger
@@ -149,6 +149,12 @@ def _inject_allsky_metadata(config: dict, metadata: dict) -> None:
     allsky_cfg['_lat'] = float(weather_cfg.get('latitude', 0) or 0)
     allsky_cfg['_lon'] = float(weather_cfg.get('longitude', 0) or 0)
     allsky_cfg['_elevation'] = float(weather_cfg.get('elevation', 0) or 0)
+    # Authoritative observation time for the overlay, in true UTC — the same
+    # clock the calibration uses (datetime.now(timezone.utc)). The renderer must
+    # NOT re-derive time from the local {DATETIME} token, which is naive local
+    # time and was being mislabelled as UTC (rotating the whole sky by the
+    # observer's UTC offset).
+    allsky_cfg['_obs_utc'] = datetime.now(timezone.utc).isoformat()
     metadata['__allsky_config'] = allsky_cfg
 
 

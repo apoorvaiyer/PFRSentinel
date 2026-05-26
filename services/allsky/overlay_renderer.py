@@ -119,11 +119,18 @@ def render_allsky_overlay(
         return img  # Silently skip — not calibrated
 
     # --- Determine observation time ---
-    dt = _get_datetime(metadata)
-    utc_offset = float(config.get('utc_offset_hours', 0))
-    if utc_offset != 0.0:
-        from datetime import timedelta
-        dt = dt - timedelta(hours=utc_offset)
+    # Prefer the authoritative true-UTC instant injected by the pipeline
+    # (_inject_allsky_metadata), which matches the clock the calibration uses.
+    # Only fall back to the metadata {DATETIME} token (naive local time) for
+    # direct callers such as tests and the dev debug tool; that legacy path
+    # still honours utc_offset_hours.
+    dt = _get_obs_utc(config)
+    if dt is None:
+        dt = _get_datetime(metadata)
+        utc_offset = float(config.get('utc_offset_hours', 0) or 0)
+        if utc_offset != 0.0:
+            from datetime import timedelta
+            dt = dt - timedelta(hours=utc_offset)
 
     # --- Observer location ---
     lat = float(config.get('_lat', 0.0))
@@ -336,6 +343,23 @@ def _load_model(config: dict) -> Optional[FisheyeModel]:
         return None
     _model_cache.update(path=path, mtime=mtime, model=model)
     return model
+
+
+def _get_obs_utc(config: dict) -> Optional[datetime]:
+    """Return the authoritative true-UTC observation time, or None.
+
+    Set by the capture pipeline (_inject_allsky_metadata) to the same instant
+    the calibration uses. When present it is the single source of truth for
+    sky orientation and the legacy local-time/utc_offset path is skipped.
+    """
+    val = config.get('_obs_utc')
+    if not val:
+        return None
+    try:
+        dt = datetime.fromisoformat(val)
+    except (ValueError, TypeError):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
 def _get_datetime(metadata: dict) -> datetime:

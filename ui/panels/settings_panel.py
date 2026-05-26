@@ -198,13 +198,17 @@ class SettingsPanel(QScrollArea):
         coord_row.setSpacing(Spacing.sm)
         
         self.lat_input = LineEdit()
-        self.lat_input.setPlaceholderText("Latitude")
+        self.lat_input.setPlaceholderText("Latitude (e.g. 31.33)")
         self.lat_input.textChanged.connect(self._on_weather_changed)
+        self.lat_input.editingFinished.connect(
+            lambda: self._commit_coordinate(self.lat_input, 'latitude', False))
         coord_row.addWidget(self.lat_input)
-        
+
         self.lon_input = LineEdit()
-        self.lon_input.setPlaceholderText("Longitude")
+        self.lon_input.setPlaceholderText("Longitude (e.g. -100.46)")
         self.lon_input.textChanged.connect(self._on_weather_changed)
+        self.lon_input.editingFinished.connect(
+            lambda: self._commit_coordinate(self.lon_input, 'longitude', True))
         coord_row.addWidget(self.lon_input)
 
         self.elevation_input = LineEdit()
@@ -331,13 +335,68 @@ class SettingsPanel(QScrollArea):
             weather = self.main_window.config.get('weather', {})
             weather['api_key'] = self.api_key_input.text()
             weather['location'] = self.location_input.text()
-            weather['latitude'] = self.lat_input.text()
-            weather['longitude'] = self.lon_input.text()
+            # Coordinates are normalised to canonical signed decimal before they
+            # reach config, so the rest of the app never sees an unparseable
+            # string. Mid-edit text that doesn't parse yet keeps the last good
+            # value rather than clobbering it; the editingFinished handler does
+            # the final rewrite + error feedback.
+            weather['latitude'] = self._normalise_coord(
+                self.lat_input.text(), weather.get('latitude', ''), False)
+            weather['longitude'] = self._normalise_coord(
+                self.lon_input.text(), weather.get('longitude', ''), True)
             weather['elevation'] = self.elevation_input.text()
             units_text = self.units_combo.currentText()
             weather['units'] = 'imperial' if 'imperial' in units_text else 'metric'
             self.main_window.config.set('weather', weather)
             self.settings_changed.emit()
+
+    @staticmethod
+    def _normalise_coord(text: str, previous, is_longitude: bool):
+        """Canonical decimal string for parseable input; preserve last good value otherwise."""
+        from services.coordinates import parse_coordinate, to_decimal_string
+        if not text.strip():
+            return ''
+        val = parse_coordinate(text, is_longitude)
+        if val is None:
+            return previous  # don't overwrite a good value with mid-typed/garbage text
+        return to_decimal_string(val)
+
+    def _commit_coordinate(self, field, key: str, is_longitude: bool) -> None:
+        """On focus-out: rewrite the field to canonical decimal, or flag an error."""
+        if self._loading_config:
+            return
+        if not (self.main_window and hasattr(self.main_window, 'config')):
+            return
+        from services.coordinates import parse_coordinate, to_decimal_string
+        text = field.text().strip()
+        weather = self.main_window.config.get('weather', {})
+        if not text:
+            weather[key] = ''
+            self._set_coord_error(field, False)
+        else:
+            val = parse_coordinate(text, is_longitude)
+            if val is None:
+                weather[key] = ''  # refuse to persist an unparseable coordinate
+                self._set_coord_error(field, True)
+                self.weather_status_label.setText(
+                    "❌ Invalid coordinate — use decimal degrees (e.g. 31.33 or -100.46)")
+                self.weather_status_label.setStyleSheet(f"color: {Colors.status_error};")
+            else:
+                canonical = to_decimal_string(val)
+                weather[key] = canonical
+                self._set_coord_error(field, False)
+                if field.text() != canonical:
+                    field.blockSignals(True)
+                    field.setText(canonical)
+                    field.blockSignals(False)
+        self.main_window.config.set('weather', weather)
+        self.main_window.config.save()
+        self.settings_changed.emit()
+
+    def _set_coord_error(self, field, is_error: bool) -> None:
+        """Toggle a red error border on a coordinate field."""
+        field.setStyleSheet(
+            f"border: 1px solid {Colors.status_error};" if is_error else "")
     
     def _test_weather(self):
         """Test weather API connection"""
