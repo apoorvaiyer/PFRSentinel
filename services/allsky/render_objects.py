@@ -100,7 +100,7 @@ def render_planets(
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    positions = get_all_positions(dt)
+    positions = get_all_positions(dt, lat_deg, lon_deg)
 
     for name, (ra, dec) in positions.items():
         if name == 'Sun':

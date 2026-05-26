@@ -271,7 +271,7 @@ def _compute_allowed_ids(
             candidates.append((float(s['vmag']), star_uid(s)))
 
     # Planets
-    for name, (ra, dec) in get_all_positions(dt).items():
+    for name, (ra, dec) in get_all_positions(dt, lat, lon).items():
         if name == 'Sun':
             continue
         alt, az = _ra2aa(ra, dec, lat, lon, dt, refraction=True)

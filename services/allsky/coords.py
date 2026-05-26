@@ -153,6 +153,43 @@ def altaz_to_radec(
 
 
 # ---------------------------------------------------------------------------
+# Diurnal (topocentric) parallax
+# ---------------------------------------------------------------------------
+
+def geocentric_to_topocentric(
+    ra_deg: float,
+    dec_deg: float,
+    parallax_deg: float,
+    lat_deg: float,
+    lon_deg: float,
+    dt: datetime,
+) -> tuple:
+    """Shift a geocentric RA/Dec to the observer's topocentric RA/Dec.
+
+    Significant only for the Moon (equatorial horizontal parallax ~0.95°);
+    sub-arcminute for the planets. A sea-level observer is assumed — the
+    Earth-flattening term is omitted (< 0.2' effect). Meeus Ch. 40.
+
+    Args:
+        parallax_deg: equatorial horizontal parallax (degrees).
+    Returns:
+        (ra_deg, dec_deg) topocentric.
+    """
+    jd = julian_date(dt)
+    ha = np.radians((lst_degrees(jd, lon_deg) - ra_deg) % 360.0)
+    phi = np.radians(lat_deg)
+    dec = np.radians(dec_deg)
+    sin_pi = np.sin(np.radians(parallax_deg))
+
+    denom = np.cos(dec) - np.cos(phi) * sin_pi * np.cos(ha)
+    d_ra = np.arctan2(-np.cos(phi) * sin_pi * np.sin(ha), denom)
+    ra_t = (ra_deg + np.degrees(d_ra)) % 360.0
+    dec_t = np.degrees(np.arctan2(
+        (np.sin(dec) - np.sin(phi) * sin_pi) * np.cos(d_ra), denom))
+    return ra_t, dec_t
+
+
+# ---------------------------------------------------------------------------
 # Atmospheric Refraction (Bennett 1982)
 # ---------------------------------------------------------------------------
 

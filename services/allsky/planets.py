@@ -10,7 +10,10 @@ import numpy as np
 from datetime import datetime
 from typing import Dict, List, Tuple
 
-from .coords import julian_date, ecliptic_to_equatorial
+from .coords import julian_date, ecliptic_to_equatorial, geocentric_to_topocentric
+
+# Earth equatorial radius (km) — for lunar horizontal parallax.
+_EARTH_RADIUS_KM = 6378.14
 
 # ---------------------------------------------------------------------------
 # Orbital elements at J2000.0 and secular rates (degrees, per Julian century)
@@ -186,15 +189,57 @@ def moon_radec(dt: datetime) -> Tuple[float, float]:
     return ecliptic_to_equatorial(moon_lon, moon_lat, jd)
 
 
+def moon_distance_km(dt: datetime) -> float:
+    """Earth–Moon centre-to-centre distance in km (Meeus Ch. 47 main terms)."""
+    jd = julian_date(dt)
+    T = (jd - 2451545.0) / 36525.0
+    D  = np.radians(297.8502 + 445267.1115 * T)
+    M  = np.radians(357.5291 +  35999.0503 * T)
+    Mp = np.radians(134.9634 + 477198.8676 * T)
+    return (385000.56
+            - 20905.355 * np.cos(Mp)
+            -  3699.111 * np.cos(2 * D - Mp)
+            -  2955.968 * np.cos(2 * D)
+            -   569.925 * np.cos(2 * Mp)
+            +    48.888 * np.cos(M)
+            +   246.158 * np.cos(2 * D - 2 * Mp)
+            -   204.586 * np.cos(2 * D - M)
+            -   170.733 * np.cos(2 * D + Mp)
+            -   152.138 * np.cos(2 * D - M - Mp)
+            -   129.620 * np.cos(M - Mp)
+            +   108.743 * np.cos(D)
+            +   104.755 * np.cos(M + Mp))
+
+
+def moon_radec_topocentric(dt: datetime, lat_deg: float, lon_deg: float) -> Tuple[float, float]:
+    """Moon RA/Dec corrected for the observer's diurnal parallax (~1°).
+
+    The bare geocentric position (moon_radec) places the label up to ~1° from
+    where the Moon actually appears from the ground; for an all-sky overlay
+    that is a visible offset. Always use this for rendering.
+    """
+    ra, dec = moon_radec(dt)
+    parallax_deg = np.degrees(np.arcsin(_EARTH_RADIUS_KM / moon_distance_km(dt)))
+    return geocentric_to_topocentric(ra, dec, parallax_deg, lat_deg, lon_deg, dt)
+
+
 # ---------------------------------------------------------------------------
 # Convenience: all bodies at once
 # ---------------------------------------------------------------------------
 
-def get_all_positions(dt: datetime) -> Dict[str, Tuple[float, float]]:
+def get_all_positions(
+    dt: datetime,
+    lat_deg: float = None,
+    lon_deg: float = None,
+) -> Dict[str, Tuple[float, float]]:
     """
     Return RA/Dec (degrees) for all planets, Moon, and Sun.
     Keys: 'Mercury', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune',
           'Moon', 'Sun'.
+
+    When lat_deg/lon_deg are supplied the Moon is returned topocentrically
+    (corrected for the observer's ~1° diurnal parallax); otherwise geocentric.
+    Planet parallax is sub-arcminute and left geocentric.
     """
     positions = {}
     for name in PLANETS:
@@ -203,7 +248,10 @@ def get_all_positions(dt: datetime) -> Dict[str, Tuple[float, float]]:
         except Exception:
             pass
     try:
-        positions['Moon'] = moon_radec(dt)
+        if lat_deg is not None and lon_deg is not None:
+            positions['Moon'] = moon_radec_topocentric(dt, lat_deg, lon_deg)
+        else:
+            positions['Moon'] = moon_radec(dt)
     except Exception:
         pass
     try:

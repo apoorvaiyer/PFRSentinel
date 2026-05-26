@@ -20,7 +20,43 @@ from services.allsky.coords import (
     altaz_to_radec,
     atmospheric_refraction,
     ecliptic_to_equatorial,
+    geocentric_to_topocentric,
 )
+
+
+# ===================================================================
+# Topocentric (diurnal) parallax — significant for the Moon (~1°)
+# ===================================================================
+
+class TestTopocentricParallax:
+    LAT, LON = 31.3303162, -100.4570705
+    DT = datetime(2026, 5, 26, 3, 50, 44, tzinfo=timezone.utc)
+    MOON_PARALLAX = 0.927  # equatorial horizontal parallax (deg) at that time
+
+    def test_parallax_lowers_moon_altitude(self):
+        """Topocentric Moon is always at or below the geocentric altitude."""
+        from services.allsky.planets import moon_radec
+        ra, dec = moon_radec(self.DT)
+        ra_t, dec_t = geocentric_to_topocentric(
+            ra, dec, self.MOON_PARALLAX, self.LAT, self.LON, self.DT)
+        g_alt, _ = radec_to_altaz(ra, dec, self.LAT, self.LON, self.DT, refraction=False)
+        t_alt, _ = radec_to_altaz(ra_t, dec_t, self.LAT, self.LON, self.DT, refraction=False)
+        assert float(t_alt) < float(g_alt)
+        # ~0.6° lower at alt 50° (π·cos(alt))
+        assert float(g_alt) - float(t_alt) == pytest.approx(0.6, abs=0.15)
+
+    def test_zero_parallax_is_identity(self):
+        ra_t, dec_t = geocentric_to_topocentric(
+            150.0, 20.0, 0.0, self.LAT, self.LON, self.DT)
+        assert ra_t == pytest.approx(150.0)
+        assert dec_t == pytest.approx(20.0)
+
+    def test_get_all_positions_moon_topocentric_differs(self):
+        """Passing lat/lon shifts the Moon; omitting them returns geocentric."""
+        from services.allsky.planets import get_all_positions
+        geo = get_all_positions(self.DT)['Moon']
+        topo = get_all_positions(self.DT, self.LAT, self.LON)['Moon']
+        assert geo != topo
 
 
 # ===================================================================
