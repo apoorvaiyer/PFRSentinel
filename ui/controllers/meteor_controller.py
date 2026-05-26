@@ -18,6 +18,7 @@ from PySide6.QtCore import QObject, Signal, QTimer
 from PIL import Image
 
 from services.logger import app_logger
+from services.dev_mode_config import is_dev_mode_available
 from services.meteor.detector import (
     detect_meteors, annotate_image, MeteorDetection,
     compute_frame_difference, apply_sky_circle_mask,
@@ -74,6 +75,11 @@ class MeteorController(QObject):
 
     def on_frame_ready(self, clean_image: Image.Image, _overlaid: Image.Image):
         """Called for every processed frame via image_processor.timelapse_ready."""
+        # Meteor tracking is not ready for real-time capture — gate it behind
+        # dev mode so it never runs in production builds, regardless of the
+        # persisted "enabled" flag or how the frame signal is wired.
+        if not is_dev_mode_available():
+            return
         cfg = self._get_config()
         if not cfg.get("enabled", False):
             return

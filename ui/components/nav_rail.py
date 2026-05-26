@@ -12,6 +12,7 @@ import qtawesome as qta
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
 from ..theme.styles import get_nav_item_style
+from services.dev_mode_config import is_dev_mode_available
 
 
 class NavButton(QPushButton):
@@ -196,10 +197,13 @@ class NavRail(QFrame):
             (_ico('format-textbox'), "Overlays", 'overlays'),
             (_ico('sphere'), "All-Sky", 'allsky'),
             (_ico('filmstrip-box-multiple'), "Timelapse", 'timelapse'),
-            (_ico('meteor'), "Meteor Tracker", 'meteor'),
-            (_ico('math-log'), "Logs", 'logs'),
         ]
-        
+        # Meteor Tracker is dev-only — not ready for real-time capture, so it
+        # only appears when the app is run with dev mode enabled.
+        if is_dev_mode_available():
+            nav_items.append((_ico('meteor'), "Meteor Tracker", 'meteor'))
+        nav_items.append((_ico('math-log'), "Logs", 'logs'))
+
         for icon, label, key in nav_items:
             btn = NavButton(icon, label, key, self)
             btn.clicked.connect(lambda checked, k=key: self._on_button_clicked(k))

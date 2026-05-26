@@ -17,6 +17,7 @@ from services.config import Config
 from services.logger import app_logger
 from services.web_output import WebOutputServer
 from services.ml_data_collector import init_ml_collector
+from services.dev_mode_config import is_dev_mode_available
 from version import __version__
 
 from ..theme import apply_theme, apply_accent_theme, get_stylesheet
@@ -234,6 +235,10 @@ class MainWindow(
             self.inspector_stack.hide()
 
         last_section = self.config.get('last_nav_section', 'capture')
+        # Meteor Tracker is dev-only; fall back if a prior dev session left it
+        # selected, otherwise the hidden panel would show on startup.
+        if last_section == 'meteor' and not is_dev_mode_available():
+            last_section = 'capture'
         if last_section:
             self.nav_rail.set_active_section(last_section)
             self._on_nav_changed(last_section)
