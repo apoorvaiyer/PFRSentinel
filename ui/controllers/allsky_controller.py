@@ -136,6 +136,19 @@ class AllSkyController(QObject):
             self.status_changed.emit("No image available — start capture first.")
             return
 
+        # The cached frame is the RAW (pre-resize) image, but the overlay is
+        # rendered on the post-resize frame (resize_percent). A model calibrated
+        # at raw scale would project stars at the wrong radius on the rendered
+        # image. Match the render resolution so the model is directly usable.
+        resize_percent = int(self._mw.config.get('resize_percent', 100) or 100)
+        if resize_percent < 100:
+            from PIL import Image as _PILImage
+            w = int(image.width * resize_percent / 100)
+            h = int(image.height * resize_percent / 100)
+            image = image.resize((w, h), _PILImage.Resampling.LANCZOS)
+            log.info(f"Calibrate Now: resized frame to {resize_percent}% "
+                     f"({w}x{h}) to match render resolution")
+
         lat = float(self._mw.config.get('weather', {}).get('latitude', 0) or 0)
         lon = float(self._mw.config.get('weather', {}).get('longitude', 0) or 0)
         dt = datetime.now(timezone.utc)
