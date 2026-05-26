@@ -11,9 +11,28 @@ import csv
 import re
 import os
 import numpy as np
+from datetime import datetime, timezone
 from typing import List, Dict, Optional
 
 from services.logger import app_logger as log
+from .coords import precess_from_j2000
+
+
+def _precess_records(records: List[Dict], dt: datetime) -> List[Dict]:
+    """Precess every record's ra_deg/dec_deg from J2000 to the epoch of `dt`.
+
+    Applied once at load so all consumers (calibration *and* rendering) share
+    one of-date frame — see coords.precess_from_j2000. Mutates in place.
+    """
+    if not records:
+        return records
+    ra = np.array([r['ra_deg'] for r in records], dtype=float)
+    dec = np.array([r['dec_deg'] for r in records], dtype=float)
+    ra2, dec2 = precess_from_j2000(ra, dec, dt)
+    for r, a, d in zip(records, ra2, dec2):
+        r['ra_deg'] = float(a)
+        r['dec_deg'] = float(d)
+    return records
 
 # ---------------------------------------------------------------------------
 # Resource path helper
@@ -169,7 +188,7 @@ def _load_bsc5() -> List[Dict]:
             'color_k': int(s['K']) if s.get('K', '').isdigit() else 6000,
         })
     stars.sort(key=lambda x: x['vmag'])
-    return stars
+    return _precess_records(stars, datetime.now(timezone.utc))
 
 
 def _load_messier() -> List[Dict]:
@@ -194,7 +213,7 @@ def _load_messier() -> List[Dict]:
             'type': obj.get('T', ''),
             'ngc': obj.get('NGC', ''),
         })
-    return objects
+    return _precess_records(objects, datetime.now(timezone.utc))
 
 
 def _load_ngc() -> List[Dict]:
@@ -225,7 +244,7 @@ def _load_ngc() -> List[Dict]:
                 'type': (row.get('Type') or '').strip(),
                 'messier': messier_n,
             })
-    return objects
+    return _precess_records(objects, datetime.now(timezone.utc))
 
 
 def _load_western_constellations() -> tuple:
@@ -239,10 +258,14 @@ def _load_western_constellations() -> tuple:
     with open(path, encoding='utf-8') as f:
         data = json.load(f)
 
-    # HIP → (ra, dec) lookup is embedded in the same file
+    # HIP → (ra, dec) lookup is embedded in the same file. Precess J2000 →
+    # epoch-of-date once here so the lines and centroid labels built below
+    # share the same of-date frame as the stars/DSOs and solar-system bodies.
+    _epoch = datetime.now(timezone.utc)
     hip_coords: Dict[int, tuple] = {}
     for k, v in data.get('hip_coords', {}).items():
-        hip_coords[int(k)] = (v[0], v[1])
+        ra_d, dec_d = precess_from_j2000(v[0], v[1], _epoch)
+        hip_coords[int(k)] = (float(ra_d), float(dec_d))
 
     lines: List[tuple] = []
     labels: List[Dict] = []

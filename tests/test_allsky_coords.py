@@ -25,6 +25,46 @@ from services.allsky.coords import (
 
 
 # ===================================================================
+# Precession of the equinoxes (J2000 → epoch of date)
+# ===================================================================
+
+class TestPrecession:
+    def test_identity_at_j2000(self):
+        """At the J2000 epoch the shift is zero."""
+        from services.allsky.coords import precess_from_j2000
+        dt = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        ra, dec = precess_from_j2000(201.298, -11.161, dt)
+        assert float(ra) == pytest.approx(201.298, abs=1e-3)
+        assert float(dec) == pytest.approx(-11.161, abs=1e-3)
+
+    def test_spica_shift_2026(self):
+        """Spica precesses ~0.37° over 26 years (RA increases, Dec decreases)."""
+        from services.allsky.coords import precess_from_j2000
+        dt = datetime(2026, 5, 26, 0, 0, 0, tzinfo=timezone.utc)
+        ra, dec = precess_from_j2000(201.298, -11.161, dt)
+        # RA grows, Dec drops; total separation ~0.35-0.40°
+        assert float(ra) > 201.298
+        assert float(dec) < -11.161
+        sep = math.hypot((float(ra) - 201.298) * math.cos(math.radians(-11.2)),
+                         float(dec) - (-11.161))
+        assert sep == pytest.approx(0.37, abs=0.05)
+
+    def test_grows_with_time(self):
+        """Precession is larger for a more distant epoch."""
+        from services.allsky.coords import precess_from_j2000
+        _, d2030 = precess_from_j2000(0.0, 0.0, datetime(2030, 1, 1, tzinfo=timezone.utc))
+        _, d2100 = precess_from_j2000(0.0, 0.0, datetime(2100, 1, 1, tzinfo=timezone.utc))
+        assert abs(float(d2100)) > abs(float(d2030))
+
+    def test_accepts_arrays(self):
+        from services.allsky.coords import precess_from_j2000
+        import numpy as np
+        ra = np.array([10.0, 200.0]); dec = np.array([20.0, -30.0])
+        ra2, dec2 = precess_from_j2000(ra, dec, datetime(2026, 1, 1, tzinfo=timezone.utc))
+        assert ra2.shape == (2,) and dec2.shape == (2,)
+
+
+# ===================================================================
 # Topocentric (diurnal) parallax — significant for the Moon (~1°)
 # ===================================================================
 

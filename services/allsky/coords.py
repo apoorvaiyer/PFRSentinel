@@ -153,6 +153,35 @@ def altaz_to_radec(
 
 
 # ---------------------------------------------------------------------------
+# Precession of the equinoxes (mean J2000 → mean equinox of date)
+# ---------------------------------------------------------------------------
+
+def precess_from_j2000(ra_deg: Numeric, dec_deg: Numeric, dt: datetime) -> tuple:
+    """Precess mean J2000 RA/Dec to the mean equinox of `dt` (Meeus Ch. 21).
+
+    Star/DSO catalogues are J2000, but the real sky and the solar-system
+    ephemerides are of-date — by 2026 the difference is up to ~0.37°, a
+    visible label offset and a systematic drag on multi-image calibration.
+    Accepts scalars or numpy arrays. Rigorous (ζ, z, θ) rotation.
+    """
+    jd = julian_date(dt)
+    t = (jd - 2451545.0) / 36525.0
+    arcsec = np.pi / 180.0 / 3600.0
+    zeta  = (2306.2181 * t + 0.30188 * t * t + 0.017998 * t ** 3) * arcsec
+    z     = (2306.2181 * t + 1.09468 * t * t + 0.018203 * t ** 3) * arcsec
+    theta = (2004.3109 * t - 0.42665 * t * t - 0.041833 * t ** 3) * arcsec
+
+    a0 = np.radians(np.asarray(ra_deg, dtype=float))
+    d0 = np.radians(np.asarray(dec_deg, dtype=float))
+    A = np.cos(d0) * np.sin(a0 + zeta)
+    B = np.cos(theta) * np.cos(d0) * np.cos(a0 + zeta) - np.sin(theta) * np.sin(d0)
+    C = np.sin(theta) * np.cos(d0) * np.cos(a0 + zeta) + np.cos(theta) * np.sin(d0)
+    ra = (np.degrees(np.arctan2(A, B)) + np.degrees(z)) % 360.0
+    dec = np.degrees(np.arcsin(np.clip(C, -1.0, 1.0)))
+    return ra, dec
+
+
+# ---------------------------------------------------------------------------
 # Diurnal (topocentric) parallax
 # ---------------------------------------------------------------------------
 
