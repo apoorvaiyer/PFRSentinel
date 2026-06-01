@@ -245,6 +245,23 @@ def capture_loop(camera: "ZWOCamera"):
             f"Scheduled capture (gated): {camera.scheduled_start_time} - "
             f"{camera.scheduled_end_time} — paused outside window"
         )
+        # Gated mode disconnects the camera during off-peak hours and reconnects
+        # at the next window. If the camera comes back unopenable, recovery needs
+        # a USB disable/enable, which requires Administrator rights — and that
+        # need only surfaces hours later. Warn now, while the operator can act.
+        try:
+            conn = camera._connection
+            if (getattr(conn, '_usb_disable_enable_func', None)
+                    and not conn._is_running_as_admin()):
+                camera.log(
+                    "⚠ Gated capture is enabled but the app is NOT running as "
+                    "Administrator. If the camera fails to reopen after an "
+                    "off-peak window, automatic USB recovery (disable/enable) "
+                    "cannot run. Recommended: run the app as Administrator for "
+                    "unattended scheduled capture."
+                )
+        except Exception:
+            pass  # Diagnostic only — never block capture startup
     elif mode == "variable":
         camera.log(
             f"Scheduled capture (variable rates): {camera.scheduled_window_interval}s inside "
@@ -325,7 +342,12 @@ def capture_loop(camera: "ZWOCamera"):
                                 except Exception:
                                     pass
 
-                                camera._connection.disconnect()
+                                # release_sdk=True: off-peak gaps span hours, and
+                                # reusing a stale SDK handle across that idle is
+                                # what left the camera unopenable on the next
+                                # scheduled window. Drop the SDK so reconnect
+                                # re-inits cleanly.
+                                camera._connection.disconnect(release_sdk=True)
                                 camera.log(
                                     "✓ Camera disconnected for off-peak hours (reducing hardware load)"
                                 )

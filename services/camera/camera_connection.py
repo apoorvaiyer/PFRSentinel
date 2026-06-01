@@ -592,7 +592,8 @@ class CameraConnection:
     # Camera Disconnection
     # =========================================================================
 
-    def disconnect(self, stop_exposure_callback: Optional[Callable[[], None]] = None) -> None:
+    def disconnect(self, stop_exposure_callback: Optional[Callable[[], None]] = None,
+                   release_sdk: bool = False) -> None:
         """
         Disconnect from camera gracefully (idempotent - safe to call multiple times).
 
@@ -604,10 +605,22 @@ class CameraConnection:
 
         Args:
             stop_exposure_callback: Optional callback to stop any in-progress exposure
+            release_sdk: If True, also drop the SDK reference (self.asi) after
+                closing so the next detect/connect re-initializes the SDK from a
+                clean state.  Use this for *long* idle gaps such as off-peak
+                scheduled disconnects — reusing a multi-hour-stale SDK handle is
+                the condition under which the camera came back unopenable
+                ("Invalid ID") in production (log 2026-05-31 09:00 → 16:00).
+                detect_cameras()/connect() both re-init the SDK when self.asi is
+                None, so the reconnect path handles this transparently.
         """
         with self._cleanup_lock:
             if not self.camera:
-                self.log("Disconnect called but camera already disconnected")
+                if release_sdk and self.asi is not None:
+                    self.asi = None
+                    self.log("SDK reference released (no camera was open)")
+                else:
+                    self.log("Disconnect called but camera already disconnected")
                 return
 
             self.log("=== Disconnecting Camera ===")
@@ -657,6 +670,14 @@ class CameraConnection:
                 # Always clear camera reference even if close failed
                 self.camera = None
                 self.log("Camera reference cleared")
+                # For long idle gaps, also drop the SDK so the next connect
+                # starts from a fresh init rather than a stale handle.  This
+                # also covers the close()-raised case above: if the handle was
+                # only half-released, a fresh SDK init on reconnect avoids
+                # reusing it.
+                if release_sdk:
+                    self.asi = None
+                    self.log("SDK reference released for clean reconnect")
 
     # =========================================================================
     # Properties
