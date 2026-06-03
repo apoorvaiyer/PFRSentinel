@@ -620,7 +620,24 @@ class CameraConnection:
                     self.asi = None
                     self.log("SDK reference released (no camera was open)")
                 else:
-                    self.log("Disconnect called but camera already disconnected")
+                    # Identify the caller + thread. A disconnect arriving here
+                    # mid-window (camera already None) points to a second code
+                    # path racing the capture worker — see the 2026-06-02 17:08
+                    # incident. Without this we can't tell who issued it.
+                    import traceback
+                    caller = "unknown"
+                    try:
+                        stack = traceback.extract_stack(limit=3)
+                        if len(stack) >= 2:
+                            frame = stack[-2]
+                            fname = os.path.basename(frame.filename)
+                            caller = f"{fname}:{frame.lineno} in {frame.name}()"
+                    except Exception:
+                        pass
+                    self.log(
+                        "Disconnect called but camera already disconnected "
+                        f"(thread={threading.current_thread().name}, caller={caller})"
+                    )
                 return
 
             self.log("=== Disconnecting Camera ===")

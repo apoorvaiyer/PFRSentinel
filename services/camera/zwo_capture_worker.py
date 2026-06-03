@@ -286,6 +286,13 @@ def capture_loop(camera: "ZWOCamera"):
     long_retry_cycle = 0
     last_schedule_log = None
     frames_captured = 0
+    # The first frame after a scheduled-window reconnect runs against a
+    # freshly cold-re-inited SDK (off-peak released it). The ZWO SDK's first
+    # control op in that state frequently fails once with "Camera closed" and
+    # recovers on a clean reopen. When set, the next capture failure is
+    # absorbed quietly (no Discord alert, no consecutive-error count) instead
+    # of masquerading as a fault — see the 2026-06-02 16:00 incident.
+    scheduled_warmup_pending = False
     # Heartbeat + state flags observed by the UI watchdog. _last_frame_time
     # is updated after every successful capture. long_retry_mode_public
     # mirrors the local long_retry_mode so the watchdog can skip bogus
@@ -391,6 +398,14 @@ def capture_loop(camera: "ZWOCamera"):
                                     time.sleep(0.2)
                                 continue
                             camera.log("✓ Camera reconnected successfully for scheduled captures")
+                            # Mirror the recovery path's post-reconnect settle:
+                            # a cold-re-inited SDK needs the USB bus to stabilise
+                            # before the first control op, otherwise the first
+                            # frame reliably fails with "Camera closed".
+                            wait_end = time.time() + 3.0
+                            while camera.is_capturing and time.time() < wait_end:
+                                time.sleep(0.2)
+                            scheduled_warmup_pending = True
                             # Suppress watchdog during the first post-reconnect exposure.
                             camera._last_frame_time = time.time()
 
@@ -400,6 +415,7 @@ def capture_loop(camera: "ZWOCamera"):
                 img, metadata = camera.capture_single_frame()
 
                 consecutive_errors = 0
+                scheduled_warmup_pending = False
                 camera._last_frame_time = time.time()
                 if long_retry_mode:
                     long_retry_mode = False
@@ -494,6 +510,42 @@ def capture_loop(camera: "ZWOCamera"):
             except Exception as e:
                 if not camera.is_capturing:
                     break
+
+                # First frame after a scheduled-window reconnect: absorb a
+                # single "Camera closed" quietly. The off-peak path releases the
+                # SDK, so the window-transition reconnect runs against a cold
+                # re-init whose first control op is flaky and heals on a clean
+                # reopen. Reuse the recovery reopen flow, but without a Discord
+                # alert or a consecutive-error count so the expected cold-open
+                # quirk doesn't read as a fault (see 2026-06-02 16:00 incident).
+                if scheduled_warmup_pending:
+                    scheduled_warmup_pending = False
+                    camera.log(
+                        f"First frame after scheduled reconnect failed ({e}) — "
+                        "reopening silently (known ZWO cold-open quirk)"
+                    )
+                    try:
+                        if camera.calibration_manager:
+                            camera.calibration_manager.abort()
+                        if camera.camera:
+                            camera._connection.disconnect()
+                        wait_end = time.time() + 8.0
+                        while camera.is_capturing and time.time() < wait_end:
+                            time.sleep(0.2)
+                        if camera.reconnect_camera_safe():
+                            camera.log("✓ Camera reopened after scheduled-reconnect warm-up")
+                            camera._last_frame_time = time.time()
+                        else:
+                            camera.log(
+                                "⚠ Warm-up reopen failed — normal recovery will handle it"
+                            )
+                    except Exception as warmup_err:
+                        camera.log(
+                            f"Warm-up reopen error: {warmup_err} — "
+                            "normal recovery will handle it"
+                        )
+                    continue
+
                 consecutive_errors += 1
                 error_msg = str(e)
                 camera.log(f"✗ ERROR in capture loop: {error_msg}")
