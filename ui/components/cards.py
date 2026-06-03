@@ -12,7 +12,7 @@ from qfluentwidgets import (
     SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ToggleButton,
     ComboBox, LineEdit, SpinBox, DoubleSpinBox,
-    Slider, SwitchButton, FluentIcon
+    Slider, SwitchButton
 )
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
@@ -244,11 +244,14 @@ class CollapsibleCard(CardWidget):
             Spacing.base, Spacing.sm
         )
         
-        # Icon (optional)
+        # Icon (optional) — accepts either a FluentIcon (has .icon()) or
+        # a ready-made QIcon (e.g. from qtawesome, as used in the nav rail).
         if self._icon:
             icon_label = QLabel()
             if hasattr(self._icon, 'icon'):
                 icon_label.setPixmap(self._icon.icon().pixmap(20, 20))
+            elif hasattr(self._icon, 'pixmap'):
+                icon_label.setPixmap(self._icon.pixmap(20, 20))
             header_layout.addWidget(icon_label)
         
         # Title

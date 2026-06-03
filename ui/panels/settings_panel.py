@@ -12,12 +12,13 @@ from PySide6.QtGui import QColor
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit,
-    SpinBox, DoubleSpinBox, SwitchButton, FluentIcon
+    SpinBox, DoubleSpinBox, SwitchButton
 )
 from ..theme.accent_themes import ACCENT_PRESETS
 
 from version import __version__
 from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..theme.icons import mdi
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard
 from services.ffmpeg_utils import is_ffmpeg_available  # noqa: F401 – re-exported for legacy callers
 
@@ -108,6 +109,24 @@ class SettingsPanel(QScrollArea):
         self.tray_enabled_switch.checkedChanged.connect(self._on_system_changed)
         system_card.add_widget(tray_row)
 
+        # Run on Windows startup
+        startup_row = SwitchRow(
+            "Start with Windows",
+            "Launch automatically on logon (scheduled task; expect a one-time admin prompt)"
+        )
+        self.startup_switch = startup_row.switch
+        self.startup_switch.checkedChanged.connect(self._on_startup_changed)
+        system_card.add_widget(startup_row)
+
+        # Auto-start capture when launched on startup
+        autostart_capture_row = SwitchRow(
+            "Auto-start capture on launch",
+            "Begin capturing with the saved camera automatically when the app starts"
+        )
+        self.autostart_capture_switch = autostart_capture_row.switch
+        self.autostart_capture_switch.checkedChanged.connect(self._on_startup_changed)
+        system_card.add_widget(autostart_capture_row)
+
         # Analytics opt-out
         analytics_row = SwitchRow(
             "Send Anonymous Usage Data",
@@ -148,7 +167,7 @@ class SettingsPanel(QScrollArea):
         info_row.addWidget(info_label)
         
         link_btn = PushButton("Get free API key")
-        link_btn.setIcon(FluentIcon.LINK)
+        link_btn.setIcon(mdi('open-in-new'))
         link_btn.clicked.connect(lambda: webbrowser.open("https://openweathermap.org/api"))
         info_row.addWidget(link_btn)
         info_row.addStretch()
@@ -173,7 +192,7 @@ class SettingsPanel(QScrollArea):
         api_row.addWidget(self.show_key_btn)
         
         self.test_weather_btn = PrimaryPushButton("Test")
-        self.test_weather_btn.setIcon(FluentIcon.SYNC)
+        self.test_weather_btn.setIcon(mdi('refresh'))
         self.test_weather_btn.clicked.connect(self._test_weather)
         api_row.addWidget(self.test_weather_btn)
         
@@ -197,18 +216,28 @@ class SettingsPanel(QScrollArea):
         coord_row.setSpacing(Spacing.sm)
         
         self.lat_input = LineEdit()
-        self.lat_input.setPlaceholderText("Latitude")
+        self.lat_input.setPlaceholderText("Latitude (e.g. 31.33)")
         self.lat_input.textChanged.connect(self._on_weather_changed)
+        self.lat_input.editingFinished.connect(
+            lambda: self._commit_coordinate(self.lat_input, 'latitude', False))
         coord_row.addWidget(self.lat_input)
-        
+
         self.lon_input = LineEdit()
-        self.lon_input.setPlaceholderText("Longitude")
+        self.lon_input.setPlaceholderText("Longitude (e.g. -100.46)")
         self.lon_input.textChanged.connect(self._on_weather_changed)
+        self.lon_input.editingFinished.connect(
+            lambda: self._commit_coordinate(self.lon_input, 'longitude', True))
         coord_row.addWidget(self.lon_input)
-        
+
+        self.elevation_input = LineEdit()
+        self.elevation_input.setPlaceholderText("Elevation (m)")
+        self.elevation_input.setMaximumWidth(120)
+        self.elevation_input.textChanged.connect(self._on_weather_changed)
+        coord_row.addWidget(self.elevation_input)
+
         coord_widget = QWidget()
         coord_widget.setLayout(coord_row)
-        weather_card.add_row("Coordinates", coord_widget, "Alternative to location name")
+        weather_card.add_row("Coordinates", coord_widget, "Alternative to location name (elevation for refraction correction)")
         
         # Units
         self.units_combo = ComboBox()
@@ -252,12 +281,12 @@ class SettingsPanel(QScrollArea):
         update_btn_row.setSpacing(Spacing.sm)
         
         self.check_updates_btn = PrimaryPushButton("Check for Updates")
-        self.check_updates_btn.setIcon(FluentIcon.SYNC)
+        self.check_updates_btn.setIcon(mdi('refresh'))
         self.check_updates_btn.clicked.connect(self._check_for_updates)
         update_btn_row.addWidget(self.check_updates_btn)
         
         self.github_btn = PushButton("GitHub Releases")
-        self.github_btn.setIcon(FluentIcon.LINK)
+        self.github_btn.setIcon(mdi('github'))
         self.github_btn.clicked.connect(self._open_github_releases)
         update_btn_row.addWidget(self.github_btn)
         
@@ -305,6 +334,31 @@ class SettingsPanel(QScrollArea):
 
             self.settings_changed.emit()
 
+    def _on_startup_changed(self):
+        """Handle 'Start with Windows' / 'Auto-start capture' toggles.
+
+        Both feed the same scheduled-task registration: the auto-start switch
+        only changes the command the task runs, so toggling it re-registers the
+        task when startup is enabled. Registration (and any UAC prompt + revert)
+        is owned by main_window.set_run_on_startup.
+        """
+        if self._loading_config:
+            return
+        if not (self.main_window and hasattr(self.main_window, 'set_run_on_startup')):
+            return
+        enabled = self.startup_switch.isChecked()
+        auto_start = self.autostart_capture_switch.isChecked()
+        self.main_window.set_run_on_startup(enabled, auto_start)
+
+    def refresh_startup_switches(self, config):
+        """Re-sync the startup switches to actual state without firing handlers."""
+        self._loading_config = True
+        try:
+            self.startup_switch.setChecked(config.get('run_on_startup', False))
+            self.autostart_capture_switch.setChecked(config.get('autostart_capture', True))
+        finally:
+            self._loading_config = False
+
     def _on_analytics_changed(self):
         """Handle analytics opt-in/out toggle"""
         if self._loading_config:
@@ -324,12 +378,68 @@ class SettingsPanel(QScrollArea):
             weather = self.main_window.config.get('weather', {})
             weather['api_key'] = self.api_key_input.text()
             weather['location'] = self.location_input.text()
-            weather['latitude'] = self.lat_input.text()
-            weather['longitude'] = self.lon_input.text()
+            # Coordinates are normalised to canonical signed decimal before they
+            # reach config, so the rest of the app never sees an unparseable
+            # string. Mid-edit text that doesn't parse yet keeps the last good
+            # value rather than clobbering it; the editingFinished handler does
+            # the final rewrite + error feedback.
+            weather['latitude'] = self._normalise_coord(
+                self.lat_input.text(), weather.get('latitude', ''), False)
+            weather['longitude'] = self._normalise_coord(
+                self.lon_input.text(), weather.get('longitude', ''), True)
+            weather['elevation'] = self.elevation_input.text()
             units_text = self.units_combo.currentText()
             weather['units'] = 'imperial' if 'imperial' in units_text else 'metric'
             self.main_window.config.set('weather', weather)
             self.settings_changed.emit()
+
+    @staticmethod
+    def _normalise_coord(text: str, previous, is_longitude: bool):
+        """Canonical decimal string for parseable input; preserve last good value otherwise."""
+        from services.coordinates import parse_coordinate, to_decimal_string
+        if not text.strip():
+            return ''
+        val = parse_coordinate(text, is_longitude)
+        if val is None:
+            return previous  # don't overwrite a good value with mid-typed/garbage text
+        return to_decimal_string(val)
+
+    def _commit_coordinate(self, field, key: str, is_longitude: bool) -> None:
+        """On focus-out: rewrite the field to canonical decimal, or flag an error."""
+        if self._loading_config:
+            return
+        if not (self.main_window and hasattr(self.main_window, 'config')):
+            return
+        from services.coordinates import parse_coordinate, to_decimal_string
+        text = field.text().strip()
+        weather = self.main_window.config.get('weather', {})
+        if not text:
+            weather[key] = ''
+            self._set_coord_error(field, False)
+        else:
+            val = parse_coordinate(text, is_longitude)
+            if val is None:
+                weather[key] = ''  # refuse to persist an unparseable coordinate
+                self._set_coord_error(field, True)
+                self.weather_status_label.setText(
+                    "❌ Invalid coordinate — use decimal degrees (e.g. 31.33 or -100.46)")
+                self.weather_status_label.setStyleSheet(f"color: {Colors.status_error};")
+            else:
+                canonical = to_decimal_string(val)
+                weather[key] = canonical
+                self._set_coord_error(field, False)
+                if field.text() != canonical:
+                    field.blockSignals(True)
+                    field.setText(canonical)
+                    field.blockSignals(False)
+        self.main_window.config.set('weather', weather)
+        self.main_window.config.save()
+        self.settings_changed.emit()
+
+    def _set_coord_error(self, field, is_error: bool) -> None:
+        """Toggle a red error border on a coordinate field."""
+        field.setStyleSheet(
+            f"border: 1px solid {Colors.status_error};" if is_error else "")
     
     def _test_weather(self):
         """Test weather API connection"""
@@ -409,6 +519,11 @@ class SettingsPanel(QScrollArea):
             # System
             self.tray_enabled_switch.setChecked(config.get('tray_mode_enabled', False))
             self.analytics_switch.setChecked(config.get('analytics_enabled', True))
+
+            # Startup — the scheduled task is authoritative, not the cached flag.
+            from services import autostart
+            self.startup_switch.setChecked(autostart.is_enabled())
+            self.autostart_capture_switch.setChecked(config.get('autostart_capture', True))
             
             # Weather
             weather = config.get('weather', {})
@@ -416,6 +531,7 @@ class SettingsPanel(QScrollArea):
             self.location_input.setText(weather.get('location', ''))
             self.lat_input.setText(str(weather.get('latitude', '')))
             self.lon_input.setText(str(weather.get('longitude', '')))
+            self.elevation_input.setText(str(weather.get('elevation', '')))
             
             units = weather.get('units', 'metric')
             idx = 1 if units == 'imperial' else 0

@@ -11,11 +11,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from qfluentwidgets import (
     Flyout, FlyoutViewBase, BodyLabel, CaptionLabel,
-    PushButton, FluentIcon, ToolButton
+    PushButton, ToolButton
 )
 
 from services.notification_store import get_notification_store
 from ..theme.tokens import Colors, Typography, Spacing
+from ..theme.icons import mdi
 
 
 # Category color mapping
@@ -70,6 +71,7 @@ class NotificationFlyoutView(FlyoutViewBase):
         self._setup_ui()
 
     def _setup_ui(self):
+        self.setStyleSheet(f"NotificationFlyoutView {{ background-color: {Colors.bg_elevated}; }}")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
@@ -85,7 +87,7 @@ class NotificationFlyoutView(FlyoutViewBase):
         header.addWidget(title)
         header.addStretch()
 
-        self.clear_btn = ToolButton(FluentIcon.DELETE)
+        self.clear_btn = ToolButton(mdi('delete-outline'))
         self.clear_btn.setFixedSize(28, 28)
         self.clear_btn.setToolTip("Clear all")
         self.clear_btn.clicked.connect(self._on_clear)

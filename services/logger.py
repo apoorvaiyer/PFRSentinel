@@ -8,7 +8,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from app_config import APP_NAME, APP_DATA_FOLDER, LOG_FILE
+from .app_config import APP_NAME, APP_DATA_FOLDER, LOG_FILE
 
 
 class AppLogger:

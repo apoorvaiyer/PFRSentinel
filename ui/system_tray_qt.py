@@ -8,7 +8,7 @@ import os
 from PIL import Image
 from PySide6.QtCore import QTimer, QObject, Signal
 from services.logger import app_logger
-from utils_paths import resource_path
+from services.utils_paths import resource_path
 
 # Try to import pystray
 try:

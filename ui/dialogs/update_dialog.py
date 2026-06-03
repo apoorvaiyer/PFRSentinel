@@ -9,11 +9,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QThread
 from qfluentwidgets import (
     MessageBoxBase, SubtitleLabel, BodyLabel, CaptionLabel,
-    PrimaryPushButton, PushButton, FluentIcon
+    PrimaryPushButton, PushButton
 )
 
 from services.logger import app_logger
 from ..theme.tokens import Colors, Spacing
+from ..theme.icons import mdi
 
 
 class DownloadThread(QThread):
@@ -134,12 +135,12 @@ class UpdateDialog(MessageBoxBase):
 
         # Buttons
         self.download_btn = PrimaryPushButton("Download Update")
-        self.download_btn.setIcon(FluentIcon.DOWNLOAD)
+        self.download_btn.setIcon(mdi('download'))
         self.download_btn.setCursor(Qt.PointingHandCursor)
         self.download_btn.clicked.connect(self._on_download)
 
         self.view_btn = PushButton("View on GitHub")
-        self.view_btn.setIcon(FluentIcon.LINK)
+        self.view_btn.setIcon(mdi('open-in-new'))
         self.view_btn.setCursor(Qt.PointingHandCursor)
         self.view_btn.clicked.connect(self._on_view_github)
 
@@ -215,7 +216,7 @@ class UpdateDialog(MessageBoxBase):
     def _set_run_installer_button(self):
         """Update download button to 'Run Installer' state."""
         self.download_btn.setText("Run Installer")
-        self.download_btn.setIcon(FluentIcon.PLAY)
+        self.download_btn.setIcon(mdi('play'))
         self.download_btn.setEnabled(True)
         self.download_btn.clicked.connect(self._on_run_installer)
         self.download_btn.repaint()

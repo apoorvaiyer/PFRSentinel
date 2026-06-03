@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QPixmap, QIcon
 from qfluentwidgets import (
     PushButton, ToolButton, PrimaryPushButton,
-    FluentIcon, InfoBadge, Flyout
+    InfoBadge, Flyout
 )
 from .status_sprite import StatusSpriteWidget
 
@@ -19,6 +19,7 @@ from datetime import datetime
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
 from ..theme.styles import get_status_chip_style
+from ..theme.icons import mdi
 
 
 class StatusChip(QFrame):
@@ -96,7 +97,7 @@ class AppBar(QFrame):
         self.app_icon.setFixedSize(28, 28)
         self.app_icon.setScaledContents(False)  # Don't stretch to fill
         try:
-            from utils_paths import resource_path
+            from services.utils_paths import resource_path
             icon_path = resource_path('assets/app_icon.png')
             if os.path.exists(icon_path):
                 pixmap = QPixmap(icon_path).scaled(
@@ -174,7 +175,7 @@ class AppBar(QFrame):
         right_layout.addWidget(self.status_sprite, 1, Qt.AlignmentFlag.AlignVCenter)
         
         # Notification bell
-        self.notification_btn = ToolButton(FluentIcon.RINGER)
+        self.notification_btn = ToolButton(mdi('bell-outline'))
         self.notification_btn.setFixedSize(36, 36)
         self.notification_btn.setToolTip("Notifications")
         self.notification_btn.setCursor(Qt.PointingHandCursor)
@@ -189,12 +190,12 @@ class AppBar(QFrame):
 
         # Start/Stop buttons
         self.start_btn = PrimaryPushButton("Start Capture")
-        self.start_btn.setIcon(FluentIcon.PLAY)
+        self.start_btn.setIcon(mdi('play'))
         self.start_btn.setFixedWidth(140)
         self.start_btn.clicked.connect(self._on_start_clicked)
         
         self.stop_btn = PushButton("Stop")
-        self.stop_btn.setIcon(FluentIcon.PAUSE)
+        self.stop_btn.setIcon(mdi('pause'))
         self.stop_btn.setFixedWidth(100)
         self.stop_btn.clicked.connect(self._on_stop_clicked)
         self.stop_btn.setStyleSheet(f"""

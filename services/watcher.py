@@ -110,6 +110,7 @@ class ImageFileHandler(FileSystemEventHandler):
         """
         prev = self._processed_signatures.get(filepath)
         if prev is None:
+            return True
             # Never processed — only treat as changed if the file was
             # genuinely modified recently.  This prevents spurious
             # on_modified events (e.g. Windows Preview opening a file

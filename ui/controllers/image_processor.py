@@ -4,6 +4,7 @@ Handles image processing pipeline using services/processor.py functions
 """
 from PySide6.QtCore import QObject, Signal, QThread
 from PIL import Image, ImageEnhance, ImageDraw, ImageFont
+import gc
 import numpy as np
 import os
 import queue
@@ -44,10 +45,20 @@ class ImageProcessorWorker(QThread):
         self._running = False
         self._weather_service = None
         self._main_window = None  # Reference to main window for camera access
-    
+        self._calibration_service = None  # Background calibration accumulation
+        self._frame_count = 0
+        # Roof status change tracking for Discord notifications
+        self._confirmed_roof_open = None  # None until first ML result
+        self._pending_roof_open = None
+        self._pending_roof_count = 0
+
     def set_weather_service(self, weather_service):
         """Set weather service for overlay tokens"""
         self._weather_service = weather_service
+
+    def set_calibration_service(self, service):
+        """Set calibration service for background accumulation"""
+        self._calibration_service = service
     
     def set_main_window(self, main_window):
         """Set main window reference for camera access"""
@@ -71,6 +82,11 @@ class ImageProcessorWorker(QThread):
                 
                 self._process_task(task)
                 self._queue.task_done()
+
+                self._frame_count += 1
+                if self._frame_count % 100 == 0:
+                    gc.collect()
+                    self._trim_working_set()
                 
             except Exception as e:
                 app_logger.error(f"Processing worker error: {e}")
@@ -87,7 +103,17 @@ class ImageProcessorWorker(QThread):
             self._queue.put_nowait(None)  # Sentinel
         except queue.Full:
             pass
-    
+
+    def _trim_working_set(self):
+        # Ask Windows to page out idle memory — reduces Task Manager RSS without
+        # freeing virtual address space. No-op on non-Windows.
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.kernel32.SetProcessWorkingSetSize(handle, -1, -1)
+        except Exception:
+            pass
+
     def queue_task(self, task: ImageProcessingTask):
         """Queue a processing task"""
         try:
@@ -249,6 +275,8 @@ class ImageProcessorWorker(QThread):
                     f"threshold={sharpening_cfg.get('threshold', 3)}"
                 )
 
+            _ml_roof_status = None  # (roof_status_str, confidence) — set if ML runs
+
             # === ML Models: Add predictions to metadata for overlay tokens ===
             ml_config = config.get('ml_models', {})
             if ml_config.get('enabled', False):
@@ -265,6 +293,10 @@ class ImageProcessorWorker(QThread):
                         # Store full results for preview display and roof-gated timelapse
                         ml_results = ml_service.get_last_results()
                         metadata['_ML_RESULTS'] = ml_results
+                        _ml_roof_status = (
+                            ml_results.get('roof_status'),
+                            ml_results.get('roof_confidence', 0.0),
+                        )
                         if self._main_window:
                             self._main_window.last_ml_results = ml_results
                         
@@ -289,12 +321,62 @@ class ImageProcessorWorker(QThread):
             except Exception as e:
                 app_logger.debug(f"Star detection skipped: {e}")
 
+            del raw_array  # Last use above — release the 76 MB numpy array before overlay rendering
+
+            # Feed frame to background calibration service (before overlays).
+            # Same gate as the overlay itself: sun below civil twilight and
+            # (if ML is on) roof open — calibration is pointless otherwise and
+            # wastes ~30s of CPU on each cooldown cycle during the day.
+            allsky_cfg = config.get('allsky_overlay', {})
+            if self._calibration_service and allsky_cfg.get('enabled', False):
+                try:
+                    from services.observing_window import is_observing_window
+                    if is_observing_window(config, metadata, feature="All-sky calibration"):
+                        weather_cfg = config.get('weather', {})
+                        cal_lat = float(weather_cfg.get('latitude', 0) or 0)
+                        cal_lon = float(weather_cfg.get('longitude', 0) or 0)
+                        if cal_lat != 0 or cal_lon != 0:
+                            from datetime import timezone as _tz
+                            self._calibration_service.feed_frame(
+                                img, datetime.now(_tz.utc), cal_lat, cal_lon,
+                            )
+                except Exception as e:
+                    app_logger.debug(f"Calibration feed skipped: {e}")
+
+            from services.processor import _inject_allsky_metadata
+            _inject_allsky_metadata(config, metadata)
+
             # Add overlays using services/processor.py function
             # stretched_for_preview is the clean pre-overlay frame (set at line ~194)
-            img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
+            # When timelapse wants overlays but explicitly excludes all-sky, render twice:
+            # once without all-sky for the timelapse sink, once with for the main output.
+            timelapse_cfg = config.get('timelapse', {})
+            # Render a separate timelapse frame without the all-sky overlay whenever
+            # allsky is calibrated and the user hasn't explicitly enabled allsky in the
+            # timelapse.  The include_overlays check is intentionally absent: when
+            # include_overlays=False the controller picks clean_image anyway, but we
+            # still need img_for_timelapse to be allsky-free in case include_overlays
+            # is True.  The extra render is negligible and avoids the overlay leaking
+            # regardless of the include_overlays state.
+            needs_timelapse_no_allsky = (
+                '__allsky_config' in metadata
+                and timelapse_cfg.get('enabled', False)
+                and not timelapse_cfg.get('include_allsky_overlay', False)
+            )
+            if needs_timelapse_no_allsky:
+                metadata_no_allsky = dict(metadata)
+                metadata_no_allsky.pop('__allsky_config', None)
+                img_for_timelapse = add_overlays(
+                    img.copy(), overlays, metadata_no_allsky,
+                    weather_service=self._weather_service,
+                )
+                img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
+            else:
+                img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
+                img_for_timelapse = img
 
             # Emit both versions for timelapse (controller picks based on include_overlays setting)
-            self.timelapse_ready.emit(stretched_for_preview, img)
+            self.timelapse_ready.emit(stretched_for_preview, img_for_timelapse)
 
             # Generate output path
             session = metadata.get('session', datetime.now().strftime('%Y-%m-%d'))
@@ -313,7 +395,11 @@ class ImageProcessorWorker(QThread):
                 img.save(output_path, 'JPEG', quality=jpg_quality)
             
             app_logger.debug(f"Saved: {os.path.basename(output_path)}")
-            
+
+            # Roof status change detection — fire Discord after 2 confirmed consecutive frames
+            if _ml_roof_status and _ml_roof_status[0] in ('Open', 'Closed'):
+                self._check_roof_change(_ml_roof_status[0] == 'Open', _ml_roof_status[1], output_path)
+
             # Clean up large arrays from metadata before emitting (avoid memory leaks)
             metadata.pop('RAW_RGB_16BIT', None)
             metadata.pop('RAW_RGB_NO_WB', None)
@@ -334,6 +420,40 @@ class ImageProcessorWorker(QThread):
             from services.posthog_service import capture_error
             capture_error(e, context='image_processing')
             self.error_occurred.emit(str(e))
+
+    def _check_roof_change(self, roof_open: bool, confidence: float, image_path: str):
+        """Accumulate consecutive roof readings; fire alert on the 2nd consecutive change."""
+        if self._confirmed_roof_open is None:
+            self._confirmed_roof_open = roof_open
+            return
+
+        if roof_open == self._confirmed_roof_open:
+            self._pending_roof_open = None
+            self._pending_roof_count = 0
+            return
+
+        if self._pending_roof_open == roof_open:
+            self._pending_roof_count += 1
+        else:
+            self._pending_roof_open = roof_open
+            self._pending_roof_count = 1
+
+        if self._pending_roof_count >= 2:
+            self._confirmed_roof_open = roof_open
+            self._pending_roof_open = None
+            self._pending_roof_count = 0
+            self._send_roof_alert(roof_open, confidence, image_path)
+
+    def _send_roof_alert(self, roof_open: bool, confidence: float, image_path: str):
+        """Post roof status change to Discord (called from worker thread)."""
+        if not self._main_window:
+            return
+        try:
+            from services.discord_alerts import DiscordAlerts
+            alerts = DiscordAlerts(self._main_window.config)
+            alerts.send_roof_status_change(roof_open, confidence, image_path)
+        except Exception as e:
+            app_logger.warning(f"Roof change Discord alert failed: {e}")
 
 
 class ImageProcessor(QObject):
@@ -368,13 +488,17 @@ class ImageProcessor(QObject):
     def set_main_window(self, main_window):
         """Set reference to main window for config access"""
         self._main_window = main_window
-        
+
         # Pass main window to worker for camera access
         self._worker.set_main_window(main_window)
-        
+
         # Pass weather service to worker
         if hasattr(main_window, 'weather_service'):
             self._worker.set_weather_service(main_window.weather_service)
+
+    def set_calibration_service(self, service):
+        """Pass calibration service to worker for background accumulation"""
+        self._worker.set_calibration_service(service)
     
     def start(self):
         """Start the processing worker"""
@@ -385,7 +509,7 @@ class ImageProcessor(QObject):
     def stop(self):
         """Stop the processing worker"""
         self._worker.stop()
-        self._worker.wait(5000)  # Wait up to 5 seconds
+        self._worker.wait(1000)
         app_logger.debug("Image processor stopped")
     
     def process_and_save(self, img: Image.Image, metadata: dict):
@@ -455,8 +579,10 @@ class ImageProcessor(QObject):
             'dev_mode': mw.config.get('dev_mode', {'enabled': False, 'raw_folder': 'raw_debug', 'save_histogram_stats': True}),
             'ml_models': mw.config.get('ml_models', {'enabled': False}),
             'ml_contribution': mw.config.get('ml_contribution', {'enabled': False}),
+            'allsky_overlay': mw.config.get('allsky_overlay', {}),
+            'weather': mw.config.get('weather', {}),
         }
-        
+
         return config
     
     def _on_processing_complete(self, img, metadata, output_path):

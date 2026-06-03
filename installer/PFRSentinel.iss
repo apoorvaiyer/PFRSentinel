@@ -45,6 +45,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "runadmin"; Description: "Run as Administrator (recommended for USB camera recovery)"; GroupDescription: "Privileges:"; Flags: unchecked
+Name: "startupreg"; Description: "Run PFR Sentinel when Windows starts (auto-resume capture after a reboot)"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
 ; Source files from PyInstaller build
@@ -370,6 +371,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   InstallType: String;
+  ResultCode: Integer;
 begin
   if (CurStep=ssInstall) then
   begin
@@ -409,5 +411,32 @@ begin
       InstallType := 'fresh';
     SendPostHogEvent('app_installed',
       ',"install_type": "' + InstallType + '"');
+
+    { Register the Windows logon task by reusing the app's own --register-startup
+      path (schtasks logic lives only in services/autostart.py). ShellExec honours
+      the RUNASADMIN AppCompat flag so it elevates when "Run as Administrator" was
+      selected; otherwise the app self-elevates for the schtasks call. We swallow
+      any failure (incl. a declined UAC prompt) so install never aborts. }
+    if WizardIsTaskSelected('startupreg') then
+    begin
+      if not ShellExec('', ExpandConstant('{app}\{#MyAppExeName}'),
+                       '--register-startup', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        Log('Startup: could not launch --register-startup (non-fatal)');
+    end;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  { Remove the logon task on uninstall - it lives outside the install dir, so
+    file cleanup won't catch it. Runs before files are deleted so the exe still
+    exists. Best-effort: a missing task or declined elevation must not block uninstall. }
+  if CurUninstallStep = usUninstall then
+  begin
+    if FileExists(ExpandConstant('{app}\{#MyAppExeName}')) then
+      ShellExec('', ExpandConstant('{app}\{#MyAppExeName}'),
+                '--unregister-startup', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;

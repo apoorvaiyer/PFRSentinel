@@ -21,7 +21,7 @@ import requests
 
 from version import __version__
 from services.logger import app_logger
-from utils_paths import get_app_data_dir
+from .utils_paths import get_app_data_dir
 
 
 # GitHub API endpoint - rate limited to 60 requests/hour for unauthenticated

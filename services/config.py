@@ -1,15 +1,29 @@
 """
 Configuration management for AllSky Overlay App
 """
+import copy
 import json
 import os
 import threading
-from utils_paths import resource_path, get_exe_dir
-from app_config import APP_DATA_FOLDER, DEFAULT_OUTPUT_SUBFOLDER
+from .utils_paths import resource_path, get_exe_dir
+from .app_config import APP_DATA_FOLDER, DEFAULT_OUTPUT_SUBFOLDER
+
+DEFAULT_CAMERA_PROFILE = {
+    "exposure_ms": 100.0,
+    "gain": 100,
+    "max_exposure_ms": 30000.0,
+    "target_brightness": 100,
+    "wb_r": 75,
+    "wb_b": 99,
+    "offset": 20,
+    "flip": 0,
+    "bayer_pattern": "BGGR",
+}
 
 DEFAULT_CONFIG = {
     # UI appearance
     "ui_accent": "iris",   # accent theme: iris | nebula | aurora | solar | nova | forest
+    "ui_log_level": "Info+",
 
     # Window settings
     "window_geometry": "1280x1700",
@@ -66,24 +80,21 @@ DEFAULT_CONFIG = {
         # }
     },
     
-    # Global camera settings (DEPRECATED: kept for backward compatibility, use camera_profiles instead)
-    "zwo_exposure_ms": 100.0,  # milliseconds (100ms default)
-    "zwo_gain": 100,
-    "zwo_interval": 5.0,
-    "zwo_auto_exposure": False,
-    "zwo_max_exposure_ms": 30000.0,  # milliseconds (30 seconds default)
-    "zwo_target_brightness": 100,  # Target mean brightness (0-255) for auto exposure
-    "zwo_wb_r": 75,
-    "zwo_wb_b": 99,
-    "zwo_auto_wb": False,
-    "zwo_offset": 20,
-    "zwo_flip": 0,  # 0=None, 1=Horizontal, 2=Vertical, 3=Both
-    "zwo_bayer_pattern": "BGGR",  # "RGGB", "BGGR", "GRBG", "GBRG"
+    # Global camera settings (NOT per-camera — apply to the whole capture loop)
+    "zwo_interval": 5.0,          # seconds between captures
+    "zwo_auto_exposure": False,   # auto-exposure algorithm enabled (global toggle)
     
     # Scheduled capture settings
-    "scheduled_capture_enabled": False,
-    "scheduled_start_time": "17:00",  # 5:00 PM
-    "scheduled_end_time": "09:00",    # 9:00 AM (next day for overnight captures)
+    # mode:
+    #   "always"   — capture 24/7 using zwo_interval (default)
+    #   "gated"    — only capture inside the time window; disconnect camera outside
+    #   "variable" — always capture, but use scheduled_window_interval inside the
+    #                window and zwo_interval outside (e.g. fast at night, slow by day)
+    "scheduled_capture_mode": "always",
+    "scheduled_capture_enabled": False,     # legacy flag — kept in sync with mode for back-compat
+    "scheduled_start_time": "17:00",        # 5:00 PM — window start (24hr)
+    "scheduled_end_time": "09:00",          # 9:00 AM — window end (next day for overnight)
+    "scheduled_window_interval": 5.0,       # seconds between captures when inside the window (variable mode only)
     
     # White Balance configuration
     "white_balance": {
@@ -96,6 +107,10 @@ DEFAULT_CONFIG = {
     
     # Analytics (PostHog)
     "analytics_enabled": True,  # Send anonymous usage data (opt-out via Settings > System)
+
+    # Startup behaviour (Windows scheduled task — see services/autostart.py)
+    "run_on_startup": False,      # UI reflection; the scheduled task is the source of truth
+    "autostart_capture": True,    # Include --auto-start in the registered startup command
 
     "auto_brightness": False,  # Automatically adjust brightness
     "brightness_factor": 1.0,  # Brightness multiplier (0.5 to 2.0, 1.0 = neutral)
@@ -116,7 +131,7 @@ DEFAULT_CONFIG = {
 
     # Star sharpening — cosmetic unsharp mask applied before overlay rendering
     "sharpening": {
-        "enabled": False,   # Disabled by default; user opts in
+        "enabled": True,   # Disabled by default; user opts in
         "radius": 1.5,      # Gaussian blur radius in pixels (keep <= 2 for stars)
         "amount": 80,       # Strength on Pillow 0-500 scale (80 = subtle)
         "threshold": 3,     # Min pixel diff to sharpen; suppresses noise in dark sky
@@ -197,7 +212,9 @@ DEFAULT_CONFIG = {
         "include_latest_image": True,
         "username_override": "",
         "avatar_url": "",
-        "post_timelapse": False       # Post timelapse video when session completes
+        "post_timelapse": False,      # Post timelapse video when session completes
+        "post_calibration": False,    # Post notification when all-sky calibration completes
+        "post_roof_changes": False,   # Post notification when ML confirms a roof status change
     },
     
     # All-sky camera settings (for ML training visual reference)
@@ -228,9 +245,57 @@ DEFAULT_CONFIG = {
         "video_crf": 23,               # H.264 CRF quality (0-51, lower=better, 23=default)
         "video_preset": "fast",        # ffmpeg preset (ultrafast/fast/medium/slow)
         "include_overlays": False,     # False = clean frame, True = frame with overlays
+        "include_allsky_overlay": False,  # Only applies when include_overlays=True: bake all-sky stars/constellations into timelapse
         "output_dir": "",              # "" = AppData/PFRSentinel/timelapse/
         "max_videos_to_keep": 30,      # Auto-delete oldest beyond this many days
-    }
+    },
+
+    # Meteor Tracker — frame-differencing trail detection
+    "meteor": {
+        "enabled": False,
+        "min_length": 100,              # Minimum trail length in pixels
+        "diff_threshold": 25,           # Pixel threshold for frame differencing (5-100)
+        "adaptive_threshold": True,     # Auto-compute threshold from sky noise (overrides diff_threshold)
+        "detection_cooldown": 30,       # Seconds between detection events (0 = disabled)
+        "multi_frame_confirm": False,   # Require detections across 2+ frames (short exposures only)
+        "min_confirm_frames": 2,        # Frames needed when multi_frame_confirm is True
+        "save_detections": True,        # Append events to a JSONL log
+        "log_file": "",                 # "" = %LOCALAPPDATA%\PFRSentinel\meteor_detections.jsonl
+        "save_annotated": False,        # Save annotated full-frame copies with detections
+        "annotated_dir": "",            # "" = disabled
+        "exclusion_zones": [],          # [{x,y,w,h,note}] — user-rejected regions
+    },
+
+    # All-sky overlay — astronomical annotations on each frame
+    "allsky_overlay": {
+        "enabled": False,
+        "calibration_file": "",
+        "constellations": {
+            "enabled": True, "lines": True, "labels": True,
+            "color": "#4488FF", "line_width": 1, "label_size": 12, "opacity": 180,
+        },
+        "messier": {
+            "enabled": True, "color": "#FF8844",
+            "marker_size": 8, "label_size": 10, "opacity": 200,
+        },
+        "ngc": {
+            "enabled": False, "min_magnitude": 8.0, "color": "#88FF44",
+            "marker_size": 6, "label_size": 9, "opacity": 150,
+        },
+        "planets": {
+            "enabled": True, "label_size": 14, "marker_size": 10, "opacity": 255,
+            "colors": {
+                "Mercury": "#B0B0B0", "Venus": "#FFFFCC", "Mars": "#FF6644",
+                "Jupiter": "#FFCC88", "Saturn": "#FFDDAA",
+                "Uranus": "#88DDFF", "Neptune": "#4466FF", "Moon": "#FFFFEE",
+            },
+        },
+        "grid": {
+            "enabled": True, "horizon": True, "altitude_rings": True,
+            "altitude_step": 30, "azimuth_lines": True, "cardinal_labels": True,
+            "color": "#336633", "line_width": 1, "label_size": 14, "opacity": 120,
+        },
+    },
 }
 
 class Config:
@@ -433,8 +498,14 @@ class Config:
                 try:
                     with open(self.config_path, 'r') as f:
                         loaded = json.load(f)
+
+                        # Migrate legacy per-camera zwo_* keys into camera_profiles[active].
+                        # Idempotent — safe no-op once the config is already clean.
+                        from .config_migrate import migrate_legacy_camera_keys
+                        loaded = migrate_legacy_camera_keys(loaded)
+
                         # Merge with defaults to ensure new keys exist
-                        config = DEFAULT_CONFIG.copy()
+                        config = copy.deepcopy(DEFAULT_CONFIG)
 
                         # Deep merge for nested configs like discord, white_balance
                         for key, value in loaded.items():
@@ -444,6 +515,13 @@ class Config:
                             else:
                                 config[key] = value
 
+                        # Back-compat: derive scheduled_capture_mode from legacy
+                        # scheduled_capture_enabled if mode wasn't stored.
+                        if 'scheduled_capture_mode' not in loaded:
+                            config['scheduled_capture_mode'] = (
+                                'gated' if config.get('scheduled_capture_enabled') else 'always'
+                            )
+
                         return config
                 except Exception as e:
                     try:
@@ -451,8 +529,8 @@ class Config:
                         app_logger.error(f"Error loading config: {e}")
                     except Exception:
                         pass
-                    return DEFAULT_CONFIG.copy()
-            return DEFAULT_CONFIG.copy()
+                    return copy.deepcopy(DEFAULT_CONFIG)
+            return copy.deepcopy(DEFAULT_CONFIG)
     
     def save(self):
         """Save current configuration to JSON file"""
@@ -555,20 +633,11 @@ class Config:
         profiles = self.data.get('camera_profiles', {})
         
         if camera_name not in profiles:
-            # Create new profile from current global settings (migration path)
-            # NOTE: auto_exposure is NOT in profiles - it's a global algorithm setting
-            # NOTE: auto_wb is NOT in profiles - white balance mode stored in global white_balance config
-            profiles[camera_name] = {
-                'exposure_ms': self.data.get('zwo_exposure_ms', 100.0),
-                'gain': self.data.get('zwo_gain', 100),
-                'max_exposure_ms': self.data.get('zwo_max_exposure_ms', 30000.0),
-                'target_brightness': self.data.get('zwo_target_brightness', 100),
-                'wb_r': self.data.get('zwo_wb_r', 75),
-                'wb_b': self.data.get('zwo_wb_b', 99),
-                'offset': self.data.get('zwo_offset', 20),
-                'flip': self.data.get('zwo_flip', 0),
-                'bayer_pattern': self.data.get('zwo_bayer_pattern', 'BGGR')
-            }
+            # Seed a new profile with safe hardcoded defaults.
+            # NOTE: auto_exposure is NOT in profiles — it's a global algorithm setting.
+            # NOTE: white-balance *mode* is stored in global `white_balance` config; only
+            #       the manual wb_r/wb_b calibration values are per-camera.
+            profiles[camera_name] = dict(DEFAULT_CAMERA_PROFILE)
             self.data['camera_profiles'] = profiles
             self.save()
             from .logger import app_logger

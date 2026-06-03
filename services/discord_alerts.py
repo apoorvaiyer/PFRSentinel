@@ -6,10 +6,10 @@ import io
 import json
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from PIL import Image
 from .logger import app_logger
-from app_config import APP_DISPLAY_NAME
+from .app_config import APP_DISPLAY_NAME
 
 # Max height for images posted to Discord periodic updates (reduces bandwidth)
 DISCORD_IMAGE_MAX_HEIGHT = 750
@@ -148,7 +148,7 @@ class DiscordAlerts:
                 "title": title,
                 "description": description,
                 "color": self.get_color_int(),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             # Add footer based on level
@@ -395,6 +395,26 @@ Ready to process images."""
             level="error"
         )
     
+    def send_roof_status_change(self, roof_open: bool, confidence: float, image_path=None):
+        """Send notification when ML confirms a roof status change (2 consecutive frames)."""
+        discord_config = self.config.get('discord', {})
+        if not discord_config.get('post_roof_changes', False):
+            return False
+
+        status = "Open" if roof_open else "Closed"
+        emoji = "🔓" if roof_open else "🔒"
+        description = (
+            f"**Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"Roof is now **{status}** (confidence: {confidence:.0%})"
+        )
+        img = image_path if image_path and os.path.exists(image_path) else None
+        return self.send_discord_message(
+            f"{emoji} Roof {status}",
+            description,
+            level="warning" if not roof_open else "info",
+            image_path=img,
+        )
+
     def send_periodic_update(self, latest_image_path=None):
         """Send periodic image update"""
         discord_config = self.config.get('discord', {})
@@ -459,6 +479,30 @@ Latest sky capture from {APP_DISPLAY_NAME}."""
             "🎬 Timelapse Complete", description, attach_path
         )
 
+    def send_calibration_complete(self, model_info: dict):
+        """
+        Post an all-sky calibration-complete notification.
+
+        model_info keys: rms_residual, n_matches, calibrated_at, a1, cx, cy.
+        """
+        if not self.is_enabled():
+            return False
+        if not self.config.get('discord', {}).get('post_calibration', False):
+            return False
+
+        rms = model_info.get('rms_residual', 0)
+        n = model_info.get('n_matches', 0)
+        ts = (model_info.get('calibrated_at', '') or '')[:10]
+        description = (
+            f"All-sky lens calibrated successfully.\n"
+            f"**Stars matched:** {n}\n"
+            f"**RMS residual:** {rms:.2f} px\n"
+            f"**Date:** {ts}"
+        )
+        return self.send_discord_message(
+            "All-Sky Calibration Complete", description, level="info"
+        )
+
     def _send_with_video(self, title: str, description: str, video_path=None):
         """
         Internal helper: send an embed, optionally attaching an MP4 file.
@@ -483,7 +527,7 @@ Latest sky capture from {APP_DISPLAY_NAME}."""
                 "title": title,
                 "description": description,
                 "color": self.get_color_int(),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "footer": {"text": "✅ SUCCESS"},
             }
 

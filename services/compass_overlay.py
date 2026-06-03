@@ -13,6 +13,15 @@ DEFAULT_SIZE = 80
 DEFAULT_COLOR = (255, 255, 255, 200)
 DEFAULT_LABEL_COLOR = (255, 255, 255, 255)
 
+# Geometry ratios (fraction of radius). Shared with the Qt preview renderer
+# in ui/panels/overlay_preview.py — change both or neither.
+COMPASS_CIRCLE_R = 0.72
+COMPASS_CARDINAL_LEN = 0.68
+COMPASS_ORDINAL_LEN = 0.45
+COMPASS_HALF_BASE = 0.12
+COMPASS_INNER_R = 0.07
+COMPASS_LABEL_R = 0.88
+
 
 def draw_compass(image, rotation=0, position='bottom-right',
                  size=DEFAULT_SIZE, color=DEFAULT_COLOR,
@@ -62,17 +71,16 @@ def draw_compass(image, rotation=0, position='bottom-right',
     outline = (*color[:3], min(255, color[3] + 30))
 
     # --- Outer circle ---
-    circle_r = radius * 0.72
+    circle_r = radius * COMPASS_CIRCLE_R
     draw.ellipse(
         [cx - circle_r, cy - circle_r, cx + circle_r, cy + circle_r],
         outline=outline, width=max(1, size // 50)
     )
 
     # --- 8-point star ---
-    # Cardinal points (N, E, S, W) are longer, ordinals are shorter
-    cardinal_len = radius * 0.68   # tip of cardinal points
-    ordinal_len = radius * 0.45    # tip of ordinal points
-    half_base = radius * 0.12      # half-width of each diamond at the base
+    cardinal_len = radius * COMPASS_CARDINAL_LEN
+    ordinal_len = radius * COMPASS_ORDINAL_LEN
+    half_base = radius * COMPASS_HALF_BASE
 
     for i, angle_deg in enumerate(range(0, 360, 45)):
         is_cardinal = (i % 2 == 0)
@@ -103,7 +111,7 @@ def draw_compass(image, rotation=0, position='bottom-right',
         )
 
     # --- Inner circle (center dot) ---
-    inner_r = radius * 0.07
+    inner_r = radius * COMPASS_INNER_R
     draw.ellipse(
         [cx - inner_r, cy - inner_r, cx + inner_r, cy + inner_r],
         fill=fill_light, outline=outline
@@ -117,7 +125,7 @@ def draw_compass(image, rotation=0, position='bottom-right',
 
     for label_text, angle_deg in [('N', 0), ('E', 90), ('S', 180), ('W', 270)]:
         angle = math.radians(angle_deg) + rot_rad
-        label_r = radius * 0.88
+        label_r = radius * COMPASS_LABEL_R
         lx = cx + label_r * math.sin(angle)
         ly = cy - label_r * math.cos(angle)
 

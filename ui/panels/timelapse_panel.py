@@ -15,10 +15,11 @@ from PySide6.QtCore import Qt, Signal, QThread, QTimer, QTime
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit, TimePicker,
-    SpinBox, SwitchButton, FluentIcon, IndeterminateProgressBar
+    SpinBox, SwitchButton, IndeterminateProgressBar
 )
 
 from ..theme.tokens import Colors, Typography, Spacing
+from ..theme.icons import mdi
 from ..components.cards import SettingsCard, FormRow, SwitchRow, CollapsibleCard, ClickSlider
 from services.ffmpeg_utils import is_ffmpeg_available, is_winget_available
 
@@ -102,12 +103,12 @@ class FfmpegInstallCard(CardWidget):
         btn_row.setSpacing(Spacing.sm)
 
         self._winget_btn = PrimaryPushButton("Install via winget")
-        self._winget_btn.setIcon(FluentIcon.DOWNLOAD)
+        self._winget_btn.setIcon(mdi('download'))
         self._winget_btn.clicked.connect(self._start_winget_install)
         btn_row.addWidget(self._winget_btn)
 
         manual_btn = PushButton("Download manually")
-        manual_btn.setIcon(FluentIcon.LINK)
+        manual_btn.setIcon(mdi('open-in-new'))
         manual_btn.clicked.connect(lambda: webbrowser.open("https://ffmpeg.org/download.html"))
         btn_row.addWidget(manual_btn)
         btn_row.addStretch()
@@ -272,7 +273,7 @@ class TimelapsePanel(QScrollArea):
         layout.addWidget(enable_card)
 
         # === WINDOW ===
-        window_card = CollapsibleCard("Recording Window", FluentIcon.CALENDAR)
+        window_card = CollapsibleCard("Recording Window", mdi('clock-time-four-outline'))
 
         self._window_mode_combo = ComboBox()
         self._window_mode_combo.addItems(["Sunset / Sunrise", "Fixed Times", "Always On", "Roof Open (Beta)"])
@@ -350,7 +351,7 @@ class TimelapsePanel(QScrollArea):
         layout.addWidget(window_card)
 
         # === FRAME / QUALITY ===
-        quality_card = CollapsibleCard("Frame & Quality", FluentIcon.VIDEO)
+        quality_card = CollapsibleCard("Frame & Quality", mdi('video'))
 
         self._fps_spin = SpinBox()
         self._fps_spin.setRange(1, 60)
@@ -385,10 +386,17 @@ class TimelapsePanel(QScrollArea):
         self._overlays_switch.toggled.connect(self._on_settings_changed)
         quality_card.add_widget(self._overlays_switch)
 
+        self._allsky_overlay_switch = SwitchRow(
+            "Include all-sky overlay in video",
+            "Bake stars, constellations and planets into timelapse frames (only when overlays are enabled)"
+        )
+        self._allsky_overlay_switch.toggled.connect(self._on_settings_changed)
+        quality_card.add_widget(self._allsky_overlay_switch)
+
         layout.addWidget(quality_card)
 
         # === FPS CALCULATOR ===
-        fps_calc_card = CollapsibleCard("Playback Speed Calculator", FluentIcon.PLAY)
+        fps_calc_card = CollapsibleCard("Playback Speed Calculator", mdi('play-speed'))
 
         calc_note = CaptionLabel(
             "How long should a typical session's video be? "
@@ -473,7 +481,7 @@ class TimelapsePanel(QScrollArea):
         layout.addWidget(fps_calc_card)
 
         # === OUTPUT ===
-        output_card = CollapsibleCard("Output", FluentIcon.FOLDER)
+        output_card = CollapsibleCard("Output", mdi('folder-outline'))
 
         dir_row = QHBoxLayout()
         dir_row.setSpacing(Spacing.sm)
@@ -482,7 +490,7 @@ class TimelapsePanel(QScrollArea):
         self._output_dir_input.textChanged.connect(self._on_settings_changed)
         dir_row.addWidget(self._output_dir_input, 1)
         browse_btn = PushButton("Browse")
-        browse_btn.setIcon(FluentIcon.FOLDER)
+        browse_btn.setIcon(mdi('folder-outline'))
         browse_btn.clicked.connect(self._browse_output_dir)
         dir_row.addWidget(browse_btn)
         dir_widget = QWidget()
@@ -506,7 +514,7 @@ class TimelapsePanel(QScrollArea):
         self._status_card.add_widget(self._status_label)
 
         self._open_video_btn = PushButton("Open video")
-        self._open_video_btn.setIcon(FluentIcon.PLAY)
+        self._open_video_btn.setIcon(mdi('play'))
         self._open_video_btn.setEnabled(False)
         self._open_video_btn.clicked.connect(self._open_current_video)
         self._status_card.add_widget(self._open_video_btn)
@@ -611,6 +619,7 @@ class TimelapsePanel(QScrollArea):
         _quality_map = {0: 28, 1: 23, 2: 18, 3: 12}
         tl['video_crf'] = _quality_map.get(self._quality_combo.currentIndex(), 23)
         tl['include_overlays'] = self._overlays_switch.is_checked()
+        tl['include_allsky_overlay'] = self._allsky_overlay_switch.is_checked()
         tl['output_dir'] = self._output_dir_input.text()
         tl['max_videos_to_keep'] = self._keep_spin.value()
         tl['calc_session_hours'] = self._calc_hours_spin.value()
@@ -661,6 +670,7 @@ class TimelapsePanel(QScrollArea):
                 _quality_reverse.get(tl.get('video_crf', 23), 1)
             )
             self._overlays_switch.set_checked(tl.get('include_overlays', False))
+            self._allsky_overlay_switch.set_checked(tl.get('include_allsky_overlay', False))
             self._output_dir_input.setText(tl.get('output_dir', ''))
             self._keep_spin.setValue(tl.get('max_videos_to_keep', 30))
             self._calc_hours_spin.setValue(tl.get('calc_session_hours', 6))
@@ -711,16 +721,16 @@ class TimelapsePanel(QScrollArea):
         if self._recording_active and file_exists:
             # File is locked by ffmpeg — show folder instead so user can drag to VLC
             self._open_video_btn.setText("Show in folder")
-            self._open_video_btn.setIcon(FluentIcon.FOLDER)
+            self._open_video_btn.setIcon(mdi('folder-outline'))
             self._open_video_btn.setEnabled(True)
         elif file_exists:
             # Recording stopped — file is finalized and safe to open directly
             self._open_video_btn.setText("Open video")
-            self._open_video_btn.setIcon(FluentIcon.PLAY)
+            self._open_video_btn.setIcon(mdi('play'))
             self._open_video_btn.setEnabled(True)
         else:
             self._open_video_btn.setText("Open video")
-            self._open_video_btn.setIcon(FluentIcon.PLAY)
+            self._open_video_btn.setIcon(mdi('play'))
             self._open_video_btn.setEnabled(False)
 
     def _open_current_video(self):

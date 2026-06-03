@@ -9,10 +9,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
-    PushButton, ComboBox, LineEdit, SwitchButton, FluentIcon
+    PushButton, ComboBox, LineEdit, SwitchButton
 )
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
+from ..theme.icons import mdi
 from ..components.cards import SettingsCard, SwitchRow
 
 
@@ -63,7 +64,8 @@ class LogsPanel(QScrollArea):
         controls_layout.addWidget(filter_label)
         
         self.level_filter = ComboBox()
-        self.level_filter.addItems(["All", "INFO", "WARN", "ERROR", "DEBUG"])
+        self.level_filter.addItems(["Info+", "All", "INFO", "WARN", "ERROR", "DEBUG"])
+        self.level_filter.setCurrentText("Info+")
         self.level_filter.currentTextChanged.connect(self._on_filter_changed)
         self.level_filter.setFixedWidth(100)
         controls_layout.addWidget(self.level_filter)
@@ -87,13 +89,13 @@ class LogsPanel(QScrollArea):
         
         # Clear button
         self.clear_btn = PushButton("Clear")
-        self.clear_btn.setIcon(FluentIcon.DELETE)
+        self.clear_btn.setIcon(mdi('delete-outline'))
         self.clear_btn.clicked.connect(self._clear_logs)
         controls_layout.addWidget(self.clear_btn)
         
         # Open log folder
         self.open_folder_btn = PushButton("Open Folder")
-        self.open_folder_btn.setIcon(FluentIcon.FOLDER)
+        self.open_folder_btn.setIcon(mdi('folder-outline'))
         self.open_folder_btn.clicked.connect(self._open_log_folder)
         controls_layout.addWidget(self.open_folder_btn)
         
@@ -131,10 +133,19 @@ class LogsPanel(QScrollArea):
         
         layout.addWidget(log_card, 1)
     
+    def load_from_config(self, config):
+        saved = config.get('ui_log_level', 'Info+')
+        index = self.level_filter.findText(saved)
+        if index >= 0:
+            self.level_filter.setCurrentIndex(index)
+
     def _on_filter_changed(self, level):
-        """Handle log level filter change"""
-        # Will be implemented with actual filtering
-        pass
+        if self.main_window and hasattr(self.main_window, 'config'):
+            self.main_window.config.set('ui_log_level', level)
+            if hasattr(self.main_window, 'save_config'):
+                self.main_window.save_config()
+            else:
+                self.main_window.config.save()
     
     def _on_search_changed(self, text):
         """Handle search text change"""
@@ -178,7 +189,10 @@ class LogsPanel(QScrollArea):
         
         # Apply filter
         current_filter = self.level_filter.currentText()
-        if current_filter != "All":
+        if current_filter == "Info+":
+            if "DEBUG" in message:
+                return
+        elif current_filter != "All":
             if current_filter not in message:
                 return
         

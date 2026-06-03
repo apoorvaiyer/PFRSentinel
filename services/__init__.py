@@ -6,7 +6,7 @@ from .config import Config
 from .logger import app_logger
 from .processor import process_image, add_overlays
 from .watcher import FileWatcher
-from .zwo_camera import ZWOCamera
+from .camera import ZWOCamera
 from .cleanup import run_cleanup
 
 __all__ = [

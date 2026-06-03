@@ -20,6 +20,10 @@ if not exist "venv\Scripts\activate.bat" (
     call venv\Scripts\activate.bat
 )
 
+REM Use system malloc instead of Python's pymalloc — returns freed memory to the OS
+REM more aggressively, which reduces long-session RAM bloat from large numpy array churn.
+set PYTHONMALLOC=malloc
+
 REM Run the application
 python main.py
 

@@ -55,19 +55,19 @@ class PreviewWidget(QFrame):
     def update_image(self, pil_image: Image.Image, metadata: dict = None):
         """Update preview with new image"""
         try:
-            # Convert PIL to QPixmap
             if pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
-            
+            # Cap at 1920px — no need to keep a full 3552×3552 pixmap for a preview widget
+            w, h = pil_image.size
+            if max(w, h) > 1920:
+                scale = 1920 / max(w, h)
+                pil_image = pil_image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
             data = pil_image.tobytes('raw', 'RGB')
-            qimg = QImage(data, pil_image.width, pil_image.height, 
+            qimg = QImage(data, pil_image.width, pil_image.height,
                          pil_image.width * 3, QImage.Format_RGB888)
             self._pixmap = QPixmap.fromImage(qimg)
             self._metadata = metadata or {}
-            
-            # Scale to fit while maintaining aspect ratio
             self._update_display()
-            
         except Exception as e:
             self.image_label.setText(f"Error: {e}")
     
