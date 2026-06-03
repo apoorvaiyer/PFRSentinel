@@ -213,3 +213,53 @@ class _MainWindowLifecycleMixin:
             except Exception as e:
                 app_logger.error(f"Error disabling system tray: {e}")
                 self.system_tray = None
+
+    def set_run_on_startup(self, enabled: bool, auto_start: bool = True):
+        """Register or remove the Windows logon task and report the outcome.
+
+        Returns True on success. Reverts the Settings switch + config on failure
+        (e.g. the user declines the one-time UAC elevation), matching the
+        self-healing pattern set_tray_mode uses for its switch.
+        """
+        from services import autostart
+
+        if enabled:
+            ok = autostart.enable(auto_start=auto_start)
+        else:
+            ok = autostart.disable()
+
+        if ok:
+            self.config.set('run_on_startup', enabled)
+            self.config.set('autostart_capture', auto_start)
+            self.config.save()
+            self._notify_startup_result(enabled, success=True)
+        else:
+            # Revert UI to the real task state so the switch never lies.
+            self.config.set('run_on_startup', autostart.is_enabled())
+            self.config.save()
+            if hasattr(self, 'settings_panel'):
+                self.settings_panel.refresh_startup_switches(self.config)
+            self._notify_startup_result(enabled, success=False)
+        return ok
+
+    def _notify_startup_result(self, enabled: bool, success: bool):
+        from PySide6.QtCore import Qt
+        from qfluentwidgets import InfoBar, InfoBarPosition
+        try:
+            if success:
+                msg = ("PFR Sentinel will start with Windows."
+                       if enabled else "PFR Sentinel will no longer start with Windows.")
+                InfoBar.success(
+                    title="Startup updated", content=msg, orient=Qt.Horizontal,
+                    isClosable=True, position=InfoBarPosition.TOP, duration=6000, parent=self,
+                )
+            else:
+                InfoBar.warning(
+                    title="Startup not changed",
+                    content=("Could not update the Windows startup task. Administrator "
+                             "approval is required — please accept the prompt and try again."),
+                    orient=Qt.Horizontal, isClosable=True, position=InfoBarPosition.TOP,
+                    duration=10000, parent=self,
+                )
+        except Exception as e:
+            app_logger.debug(f"startup InfoBar failed: {e}")

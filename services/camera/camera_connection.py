@@ -11,6 +11,19 @@ import threading
 import concurrent.futures
 from typing import Optional, List, Dict, Callable, Any
 from .camera_config import verify_camera_identity, configure_camera
+from .camera_utils import call_with_timeout, SDKTimeoutError
+
+# Hard upper bounds (seconds) on blocking ZWO SDK C-calls. These calls cannot
+# be interrupted, so an unbounded wait wedges the connection/disconnection path
+# when a USB device hangs. See the connection audit, 2026-06-02.
+_OPEN_TIMEOUT_SEC = 20.0          # asi.Camera() — ASIOpenCamera + ASIInitCamera
+_PROPERTY_TIMEOUT_SEC = 10.0      # get_camera_property / get_controls
+_CONFIGURE_TIMEOUT_SEC = 30.0     # configure_camera (set_roi has internal retries)
+# Max wait for the capture worker to release sdk_lock during disconnect. If it
+# is wedged inside an uninterruptible SDK call it holds the lock; rather than
+# block shutdown forever, we abandon the close and let higher-level recovery
+# (which joins the wedged thread first) reclaim the handle.
+_DISCONNECT_LOCK_TIMEOUT_SEC = 5.0
 
 
 class CameraConnection:
@@ -323,7 +336,12 @@ class CameraConnection:
 
             for attempt in range(1, max_attempts + 1):
                 try:
-                    self.camera = self.asi.Camera(camera_index)
+                    # Bounded: asi.Camera() runs ASIOpenCamera + ASIInitCamera,
+                    # the calls that historically hang on a wedged USB device.
+                    self.camera = call_with_timeout(
+                        lambda: self.asi.Camera(camera_index), _OPEN_TIMEOUT_SEC,
+                        hint="camera open/init — USB may be wedged",
+                    )
                     break  # Success - exit retry loop
                 except Exception as e:
                     if attempt < max_attempts:
@@ -352,7 +370,10 @@ class CameraConnection:
                         # Final attempt failed - re-raise the exception
                         raise
 
-            camera_info = self.camera.get_camera_property()
+            camera_info = call_with_timeout(
+                self.camera.get_camera_property, _PROPERTY_TIMEOUT_SEC,
+                hint="get_camera_property after open",
+            )
             actual_name = camera_info['Name']
 
             # Validate camera identity — if we expected a specific camera, make sure
@@ -401,7 +422,10 @@ class CameraConnection:
             self.log(f"  RAW16 Support: {'Yes' if self.supports_raw16 else 'No'}")
 
             # Get controls info
-            controls = self.camera.get_controls()
+            controls = call_with_timeout(
+                self.camera.get_controls, _PROPERTY_TIMEOUT_SEC,
+                hint="get_controls after open",
+            )
             self.log(f"  Available controls: {len(controls)}")
 
             # Stabilization delay — camera firmware needs time to fully enumerate
@@ -410,23 +434,28 @@ class CameraConnection:
             # 0.3s, causing set_roi to return Invalid size immediately.
             time.sleep(1.5)
 
-            # Apply settings if provided (sets ROI, gain, exposure, etc.)
+            # Apply settings — bounded so a camera that opens but won't
+            # configure fails the connect cleanly instead of hanging.
             if settings:
-                self.configure(settings)
-            else:
-                # Set ROI to full frame when no settings provided.
-                # The SDK can retain a stale ROI from a previous session (this process
-                # or another app).  Without an explicit set_roi(), captured data size
-                # won't match MaxWidth*MaxHeight, causing numpy reshape failures.
-                self.log("No settings provided - setting ROI to full frame (default)")
-                self.camera.set_roi(
-                    start_x=0, start_y=0,
-                    width=camera_info['MaxWidth'],
-                    height=camera_info['MaxHeight'],
-                    bins=1,
-                    image_type=self.asi.ASI_IMG_RAW8
+                call_with_timeout(
+                    lambda: self.configure(settings), _CONFIGURE_TIMEOUT_SEC,
+                    hint="camera configure",
                 )
-                self.camera.set_image_type(self.asi.ASI_IMG_RAW8)
+            else:
+                # Explicit full-frame ROI — the SDK can retain a stale ROI from
+                # a prior session, causing reshape failures without this.
+                self.log("No settings provided - setting ROI to full frame (default)")
+
+                def _default_full_frame_roi():
+                    self.camera.set_roi(
+                        start_x=0, start_y=0, width=camera_info['MaxWidth'],
+                        height=camera_info['MaxHeight'], bins=1,
+                        image_type=self.asi.ASI_IMG_RAW8,
+                    )
+                    self.camera.set_image_type(self.asi.ASI_IMG_RAW8)
+
+                call_with_timeout(_default_full_frame_roi, _CONFIGURE_TIMEOUT_SEC,
+                                  hint="default full-frame ROI")
                 self.log(f"  ROI: Full frame {camera_info['MaxWidth']}x{camera_info['MaxHeight']}")
 
             self.log(f"✓ Camera connection successful")
@@ -516,24 +545,6 @@ class CameraConnection:
         for cam in cameras:
             self.log(f"  - [{cam['index']}] {cam['name']}")
         return None
-
-    def _find_camera_index(self, cameras: List[Dict[str, Any]], camera_name: Optional[str]) -> int:
-        """
-        Find camera index by name, or return first camera index if no name specified.
-
-        NOTE: This method is for initial connection when no specific camera is required.
-        For reconnection, use _find_camera_index_by_name() which enforces strict matching.
-        """
-        if camera_name:
-            for cam in cameras:
-                if camera_name in cam['name']:
-                    self.log(f"✓ Found camera '{camera_name}' at index {cam['index']}")
-                    return cam['index']
-            self.log(f"⚠ Warning: Could not find camera '{camera_name}' by name")
-
-        # Fall back to first camera (only for initial connection, not reconnection)
-        self.log(f"Using first available camera at index {cameras[0]['index']}: {cameras[0]['name']}")
-        return cameras[0]['index']
 
     def reconnect_safe(self, target_camera_name: Optional[str] = None,
                        settings: Optional[Dict[str, Any]] = None,
@@ -650,34 +661,50 @@ class CameraConnection:
                     except Exception as e:
                         self.log(f"Exposure stop callback error: {e}")
 
-                # Acquire SDK lock so we don't race with capture_single_frame
-                with self.sdk_lock:
-                    # Stop any in-progress exposure before closing.
+                # Acquire SDK lock so we don't race with capture_single_frame.
+                # Bounded: if the capture worker is wedged inside an
+                # uninterruptible SDK call it holds this lock, and an unbounded
+                # wait here would block disconnect (and app shutdown) forever.
+                # On timeout we abandon the close rather than deadlock — the
+                # higher-level recovery joins the wedged thread and runs a USB
+                # reset to reclaim the handle.
+                acquired = self.sdk_lock.acquire(timeout=_DISCONNECT_LOCK_TIMEOUT_SEC)
+                if not acquired:
+                    self.log(
+                        f"⚠ SDK lock still held after {_DISCONNECT_LOCK_TIMEOUT_SEC:.0f}s "
+                        "— capture thread wedged in an SDK call. Abandoning close to "
+                        "avoid blocking shutdown; USB recovery will reclaim the handle."
+                    )
+                else:
                     try:
-                        self.camera.stop_exposure()
-                    except Exception:
-                        pass  # Ignore — camera may already be idle
-
-                    # Close camera connection
-                    try:
-                        self.log("Closing camera connection...")
-                        self.camera.close()
-                        self.log("✓ Camera disconnected successfully")
-
-                        # Brief delay for SDK to fully release USB device
+                        # Stop any in-progress exposure before closing.
                         try:
-                            time.sleep(0.5)
-                        except OSError:
-                            pass  # WinError 6: handle invalid during interpreter shutdown
+                            self.camera.stop_exposure()
+                        except Exception:
+                            pass  # Ignore — camera may already be idle
 
-                    except Exception as e:
-                        self.log(f"⚠ Warning during camera close: {e}")
-                        if self._usb_reset_available and self.camera_name:
-                            self.log("  Attempting USB reset due to close failure...")
+                        # Close camera connection
+                        try:
+                            self.log("Closing camera connection...")
+                            self.camera.close()
+                            self.log("✓ Camera disconnected successfully")
+
+                            # Brief delay for SDK to fully release USB device
                             try:
-                                self._usb_reset_func(camera_name=self.camera_name, logger=self.log)
-                            except Exception as usb_err:
-                                self.log(f"  USB reset error: {usb_err}")
+                                time.sleep(0.5)
+                            except OSError:
+                                pass  # WinError 6: handle invalid during interpreter shutdown
+
+                        except Exception as e:
+                            self.log(f"⚠ Warning during camera close: {e}")
+                            if self._usb_reset_available and self.camera_name:
+                                self.log("  Attempting USB reset due to close failure...")
+                                try:
+                                    self._usb_reset_func(camera_name=self.camera_name, logger=self.log)
+                                except Exception as usb_err:
+                                    self.log(f"  USB reset error: {usb_err}")
+                    finally:
+                        self.sdk_lock.release()
 
             except Exception as e:
                 self.log(f"✗ ERROR during camera disconnect: {e}")

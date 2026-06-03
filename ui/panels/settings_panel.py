@@ -109,6 +109,24 @@ class SettingsPanel(QScrollArea):
         self.tray_enabled_switch.checkedChanged.connect(self._on_system_changed)
         system_card.add_widget(tray_row)
 
+        # Run on Windows startup
+        startup_row = SwitchRow(
+            "Start with Windows",
+            "Launch automatically on logon (scheduled task; expect a one-time admin prompt)"
+        )
+        self.startup_switch = startup_row.switch
+        self.startup_switch.checkedChanged.connect(self._on_startup_changed)
+        system_card.add_widget(startup_row)
+
+        # Auto-start capture when launched on startup
+        autostart_capture_row = SwitchRow(
+            "Auto-start capture on launch",
+            "Begin capturing with the saved camera automatically when the app starts"
+        )
+        self.autostart_capture_switch = autostart_capture_row.switch
+        self.autostart_capture_switch.checkedChanged.connect(self._on_startup_changed)
+        system_card.add_widget(autostart_capture_row)
+
         # Analytics opt-out
         analytics_row = SwitchRow(
             "Send Anonymous Usage Data",
@@ -316,6 +334,31 @@ class SettingsPanel(QScrollArea):
 
             self.settings_changed.emit()
 
+    def _on_startup_changed(self):
+        """Handle 'Start with Windows' / 'Auto-start capture' toggles.
+
+        Both feed the same scheduled-task registration: the auto-start switch
+        only changes the command the task runs, so toggling it re-registers the
+        task when startup is enabled. Registration (and any UAC prompt + revert)
+        is owned by main_window.set_run_on_startup.
+        """
+        if self._loading_config:
+            return
+        if not (self.main_window and hasattr(self.main_window, 'set_run_on_startup')):
+            return
+        enabled = self.startup_switch.isChecked()
+        auto_start = self.autostart_capture_switch.isChecked()
+        self.main_window.set_run_on_startup(enabled, auto_start)
+
+    def refresh_startup_switches(self, config):
+        """Re-sync the startup switches to actual state without firing handlers."""
+        self._loading_config = True
+        try:
+            self.startup_switch.setChecked(config.get('run_on_startup', False))
+            self.autostart_capture_switch.setChecked(config.get('autostart_capture', True))
+        finally:
+            self._loading_config = False
+
     def _on_analytics_changed(self):
         """Handle analytics opt-in/out toggle"""
         if self._loading_config:
@@ -476,6 +519,11 @@ class SettingsPanel(QScrollArea):
             # System
             self.tray_enabled_switch.setChecked(config.get('tray_mode_enabled', False))
             self.analytics_switch.setChecked(config.get('analytics_enabled', True))
+
+            # Startup — the scheduled task is authoritative, not the cached flag.
+            from services import autostart
+            self.startup_switch.setChecked(autostart.is_enabled())
+            self.autostart_capture_switch.setChecked(config.get('autostart_capture', True))
             
             # Weather
             weather = config.get('weather', {})

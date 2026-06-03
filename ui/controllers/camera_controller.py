@@ -14,7 +14,7 @@ import time
 
 from services.logger import app_logger
 from services.camera import ZWOCamera
-from .camera_settings import apply_camera_settings
+from .camera_settings import apply_camera_settings_async, set_raw16_mode_async
 
 
 # ZWO SDK errors that corrupt the DLL for the process lifetime — only a
@@ -55,6 +55,7 @@ class CameraControllerQt(QObject):
     _usb_reset_done = Signal(bool)             # recovery path: ok?
     camera_revive_done = Signal(bool, str)     # user Revive: (ok, name)
     _capture_start_done = Signal(bool, str)    # worker result: (ok, error_msg)
+    raw16_mode_done = Signal(bool, bool)       # RAW mode change: (requested_enabled, ok)
 
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
@@ -307,6 +308,15 @@ class CameraControllerQt(QObject):
         instability. Running them here keeps the Qt event loop responsive.
         """
         try:
+            # Wait out any wedged prior worker — concurrent SDK access crashes the DLL.
+            if self._dying_camera is not None:
+                try:
+                    self._dying_camera.wait_for_capture_thread_exit(
+                        timeout=_WEDGED_THREAD_JOIN_TIMEOUT_SEC)
+                except Exception:
+                    pass
+                self._dying_camera = None
+
             camera_index = self._resolve_camera_index(
                 params['sdk_path'], params['camera_name'], params['saved_camera_index']
             )
@@ -430,6 +440,14 @@ class CameraControllerQt(QObject):
                         camera.stop_capture()
                     except Exception as e:
                         app_logger.debug(f"Error stopping capture: {e}")
+                    # Wedged worker (3s join timed out) still holds the SDK;
+                    # retain it so a later start waits instead of reinitialising
+                    # the SDK concurrently (which crashes the ZWO DLL).
+                    try:
+                        if isinstance(camera.capture_thread, threading.Thread) and camera.capture_thread.is_alive():
+                            self._dying_camera = camera
+                    except Exception:
+                        pass
                     try:
                         camera.disconnect_camera()
                     except Exception as e:
@@ -724,10 +742,9 @@ class CameraControllerQt(QObject):
         self.calibration_status.emit(is_calibrating)
     
     def update_settings(self):
-        """Update camera settings from config (live update)"""
-        if not self.zwo_camera:
-            return
-        try:
-            apply_camera_settings(self.zwo_camera, self.config)
-        except Exception as e:
-            app_logger.error(f"Failed to update camera settings: {e}")
+        """Update camera settings from config (live update, runs off-thread)."""
+        apply_camera_settings_async(self)
+
+    def set_raw16_mode(self, enabled: bool):
+        """Change RAW8/RAW16 mode on the live camera (runs off-thread)."""
+        set_raw16_mode_async(self, enabled)

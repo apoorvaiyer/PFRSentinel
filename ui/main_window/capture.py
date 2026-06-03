@@ -595,6 +595,7 @@ class _MainWindowCaptureMixin:
         self.camera_controller.capture_stopped.connect(self._on_camera_capture_stopped)
         self.camera_controller.capture_started.connect(self._on_camera_capture_started)
         self.camera_controller.camera_revive_done.connect(self._on_camera_revive_done)
+        self.camera_controller.raw16_mode_done.connect(self._on_raw16_mode_done)
 
     def _on_revive_camera(self, camera_name: str):
         self._ensure_camera_controller()
@@ -704,11 +705,13 @@ class _MainWindowCaptureMixin:
     def _on_raw16_mode_changed(self, enabled: bool):
         if not self.camera_controller or not self.camera_controller.is_capturing:
             return
+        # set_raw16_mode() runs off the Qt main thread (it issues blocking SDK
+        # calls); the result arrives on raw16_mode_done → _on_raw16_mode_done.
+        self.camera_controller.set_raw16_mode(enabled)
 
-        if self.camera_controller.zwo_camera:
-            success = self.camera_controller.zwo_camera.set_raw16_mode(enabled)
-            if not success:
-                if hasattr(self, 'capture_panel'):
-                    self.capture_panel._loading_config = True
-                    self.capture_panel.raw16_switch.set_checked(not enabled)
-                    self.capture_panel._loading_config = False
+    def _on_raw16_mode_done(self, enabled: bool, ok: bool):
+        # Revert the toggle if the SDK rejected or failed the mode change.
+        if not ok and hasattr(self, 'capture_panel'):
+            self.capture_panel._loading_config = True
+            self.capture_panel.raw16_switch.set_checked(not enabled)
+            self.capture_panel._loading_config = False

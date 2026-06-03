@@ -1,3 +1,5 @@
+import threading
+
 from services.logger import app_logger
 from services.config import DEFAULT_CAMERA_PROFILE
 
@@ -54,22 +56,15 @@ def apply_camera_settings(zwo_camera, config):
 
     zwo_camera.set_capture_interval(config.get('zwo_interval', 5.0))
 
+    # Live SDK writes go through sdk_lock-guarded helpers — a bare
+    # set_control_value here races the capture worker's SDK calls and can
+    # corrupt the ZWO DLL.
     offset = profile.get('offset', DEFAULT_CAMERA_PROFILE['offset'])
-    zwo_camera.offset = offset
-    if zwo_camera.camera and zwo_camera.asi:
-        try:
-            zwo_camera.camera.set_control_value(zwo_camera.asi.ASI_BRIGHTNESS, offset)
-        except Exception as e:
-            app_logger.debug(f"Could not set offset live: {e}")
+    zwo_camera.set_offset_live(offset)
 
     flip = profile.get('flip', DEFAULT_CAMERA_PROFILE['flip'])
     if flip != zwo_camera.flip:
-        zwo_camera.flip = flip
-        if zwo_camera.camera and zwo_camera.asi:
-            try:
-                zwo_camera.camera.set_control_value(zwo_camera.asi.ASI_FLIP, flip)
-            except Exception as e:
-                app_logger.debug(f"Could not set flip live: {e}")
+        zwo_camera.set_flip_live(flip)
 
     bayer = profile.get('bayer_pattern', DEFAULT_CAMERA_PROFILE['bayer_pattern'])
     zwo_camera.bayer_pattern = bayer
@@ -91,3 +86,47 @@ def apply_camera_settings(zwo_camera, config):
         f"max_exposure={max_exposure_ms}ms, interval={zwo_camera.capture_interval}s, "
         f"offset={offset}, flip={flip}, bayer={bayer}"
     )
+
+
+def apply_camera_settings_async(controller):
+    """Run apply_camera_settings on a daemon thread.
+
+    apply_camera_settings issues sdk_lock-guarded SDK writes (offset/flip) that
+    can briefly block if the capture worker holds the lock; keeping it off the
+    Qt main thread avoids any UI stall under USB instability.
+    """
+    cam = controller.zwo_camera
+    if not cam:
+        return
+
+    def _apply():
+        try:
+            apply_camera_settings(cam, controller.config)
+        except Exception as e:
+            app_logger.error(f"Failed to update camera settings: {e}")
+
+    threading.Thread(target=_apply, daemon=True).start()
+
+
+def set_raw16_mode_async(controller, enabled: bool):
+    """Change RAW8/RAW16 on the live camera off the Qt main thread.
+
+    ZWOCamera.set_raw16_mode() takes sdk_lock and issues several SDK calls; on a
+    marginal USB bus those can block for the USB-timeout duration, freezing the
+    event loop if run inline. Result is delivered via the controller's
+    raw16_mode_done signal so the panel can revert its toggle on failure.
+    """
+    cam = controller.zwo_camera
+    if not cam:
+        controller.raw16_mode_done.emit(enabled, False)
+        return
+
+    def _worker():
+        ok = False
+        try:
+            ok = cam.set_raw16_mode(enabled)
+        except Exception as e:
+            app_logger.error(f"RAW mode change failed: {e}")
+        controller.raw16_mode_done.emit(enabled, ok)
+
+    threading.Thread(target=_worker, daemon=True).start()

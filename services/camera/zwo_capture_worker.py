@@ -19,6 +19,7 @@ from PIL import Image
 from .camera_utils import (
     apply_white_balance,
     calculate_image_stats,
+    call_with_timeout,
     debayer_raw_image,
 )
 from ..posthog_service import capture_error
@@ -162,13 +163,31 @@ def capture_single_frame(camera: "ZWOCamera"):
         with sdk_lock:
             if not camera.camera:
                 raise Exception("Camera disconnected before data readout")
-            img_data = camera.camera.get_data_after_exposure()
-            camera_info = camera.camera.get_camera_property()
-            # Use the SDK's view of the active ROI rather than the sensor's
-            # MaxWidth/MaxHeight. If set_roi was ever silently rejected or
-            # another process left the SDK with a non-default ROI, these
-            # diverge — and trusting MaxWidth then crashes in reshape.
-            roi_width, roi_height, _bins, roi_image_type = camera.camera.get_roi_format()
+
+            # The readout is the one per-frame SDK call that can wedge a USB
+            # bus indefinitely — and it runs while holding sdk_lock, so a hang
+            # here would block disconnect()'s close() forever (USB stuck until
+            # reboot). The exposure has already completed, so the transfer
+            # itself should be fast; bound it generously and raise on a wedge
+            # so the loop's recovery path runs instead. See the connection
+            # audit, 2026-06-02.
+            readout_timeout = max(10.0, camera.exposure_seconds)
+
+            def _read_frame():
+                data = camera.camera.get_data_after_exposure()
+                info = camera.camera.get_camera_property()
+                # Use the SDK's view of the active ROI rather than the sensor's
+                # MaxWidth/MaxHeight. If set_roi was ever silently rejected or
+                # another process left the SDK with a non-default ROI, these
+                # diverge — and trusting MaxWidth then crashes in reshape.
+                roi = camera.camera.get_roi_format()
+                return data, info, roi
+
+            img_data, camera_info, roi_format = call_with_timeout(
+                _read_frame, readout_timeout,
+                hint="frame readout — USB bus may be wedged",
+            )
+            roi_width, roi_height, _bins, roi_image_type = roi_format
 
         active_bit_depth = (
             16 if roi_image_type == camera.asi.ASI_IMG_RAW16 else 8

@@ -444,17 +444,16 @@ class ZWOCamera:
             self.log("Stopping active capture before disconnect...")
             self.stop_capture()
         
-        # Create callback to stop exposure before disconnect
+        # Clear exposure tracking before disconnect. The authoritative
+        # stop_exposure() runs under sdk_lock inside CameraConnection.disconnect();
+        # issuing one here (before that lock) would be an unsynchronized SDK call
+        # racing the capture worker, which can corrupt the ZWO DLL. So only reset
+        # the UI-facing tracking state here.
         def stop_exposure_callback():
             if self.exposure_start_time is not None:
-                self.log("Aborting in-progress exposure...")
-                try:
-                    self._connection.camera.stop_exposure()
-                except Exception:
-                    pass
+                self.log("Clearing in-progress exposure tracking before disconnect...")
                 self.exposure_start_time = None
                 self.exposure_remaining = 0.0
-                self.log("Exposure aborted")
         
         # Delegate to connection manager
         self._connection.disconnect(stop_exposure_callback=stop_exposure_callback)
@@ -541,12 +540,23 @@ class ZWOCamera:
         if self.calibration_manager:
             self.calibration_manager.abort()
 
-        # Abort any in-progress exposure so the poll loop exits immediately
-        if self.camera and self.exposure_start_time is not None:
-            try:
-                self.camera.stop_exposure()
-            except Exception:
-                pass
+        # Abort any in-progress exposure so the poll loop exits immediately.
+        # During calibration exposure_start_time isn't set, so also fire when a
+        # calibration exposure may be in flight. Take sdk_lock (briefly) so we
+        # don't issue stop_exposure() concurrently with the worker's own SDK
+        # calls — a documented ZWO DLL corruption trigger. If the worker is
+        # wedged holding the lock, the short timeout lets us give up; the
+        # bounded readout/calibration timeouts surface the wedge instead.
+        if self.camera and (self.exposure_start_time is not None or self.calibration_mode):
+            lock = self._connection.sdk_lock
+            if lock.acquire(timeout=2.0):
+                try:
+                    if self.camera:
+                        self.camera.stop_exposure()
+                except Exception:
+                    pass
+                finally:
+                    lock.release()
 
         # Wait for capture thread — should exit quickly now that
         # is_capturing is False and exposure is aborted
@@ -555,11 +565,13 @@ class ZWOCamera:
             self.capture_thread.join(timeout=3.0)
 
             if self.capture_thread.is_alive():
+                # Keep the reference: the worker is wedged inside an SDK call,
+                # and reinitialising the SDK while it's alive corrupts the ZWO
+                # DLL. Callers join it via wait_for_capture_thread_exit().
                 self.log("Warning: Capture thread still running (will finish in background)")
             else:
                 self.log("Capture thread finished successfully")
-
-            self.capture_thread = None
+                self.capture_thread = None
 
         self._release_frame_buffers()
         self.log("Capture stopped")
@@ -576,17 +588,57 @@ class ZWOCamera:
         """Set interval between captures"""
         self.capture_interval = max(1.0, seconds)
     
+    def _set_control_live(self, control, value, success_msg=None) -> bool:
+        """Apply a single control value to the live camera under sdk_lock.
+
+        Live setting writes originate on the UI thread while the capture worker
+        is running; both touch the SDK, so they must serialize on sdk_lock or
+        concurrent access can corrupt the ZWO DLL. A short timed acquire keeps
+        the caller responsive if the worker is momentarily holding the lock.
+        """
+        if not self.camera or not self.asi:
+            return False
+        lock = self._connection.sdk_lock
+        if not lock.acquire(timeout=2.0):
+            self.log("⚠ Live setting skipped — SDK busy (capture worker holds lock)")
+            return False
+        try:
+            if not self.camera:
+                return False
+            self.camera.set_control_value(control, value)
+            if success_msg:
+                self.log(success_msg)
+            return True
+        except Exception as e:
+            self.log(f"Failed to apply live setting: {e}")
+            return False
+        finally:
+            lock.release()
+
+    def set_offset_live(self, offset):
+        """Set brightness/offset, applying live to the camera under sdk_lock."""
+        self.offset = offset
+        if self.camera and self.asi:
+            self._set_control_live(self.asi.ASI_BRIGHTNESS, offset)
+
+    def set_flip_live(self, flip):
+        """Set flip, applying live to the camera under sdk_lock."""
+        self.flip = flip
+        if self.camera and self.asi:
+            self._set_control_live(self.asi.ASI_FLIP, flip)
+
     def update_exposure(self, exposure_seconds):
         """Update exposure setting and apply immediately to camera if connected"""
         self.exposure_seconds = exposure_seconds
-        
+
         # If camera is connected and not in auto exposure mode, apply immediately
+        # (sdk_lock-guarded — a live write racing the capture worker's SDK calls
+        # can corrupt the ZWO DLL).
         if self.camera and not self.auto_exposure:
-            try:
-                self.camera.set_control_value(self.asi.ASI_EXPOSURE, int(exposure_seconds * 1000000))
-                self.log(f"Exposure updated to {exposure_seconds*1000:.2f}ms")
-            except Exception as e:
-                self.log(f"Failed to update camera exposure: {e}")
+            self._set_control_live(
+                self.asi.ASI_EXPOSURE, int(exposure_seconds * 1000000),
+                f"Exposure updated to {exposure_seconds*1000:.2f}ms",
+            )
     
     def run_calibration(self):
         """Rapid calibration to find optimal exposure before starting interval captures"""

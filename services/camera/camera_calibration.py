@@ -3,7 +3,7 @@ Camera calibration and auto-exposure algorithms for ZWO ASI cameras
 """
 import threading
 import numpy as np
-from .camera_utils import calculate_brightness, check_clipping
+from .camera_utils import calculate_brightness, check_clipping, call_with_timeout
 from ..logger import app_logger
 
 
@@ -89,9 +89,11 @@ class CameraCalibration:
                 return False
 
             try:
-                # REL-003: Use snapshot mode (consistent with capture_loop)
-                # Start exposure
-                self.camera.start_exposure()
+                # REL-003: Use snapshot mode (consistent with capture_loop).
+                # Bounded so a wedged USB call can't outlast stop_capture's
+                # 3s join — the loop's _abort check then breaks promptly.
+                call_with_timeout(self.camera.start_exposure, 10.0,
+                                  hint="calibration start_exposure")
 
                 # Wait for exposure to complete
                 import time
@@ -112,8 +114,12 @@ class CameraCalibration:
                 if time.time() - start_time >= timeout:
                     raise Exception(f"Calibration exposure timeout ({timeout}s)")
 
-                # Get the captured data
-                data = self.camera.get_data_after_exposure()
+                # Get the captured data (bounded — see start_exposure above)
+                data = call_with_timeout(
+                    self.camera.get_data_after_exposure,
+                    max(10.0, self.exposure_seconds),
+                    hint="calibration readout — USB may be wedged",
+                )
 
                 # Get camera dimensions for reshaping
                 camera_info = self.camera.get_camera_property()

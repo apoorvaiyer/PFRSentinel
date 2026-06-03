@@ -25,7 +25,8 @@ class NavButton(QPushButton):
         self._original_text = text  # Store for collapse/expand
         self._badge_visible = False
         self._badge_text = ""
-        
+        self._badge_color = Colors.accent_default
+
         self.setText(text)
         self.setCheckable(True)
         self.setFixedHeight(40)
@@ -48,10 +49,11 @@ class NavButton(QPushButton):
         self.setChecked(selected)
         self._update_style()
     
-    def set_badge(self, visible: bool, text: str = ""):
+    def set_badge(self, visible: bool, text: str = "", color: str = None):
         """Show or hide a badge on this button."""
         self._badge_visible = visible
         self._badge_text = text
+        self._badge_color = color or Colors.accent_default
         self.update()  # Trigger repaint
     
     def paintEvent(self, event):
@@ -61,30 +63,30 @@ class NavButton(QPushButton):
         if self._badge_visible:
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing)
-            
-            # Badge position - vertically centered, right side
-            badge_size = 10 if not self._badge_text else 16
-            x = self.width() - badge_size - 12
-            y = (self.height() - badge_size) // 2  # Vertically center
-            
-            # Draw badge circle
-            painter.setBrush(QBrush(QColor(Colors.accent_default)))
             painter.setPen(Qt.NoPen)
-            
+            painter.setBrush(QBrush(QColor(self._badge_color)))
+
             if self._badge_text:
-                # Pill shape for text
-                painter.drawRoundedRect(x - 4, y, badge_size + 4, badge_size, badge_size // 2, badge_size // 2)
-                # Draw text
-                painter.setPen(QColor("#FFFFFF"))
+                # Pill shape sized to the text so multi-char labels (e.g. "BETA") fit.
                 font = painter.font()
                 font.setPixelSize(9)
                 font.setBold(True)
                 painter.setFont(font)
-                painter.drawText(x - 4, y, badge_size + 4, badge_size, Qt.AlignCenter, self._badge_text)
+                pill_h = 16
+                text_w = painter.fontMetrics().horizontalAdvance(self._badge_text)
+                pill_w = text_w + 12
+                x = self.width() - pill_w - 12
+                y = (self.height() - pill_h) // 2
+                painter.drawRoundedRect(x, y, pill_w, pill_h, pill_h // 2, pill_h // 2)
+                painter.setPen(QColor("#FFFFFF"))
+                painter.drawText(x, y, pill_w, pill_h, Qt.AlignCenter, self._badge_text)
             else:
                 # Simple dot
+                badge_size = 10
+                x = self.width() - badge_size - 12
+                y = (self.height() - badge_size) // 2
                 painter.drawEllipse(x, y, badge_size, badge_size)
-            
+
             painter.end()
     
     def _update_style(self):
@@ -219,6 +221,10 @@ class NavRail(QFrame):
         layout.addWidget(settings_btn)
         self._buttons['settings'] = settings_btn
         
+        # All-Sky is still in beta — mark it with a persistent amber badge.
+        if 'allsky' in self._buttons:
+            self._buttons['allsky'].set_badge(True, "BETA", Colors.warning_default)
+
         # Set initial selection
         self._buttons['capture'].set_selected(True)
     
@@ -287,16 +293,17 @@ class NavRail(QFrame):
         for btn in self._buttons.values():
             btn._update_style()
 
-    def set_badge(self, key: str, visible: bool, text: str = ""):
+    def set_badge(self, key: str, visible: bool, text: str = "", color: str = None):
         """Set badge visibility on a navigation button.
-        
+
         Args:
             key: Button key ('settings', 'capture', etc.)
             visible: Whether to show the badge
             text: Optional text to show in badge (e.g., "1", "!")
+            color: Optional badge fill color (defaults to accent)
         """
         if key in self._buttons:
-            self._buttons[key].set_badge(visible, text)
+            self._buttons[key].set_badge(visible, text, color)
     
     @property
     def is_collapsed(self) -> bool:

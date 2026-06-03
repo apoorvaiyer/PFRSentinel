@@ -45,6 +45,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "runadmin"; Description: "Run as Administrator (recommended for USB camera recovery)"; GroupDescription: "Privileges:"; Flags: unchecked
+Name: "startupreg"; Description: "Run PFR Sentinel when Windows starts (auto-resume capture after a reboot)"; GroupDescription: "Startup:"; Flags: unchecked
 
 [Files]
 ; Source files from PyInstaller build
@@ -64,9 +65,17 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"; ValueType: string; ValueName: "{app}\{#MyAppExeName}"; ValueData: "RUNASADMIN"; Flags: uninsdeletevalue; Tasks: runadmin
 
 [Run]
+; Register the Windows logon task by reusing the app's own --register-startup
+; path, so the schtasks logic lives in one place (services/autostart.py).
+; The service elevates itself via UAC if the installer isn't already elevated.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--register-startup"; Tasks: startupreg; Flags: runhidden waituntilterminated
 ; Option to launch application after install
 ; shellexec flag allows UAC elevation if "Run as Administrator" task was selected
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec
+
+[UninstallRun]
+; Remove the logon task on uninstall (it lives outside {app}, so file cleanup misses it).
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--unregister-startup"; Flags: runhidden; RunOnceId: "RemovePFRStartupTask"
 
 [UninstallDelete]
 ; Clean up any generated files (but NOT user data in %LOCALAPPDATA%)

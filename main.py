@@ -117,9 +117,23 @@ def main():
                        help='Run without GUI - captures images based on saved config')
     parser.add_argument('--tray', action='store_true',
                        help='Start minimized to system tray (requires pystray)')
-    
+    parser.add_argument('--register-startup', action='store_true',
+                       help='Register the app to run on Windows logon, then exit')
+    parser.add_argument('--unregister-startup', action='store_true',
+                       help='Remove the Windows logon task, then exit')
+
     args = parser.parse_args()
-    
+
+    # Startup registration - perform the action and exit before any GUI work.
+    # Reused by the installer so the schtasks logic lives in one place.
+    if args.register_startup or args.unregister_startup:
+        from services import autostart
+        if args.register_startup:
+            ok = autostart.enable(auto_start=True)
+        else:
+            ok = autostart.disable()
+        sys.exit(0 if ok else 1)
+
     # Headless mode - no GUI at all
     if args.headless:
         from services.headless_runner import run_headless

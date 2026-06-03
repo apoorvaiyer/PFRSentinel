@@ -1,8 +1,54 @@
 """
 Utility functions for ZWO ASI camera operations
 """
+import threading
 import numpy as np
 from datetime import datetime
+
+
+class SDKTimeoutError(Exception):
+    """A blocking ZWO SDK call exceeded its allotted time and was abandoned."""
+
+
+def call_with_timeout(fn, timeout: float, hint: str = ""):
+    """Run a blocking ZWO SDK C-call with a hard upper bound on wall time.
+
+    ZWO SDK functions are synchronous ctypes calls that hold the GIL for their
+    full duration and cannot be interrupted. On a wedged USB device they can
+    block indefinitely — pinning the capture thread (so the 3s stop-join never
+    completes) and, if the call holds sdk_lock, blocking disconnect()'s close()
+    forever, which is the "USB hung until reboot" failure mode.
+
+    This runs ``fn`` on a daemon thread and waits up to ``timeout`` seconds. On
+    timeout it raises :class:`SDKTimeoutError`; the worker thread is abandoned
+    (a stuck C-call cannot be killed) but, being a daemon, it will not block
+    process exit. Converting an unbounded hang into a catchable error lets the
+    caller's recovery/retry path run instead of deadlocking.
+
+    A daemon thread is used rather than ThreadPoolExecutor on purpose: the pool
+    joins its workers on shutdown (and via an interpreter atexit hook), which a
+    truly-wedged call would block forever.
+    """
+    result = [None]
+    exc = [None]
+
+    def _run():
+        try:
+            result[0] = fn()
+        except Exception as e:  # noqa: BLE001 — propagated to caller below
+            exc[0] = e
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        msg = f"ZWO SDK call timed out after {timeout:.0f}s"
+        if hint:
+            msg += f" — {hint}"
+        raise SDKTimeoutError(msg)
+    if exc[0] is not None:
+        raise exc[0]
+    return result[0]
 
 
 def clean_camera_name(name: str) -> str:
