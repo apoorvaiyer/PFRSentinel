@@ -748,7 +748,8 @@ class TestReviveMissingCamera:
         main_window.config = MagicMock()
         ctrl = CameraControllerQt.__new__(CameraControllerQt)
         ctrl.config = main_window.config
-        ctrl._usb_reset_in_progress = False
+        from ui.controllers.camera_usb_recovery import UsbResetWorker
+        ctrl._usb_reset = UsbResetWorker()
         from PySide6.QtCore import QObject
         QObject.__init__(ctrl)
         return ctrl
@@ -1256,34 +1257,60 @@ class TestControllerRecoveryWiring:
             ctrl._start_usb_reset_worker()
         assert ctrl._unrecoverable_mode is True
 
-    def test_wedged_dying_camera_skips_instead_of_crashing(self, qt_app):
-        """If the previous capture thread is still blocked in the SDK when
-        recovery fires, we MUST NOT issue any new SDK calls — they crash
-        the DLL.  Instead the controller reschedules and waits longer."""
+    def test_wedged_dying_camera_tries_usb_reset_first(self, qt_app):
+        """First wedge: a USB disable/enable (OS-level, safe against a wedged
+        DLL) is attempted to free the stuck thread before any escalation, and
+        no new SDK call is issued."""
         ctrl = self._build_controller()
         wedged = MagicMock()
         wedged.wait_for_capture_thread_exit = MagicMock(return_value=False)
         ctrl._dying_camera = wedged
         ctrl.start_capture = MagicMock()
         ctrl._schedule_auto_recovery = MagicMock()
+        ctrl._start_usb_reset_worker = MagicMock()
         ctrl._on_auto_recovery_fire()
         ctrl.start_capture.assert_not_called()
-        ctrl._schedule_auto_recovery.assert_called_once()
+        ctrl._start_usb_reset_worker.assert_called_once()
+        ctrl._schedule_auto_recovery.assert_not_called()
         assert ctrl._wedged_skip_count == 1
-        assert ctrl._dying_camera is wedged  # still held for next attempt
+        assert ctrl._wedge_usb_reset_tried is True
+        assert ctrl._dying_camera is wedged
 
-    def test_wedged_dying_camera_enters_unrecoverable_after_max_skips(self, qt_app):
+    def test_wedge_escalates_to_unrecoverable_when_restart_blocked(self, qt_app):
+        """USB toggle did not free the thread and a restart is blocked (outside
+        the capture window) -> unrecoverable, asking for a manual restart."""
         from ui.controllers.camera_controller import _MAX_WEDGED_SKIPS
         ctrl = self._build_controller()
         wedged = MagicMock()
         wedged.wait_for_capture_thread_exit = MagicMock(return_value=False)
         ctrl._dying_camera = wedged
         ctrl.start_capture = MagicMock()
-        ctrl._schedule_auto_recovery = MagicMock()
-        for _ in range(_MAX_WEDGED_SKIPS):
+        ctrl._start_usb_reset_worker = MagicMock()
+        for _ in range(_MAX_WEDGED_SKIPS + 1):
             ctrl._on_auto_recovery_fire()
         assert ctrl._unrecoverable_mode is True
         ctrl.start_capture.assert_not_called()
+
+    def test_wedge_restarts_app_inside_window(self, qt_app):
+        """Inside the capture window, with a prior successful capture, an
+        unfreeable wedge restarts the app rather than going dark."""
+        import time as _t
+        from ui.controllers.camera_controller import _MAX_WEDGED_SKIPS
+        ctrl = self._build_controller()
+        ctrl.config.get = MagicMock(
+            side_effect=lambda k, d=None: 'always' if k == 'scheduled_capture_mode' else d
+        )
+        ctrl._last_successful_frame_ts = _t.time()
+        ctrl.main_window.restart_application = MagicMock(return_value=True)
+        wedged = MagicMock()
+        wedged.wait_for_capture_thread_exit = MagicMock(return_value=False)
+        ctrl._dying_camera = wedged
+        ctrl.start_capture = MagicMock()
+        ctrl._start_usb_reset_worker = MagicMock()
+        for _ in range(_MAX_WEDGED_SKIPS):
+            ctrl._on_auto_recovery_fire()
+        assert ctrl.main_window.restart_application.called
+        assert ctrl._unrecoverable_mode is False
 
     def test_wedged_skip_count_resets_when_thread_finally_exits(self, qt_app):
         ctrl = self._build_controller()
