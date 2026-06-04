@@ -38,6 +38,14 @@ PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ; Setup icon
 SetupIconFile=..\assets\app_icon.ico
+; Close a running instance before upgrading — it locks the exe and _internal
+; DLLs/pyds, which would otherwise fail the file copy. Restart Manager closes
+; (and, with RestartApplications, relaunches) instances the installer can reach.
+; An elevated auto-start instance is closed separately via --shutdown in
+; PrepareToInstall below, since a non-elevated installer can't terminate it.
+CloseApplications=yes
+RestartApplications=yes
+CloseApplicationsFilter=*.exe,*.dll,*.pyd
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -368,6 +376,52 @@ begin
   end;
 end;
 
+{ ===================================================================== }
+{  Close / relaunch a running instance across an upgrade                 }
+{ ===================================================================== }
+
+function AutostartTaskExists: Boolean;
+{ True if the logon scheduled task is registered (auto-start is enabled). }
+var
+  ResultCode: Integer;
+begin
+  Result := Exec('schtasks.exe', '/Query /TN "PFR Sentinel Autostart"', '',
+                 SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+{ Ask a running instance to quit GRACEFULLY before we overwrite its files.
+  Restart Manager (CloseApplications) handles a normally-launched instance, but
+  the auto-start logon task runs the app elevated (/RL HIGHEST) and a
+  non-elevated installer cannot terminate an elevated process. The app can be
+  asked to exit itself, though: --shutdown signals the running instance over its
+  single-instance channel (works regardless of elevation, and releases the
+  camera cleanly). No-op on builds that predate --shutdown — Restart Manager and
+  the close-applications prompt remain the fallback. }
+var
+  ResultCode: Integer;
+  ExePath: String;
+  Tries: Integer;
+begin
+  Result := '';
+  ExePath := ExpandConstant('{app}\{#MyAppExeName}');
+  if not FileExists(ExePath) then
+    Exit;
+  Log('PrepareToInstall: asking any running instance to exit (--shutdown)...');
+  { Send quit and poll until the instance is gone (file locks released).
+    --shutdown exits 0 when it signalled a live instance, 1 when none is
+    running; re-poll while it keeps reporting 0. Capped at ~10s so an old build
+    (which errors on the unknown flag, exit code <> 0) can't stall the installer. }
+  Tries := 0;
+  while (Tries < 10)
+        and ShellExec('', ExePath, '--shutdown', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+        and (ResultCode = 0) do
+  begin
+    Sleep(1000);
+    Tries := Tries + 1;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   InstallType: String;
@@ -423,6 +477,14 @@ begin
                        '--register-startup', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
         Log('Startup: could not launch --register-startup (non-fatal)');
     end;
+
+    { After an UPGRADE, if the logon task exists, relaunch now so capture
+      resumes without waiting for the next logon. /Run uses the task's stored
+      HIGHEST privileges — an elevated relaunch with no UAC prompt. The single-
+      instance guard makes this a no-op if something already relaunched. }
+    if PostHogIsUpgrade and AutostartTaskExists then
+      Exec('schtasks.exe', '/Run /TN "PFR Sentinel Autostart"', '',
+           SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 

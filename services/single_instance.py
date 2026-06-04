@@ -25,9 +25,15 @@ class SingleInstanceGuard(QObject):
 
     Emits ``activate_requested`` on the owning (first) instance whenever a
     second launch attempt connects, so the UI can restore/raise its window.
+    Emits ``quit_requested`` instead when the connecting client sends the
+    ``quit`` command (the installer's ``--shutdown`` path), so the running
+    instance can shut down cleanly and release the camera before an upgrade
+    replaces its files. A self-initiated quit works even when the running app
+    is elevated, which a non-elevated installer cannot force-terminate.
     """
 
     activate_requested = Signal()
+    quit_requested = Signal()
 
     def __init__(self, name: str = _SERVER_NAME):
         super().__init__()
@@ -58,6 +64,13 @@ class SingleInstanceGuard(QObject):
         QLocalServer.removeServer(self._name)
 
         self._server = QLocalServer(self)
+        # Grant access to the same user explicitly. The installer's --shutdown
+        # helper runs at medium integrity while an auto-started instance runs
+        # elevated (high integrity); UserAccessOption makes the same-user DACL
+        # explicit so the medium-integrity helper can still connect to ask the
+        # elevated instance to quit. (The pipe's mandatory label stays default,
+        # so the integrity levels themselves don't block the write.)
+        self._server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         self._server.newConnection.connect(self._on_new_connection)
         if not self._server.listen(self._name):
             # Couldn't claim the lock and couldn't connect — don't block startup,
@@ -73,6 +86,35 @@ class SingleInstanceGuard(QObject):
         conn = self._server.nextPendingConnection() if self._server else None
         if conn is None:
             return
-        # We don't need the payload; any connection means "surface the window".
+        # Read the small command payload. "quit" asks for a clean shutdown
+        # (installer upgrade path); anything else (or nothing) means "surface
+        # the window" — the behaviour a second app launch relies on.
+        command = b""
+        if conn.waitForReadyRead(200):
+            command = bytes(conn.readAll())
         conn.disconnectFromServer()
-        self.activate_requested.emit()
+        if command.strip().lower().startswith(b"quit"):
+            app_logger.info("Single-instance: received quit command — shutting down")
+            self.quit_requested.emit()
+        else:
+            self.activate_requested.emit()
+
+
+def request_shutdown(name: str = _SERVER_NAME, timeout_ms: int = 1500) -> bool:
+    """Ask a running PFR Sentinel instance to quit cleanly via its single-instance
+    channel. Returns True if an instance was found and signalled, False if none
+    is running. Requires a QCoreApplication to already exist.
+
+    Used by the installer (``--shutdown``) to release locked files + the camera
+    before an upgrade. Works regardless of the running app's elevation, because
+    the app terminates itself — no cross-process kill, no UAC prompt."""
+    sock = QLocalSocket()
+    sock.connectToServer(name)
+    if not sock.waitForConnected(timeout_ms):
+        return False  # nothing listening — no running instance
+    sock.write(b"quit")
+    sock.flush()
+    sock.waitForBytesWritten(timeout_ms)
+    # Give the server a moment to read the command before the pipe tears down.
+    sock.waitForDisconnected(timeout_ms)
+    return True
