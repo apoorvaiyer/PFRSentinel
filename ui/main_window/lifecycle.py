@@ -193,8 +193,11 @@ class _MainWindowLifecycleMixin:
                         self.settings_panel.tray_enabled_switch.setChecked(False)
                     return
 
-                self.system_tray = SystemTrayQt(self, QApplication.instance(), auto_start=False)
-                self.system_tray._is_visible = True  # Window is currently visible
+                # start_hidden=False: enabling tray from Settings must not yank
+                # the window away — it stays open and only hides on close.
+                self.system_tray = SystemTrayQt(
+                    self, QApplication.instance(), auto_start=False, start_hidden=False
+                )
                 app_logger.info("System tray enabled - window will minimize to tray on close")
 
             except Exception as e:

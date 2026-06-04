@@ -305,7 +305,8 @@ a = Analysis(
         # 'pydoc', 'xmlrpc' — used transitively by scipy stdlib imports
         
         # === Exclude unused PySide6 modules ===
-        'PySide6.QtNetwork',
+        # QtNetwork is NOT excluded — services/single_instance.py uses
+        # QLocalServer/QLocalSocket for the single-instance guard.
         'PySide6.QtWebEngine', 'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets',
         'PySide6.Qt3DCore', 'PySide6.Qt3DRender', 'PySide6.Qt3DInput',
         'PySide6.Qt3DLogic', 'PySide6.Qt3DAnimation', 'PySide6.Qt3DExtras',

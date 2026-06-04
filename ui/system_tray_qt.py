@@ -35,25 +35,28 @@ class SystemTrayQt(QObject):
     stop_capture_signal = Signal()
     exit_app_signal = Signal()
     
-    def __init__(self, window, app, auto_start=False, auto_stop=None):
+    def __init__(self, window, app, auto_start=False, auto_stop=None, start_hidden=True):
         """
         Args:
             window: MainWindow instance
             app: QApplication instance
             auto_start: Start capture automatically
             auto_stop: Stop after N seconds
+            start_hidden: Hide the window on init (startup-to-tray). When False,
+                the window stays visible — used when tray mode is toggled on
+                from Settings, where yanking the window away is jarring UX.
         """
         super().__init__()
-        
+
         if not PYSTRAY_AVAILABLE:
             raise ImportError("pystray is not installed")
-        
+
         self.window = window
         self.app = app
         self.auto_start = auto_start
         self.auto_stop = auto_stop
         self.tray_icon = None
-        self._is_visible = False
+        self._is_visible = not start_hidden
         
         # Connect signals to slots
         self.show_window_signal.connect(self._do_show_window)
@@ -67,10 +70,11 @@ class SystemTrayQt(QObject):
         
         # Setup tray icon
         self._setup_tray()
-        
-        # Start minimized to tray
-        self.window.hide()
-        
+
+        # Start minimized to tray (only on startup-to-tray, not on a Settings toggle)
+        if start_hidden:
+            self.window.hide()
+
         # Auto-start capture if requested
         if auto_start:
             QTimer.singleShot(3000, self._auto_start_capture)

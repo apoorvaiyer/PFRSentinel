@@ -149,7 +149,16 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
     app.setApplicationVersion(__version__)
-    
+
+    # Enforce single instance before any heavy startup work. A second launch
+    # (easy to do when we're sitting in the tray) signals the running instance
+    # to surface its window, then exits here.
+    from services.single_instance import SingleInstanceGuard
+    instance_guard = SingleInstanceGuard()
+    if instance_guard.already_running():
+        app_logger.info("Exiting: PFR Sentinel is already running.")
+        sys.exit(0)
+
     # Set default font
     font = QFont("Segoe UI", 10)
     app.setFont(font)
@@ -213,6 +222,19 @@ def main():
         window.show()
         splash.finish()
     
+    # When a second launch pokes us, restore and raise the window (handles the
+    # tray case where it's hidden, and the minimized-taskbar case).
+    def _surface_window():
+        window.show()
+        window.setWindowState(
+            (window.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive
+        )
+        window.activateWindow()
+        window.raise_()
+        if window.system_tray is not None:
+            window.system_tray._is_visible = True
+    instance_guard.activate_requested.connect(_surface_window)
+
     # Load configuration
     window.load_config()
     
