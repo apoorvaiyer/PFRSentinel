@@ -169,6 +169,28 @@ class _MainWindowLifecycleMixin:
         self.system_tray = None
         self.close()
 
+    def restart_application(self, reason: str = "") -> bool:
+        """Relaunch the app cleanly — last-resort camera recovery.
+
+        Schedules a detached waiter to relaunch us, then runs the normal
+        tray-exit teardown (which stops capture/outputs and releases the
+        single-instance lock and web-server port) so the replacement can claim
+        them. Returns True if a restart was scheduled (app is now quitting),
+        False if it could not be — the caller then falls back to alert-and-wait.
+        """
+        from services.app_restart import schedule_restart
+        if not schedule_restart(reason):
+            return False
+        app_logger.warning(f"Restarting application for camera recovery — {reason}")
+        # Force a full teardown even in tray mode: clearing system_tray makes
+        # closeEvent run the real shutdown path instead of hiding to tray.
+        try:
+            self.quit_application()
+        except Exception:
+            from PySide6.QtWidgets import QApplication
+            QApplication.quit()
+        return True
+
     def set_tray_mode(self, enabled: bool):
         """Enable or disable system tray mode
 

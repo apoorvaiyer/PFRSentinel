@@ -12,6 +12,7 @@ import concurrent.futures
 from typing import Optional, List, Dict, Callable, Any
 from .camera_config import verify_camera_identity, configure_camera
 from .camera_utils import call_with_timeout, SDKTimeoutError
+from .sdk_lock import SDK_LOCK
 
 # Hard upper bounds (seconds) on blocking ZWO SDK C-calls. These calls cannot
 # be interrupted, so an unbounded wait wedges the connection/disconnection path
@@ -69,7 +70,10 @@ class CameraConnection:
 
         # Thread safety
         self._cleanup_lock = threading.Lock()
-        self.sdk_lock = threading.Lock()  # Guards all SDK calls (capture vs disconnect race)
+        # Process-global: every connection shares one SDK lock so a dying
+        # capture thread and a fresh reconnect can't both call the (non
+        # thread-safe) ZWO DLL at once. See services/camera/sdk_lock.py.
+        self.sdk_lock = SDK_LOCK  # Guards all SDK calls (capture vs disconnect race)
 
         # Callback for persisting camera name to config
         self.config_callback: Optional[Callable[[str, Any], None]] = None

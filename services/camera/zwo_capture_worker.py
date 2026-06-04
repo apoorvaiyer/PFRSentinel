@@ -305,13 +305,18 @@ def capture_loop(camera: "ZWOCamera"):
     long_retry_cycle = 0
     last_schedule_log = None
     frames_captured = 0
-    # The first frame after a scheduled-window reconnect runs against a
-    # freshly cold-re-inited SDK (off-peak released it). The ZWO SDK's first
-    # control op in that state frequently fails once with "Camera closed" and
-    # recovers on a clean reopen. When set, the next capture failure is
-    # absorbed quietly (no Discord alert, no consecutive-error count) instead
-    # of masquerading as a fault — see the 2026-06-02 16:00 incident.
-    scheduled_warmup_pending = False
+    # The first frame after ANY reconnect (scheduled-window transition OR
+    # error-recovery) runs against a freshly (re)opened SDK handle. The ZWO
+    # SDK's first control op in that state frequently fails once with "Camera
+    # closed" and recovers on a clean reopen. When set, the next capture
+    # failure is absorbed quietly (no Discord alert, no consecutive-error
+    # count) via one silent reopen, instead of masquerading as a fault and
+    # kicking off another full disconnect/reconnect cycle. Leaving the
+    # error-recovery path WITHOUT this absorption is what produced three
+    # open/close cycles in 35s on 2026-06-03 16:32 and wedged the ZWO DLL
+    # (the SDK can't take that churn — it recommends 10-15s between ops).
+    # See also the 2026-06-02 16:00 scheduled-reconnect incident.
+    warmup_pending = False
     # Heartbeat + state flags observed by the UI watchdog. _last_frame_time
     # is updated after every successful capture. long_retry_mode_public
     # mirrors the local long_retry_mode so the watchdog can skip bogus
@@ -424,7 +429,7 @@ def capture_loop(camera: "ZWOCamera"):
                             wait_end = time.time() + 3.0
                             while camera.is_capturing and time.time() < wait_end:
                                 time.sleep(0.2)
-                            scheduled_warmup_pending = True
+                            warmup_pending = True
                             # Suppress watchdog during the first post-reconnect exposure.
                             camera._last_frame_time = time.time()
 
@@ -434,7 +439,7 @@ def capture_loop(camera: "ZWOCamera"):
                 img, metadata = camera.capture_single_frame()
 
                 consecutive_errors = 0
-                scheduled_warmup_pending = False
+                warmup_pending = False
                 camera._last_frame_time = time.time()
                 if long_retry_mode:
                     long_retry_mode = False
@@ -537,11 +542,11 @@ def capture_loop(camera: "ZWOCamera"):
                 # reopen. Reuse the recovery reopen flow, but without a Discord
                 # alert or a consecutive-error count so the expected cold-open
                 # quirk doesn't read as a fault (see 2026-06-02 16:00 incident).
-                if scheduled_warmup_pending:
-                    scheduled_warmup_pending = False
+                if warmup_pending:
+                    warmup_pending = False
                     camera.log(
-                        f"First frame after scheduled reconnect failed ({e}) — "
-                        "reopening silently (known ZWO cold-open quirk)"
+                        f"First frame after reconnect failed ({e}) — reopening "
+                        "silently (known ZWO cold-open quirk, no fault raised)"
                     )
                     try:
                         if camera.calibration_manager:
@@ -614,6 +619,12 @@ def capture_loop(camera: "ZWOCamera"):
                         if camera.reconnect_camera_safe():
                             camera.log("✓ Camera reconnected successfully")
                             consecutive_errors = 0
+                            # Absorb the cold-open quirk on the FIRST frame after
+                            # this reopen (same as the scheduled-window path).
+                            # Without this, that benign "Camera closed" counted
+                            # as a fresh fault and triggered another full
+                            # reconnect — the churn that wedged the DLL.
+                            warmup_pending = True
                             camera.log("Waiting 3s for USB bus to stabilise...")
                             wait_end = time.time() + 3.0
                             while camera.is_capturing and time.time() < wait_end:

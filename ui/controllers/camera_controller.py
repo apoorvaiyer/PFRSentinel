@@ -8,13 +8,13 @@ All auto-exposure, calibration, scheduled windows, etc. are handled by ZWOCamera
 from PySide6.QtCore import QObject, QTimer, Signal
 from datetime import datetime
 import os
-import sys
 import threading
 import time
 
 from services.logger import app_logger
 from services.camera import ZWOCamera
 from .camera_settings import apply_camera_settings_async, set_raw16_mode_async
+from .camera_usb_recovery import UsbResetWorker
 
 
 # ZWO SDK errors that corrupt the DLL for the process lifetime — only a
@@ -29,11 +29,11 @@ _UNRECOVERABLE_ERROR_PATTERNS = (
 _DISCORD_ERROR_SUPPRESS_AFTER_ATTEMPTS = 3
 _WEDGED_THREAD_JOIN_TIMEOUT_SEC = 3.0
 _SUSTAINED_CAPTURE_RESET_SEC = 300
-# Max consecutive recovery firings that skip because the old capture thread
-# is still blocked in the ZWO SDK. After this, the SDK is deemed unrecoverable
-# and the user is asked to restart. Windows USB IO usually times out in
-# 30–60s, so 6 × 30s delays covers the pathological case.
-_MAX_WEDGED_SKIPS = 6
+# Wedge handling: the capture thread is stuck inside an uninterruptible ZWO SDK
+# C call. We try ONE USB disable/enable to free it (an OS-level toggle, safe
+# against the wedged DLL), then escalate. Keeping this small means we reach the
+# real cure (a process restart) in minutes, not the ~90 it used to take.
+_MAX_WEDGED_SKIPS = 2
 
 
 class CameraControllerQt(QObject):
@@ -80,11 +80,19 @@ class CameraControllerQt(QObject):
         self._dying_camera = None
         self._unrecoverable_mode = False
         self._usb_reset_attempted = False
-        self._usb_reset_in_progress = False
+        # One worker shared by recovery resets and the user's Revive button so
+        # the two never toggle the same USB device at once.
+        self._usb_reset = UsbResetWorker()
         self._suppress_discord_errors = False
         # Count of consecutive recovery attempts skipped because the dying
         # capture thread is still wedged inside the SDK.
         self._wedged_skip_count = 0
+        # Whether we've already tried one USB toggle to free the current wedge.
+        self._wedge_usb_reset_tried = False
+        # Rolling-hour auto-restart timestamps (boot-loop guard), from config
+        # so the cap survives a relaunch.
+        from .camera_restart_policy import load_restart_history
+        self._restart_times = load_restart_history(self.config)
 
         self._capture_starting = False
         self._usb_reset_done.connect(self._on_usb_reset_done)
@@ -417,6 +425,7 @@ class CameraControllerQt(QObject):
         self._usb_reset_attempted = False
         self._suppress_discord_errors = False
         self._wedged_skip_count = 0
+        self._wedge_usb_reset_tried = False
         self._dying_camera = None
 
         try:
@@ -608,14 +617,28 @@ class CameraControllerQt(QObject):
         if joined:
             self._dying_camera = None
             self._wedged_skip_count = 0
+            self._wedge_usb_reset_tried = False
             return True
         self._wedged_skip_count += 1
+        # The thread is stuck inside an uninterruptible ZWO SDK C call; the
+        # backoff ladder alone can never free it. A USB disable/enable is an
+        # OS-level operation (NOT an SDK call — safe against the wedged DLL)
+        # that usually forces the stuck call to error out so the thread unwinds.
+        # Try it once before escalating to a restart.
+        if not self._wedge_usb_reset_tried and not self._usb_reset.in_progress:
+            self._wedge_usb_reset_tried = True
+            app_logger.warning(
+                "Capture thread wedged in the ZWO SDK — attempting USB "
+                "disable/enable to free it before escalating."
+            )
+            self._start_usb_reset_worker()
+            return False
         if self._wedged_skip_count >= _MAX_WEDGED_SKIPS:
             app_logger.error(
                 f"Previous capture thread still wedged after "
-                f"{self._wedged_skip_count} recovery attempts — giving up."
+                f"{self._wedged_skip_count} recovery attempts."
             )
-            self._enter_unrecoverable_mode(
+            self._escalate_to_restart_or_alert(
                 "capture thread stuck inside ZWO SDK; process restart required"
             )
             return False
@@ -634,82 +657,45 @@ class CameraControllerQt(QObject):
         lowered = message.lower()
         return any(pat in lowered for pat in _UNRECOVERABLE_ERROR_PATTERNS)
 
-    def _run_usb_reset_async(self, camera_name: str, on_done):
-        """Spawn a daemon worker that toggles the camera's USB device and
-        invokes on_done(success: bool, name: str) when finished.
-
-        Serializes via _usb_reset_in_progress so a user-initiated Revive
-        click and a recovery-triggered reset can't toggle the same device
-        in parallel — concurrent pnputil operations race.
-        """
-        from services.camera import clean_camera_name
-        name = clean_camera_name(camera_name or '')
-        if sys.platform != 'win32' or not name:
-            if sys.platform != 'win32':
-                app_logger.info("USB reset unavailable: not on Windows.")
-            else:
-                app_logger.warning("USB reset skipped: no camera name.")
-            on_done(False, name)
-            return
-        if self._usb_reset_in_progress:
-            app_logger.warning(
-                f"USB reset already in progress — ignoring request for '{name}'"
-            )
-            on_done(False, name)
-            return
-        self._usb_reset_in_progress = True
-
-        def worker():
-            ok = False
-            try:
-                from services.usb_reset_win import (
-                    disable_enable_zwo_camera_usb, is_usb_reset_available,
-                )
-                if not is_usb_reset_available():
-                    app_logger.warning("USB reset API unavailable.")
-                else:
-                    ok = bool(disable_enable_zwo_camera_usb(
-                        camera_name=name,
-                        logger=app_logger.info,
-                    ))
-                    app_logger.info(
-                        f"USB reset {'succeeded' if ok else 'did not complete'} "
-                        f"for '{name}'"
-                    )
-            except Exception as e:
-                app_logger.error(f"USB reset raised: {e}")
-            finally:
-                self._usb_reset_in_progress = False
-                on_done(ok, name)
-
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
-
     def _start_usb_reset_worker(self):
         app_logger.warning(
-            "Unrecoverable SDK state — starting USB reset in background worker."
+            "Attempting USB device disable/enable to recover the camera..."
         )
-        self._run_usb_reset_async(
+        self._usb_reset.run_async(
             self.config.get('zwo_selected_camera_name', '') or '',
             lambda ok, _name: self._usb_reset_done.emit(ok),
         )
 
     def _on_usb_reset_done(self, success: bool):
         if success:
+            # The toggle may have freed a wedged capture thread; re-run
+            # recovery, which re-joins the dying thread before any new SDK call.
+            # _wedge_usb_reset_tried stays set so a still-wedged thread escalates
+            # rather than looping resets forever.
             self._schedule_auto_recovery()
             return
-        # Admin denial (CM_Disable_DevNode 0x17) is the usual cause. The ZWO
-        # DLL stays corrupt for the process lifetime without a successful
-        # reset; further retries just re-crash.
-        self._enter_unrecoverable_mode(
-            "USB reset failed — run the application as Administrator or "
-            "restart it to recover"
+        # USB reset failed — usually admin denial (CM_Disable_DevNode 0x17) or
+        # not on Windows. The DLL stays corrupt for the process lifetime, so the
+        # only heal left is a clean process restart (inside the capture window);
+        # otherwise alert and wait for a manual restart.
+        self._escalate_to_restart_or_alert(
+            "USB reset failed — Administrator rights are required to "
+            "disable/enable the camera device"
         )
+
+    def _escalate_to_restart_or_alert(self, last_error: str):
+        """Last resort once in-process recovery is exhausted: restart the app if
+        the policy allows (inside the capture window, not boot-looping), else
+        give up and alert for a manual restart. See camera_restart_policy."""
+        from .camera_restart_policy import attempt_restart
+        if attempt_restart(self, last_error):
+            return
+        self._enter_unrecoverable_mode(last_error)
 
     def revive_missing_camera(self, camera_name: str):
         """Best-effort user-triggered USB reset. Emits camera_revive_done."""
         app_logger.info(f"User-initiated revive for '{camera_name}'")
-        self._run_usb_reset_async(
+        self._usb_reset.run_async(
             camera_name,
             lambda ok, name: self.camera_revive_done.emit(ok, name),
         )
