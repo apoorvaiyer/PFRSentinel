@@ -121,6 +121,9 @@ def main():
                        help='Register the app to run on Windows logon, then exit')
     parser.add_argument('--unregister-startup', action='store_true',
                        help='Remove the Windows logon task, then exit')
+    parser.add_argument('--shutdown', action='store_true',
+                       help='Ask a running instance to quit cleanly, then exit '
+                            '(used by the installer before an upgrade)')
 
     args = parser.parse_args()
 
@@ -133,6 +136,21 @@ def main():
         else:
             ok = autostart.disable()
         sys.exit(0 if ok else 1)
+
+    # Ask a running instance to quit cleanly (installer upgrade path). Needs a
+    # Qt event loop for the local-socket round-trip, but no GUI.
+    if args.shutdown:
+        from PySide6.QtCore import QCoreApplication
+        from services.single_instance import request_shutdown
+        # Bind to a name so the application object isn't GC'd mid round-trip.
+        _shutdown_app = QCoreApplication(sys.argv)
+        signalled = request_shutdown()
+        app_logger.info(
+            "Shutdown request: "
+            + ("signalled the running instance" if signalled
+               else "no running instance found")
+        )
+        sys.exit(0 if signalled else 1)
 
     # Headless mode - no GUI at all
     if args.headless:
@@ -152,7 +170,10 @@ def main():
 
     # Enforce single instance before any heavy startup work. A second launch
     # (easy to do when we're sitting in the tray) signals the running instance
-    # to surface its window, then exits here.
+    # to surface its window, then exits here. GUI-mode only — headless,
+    # --shutdown, and --register-startup all exit above, so a headless instance
+    # has no single-instance server and can't be asked to quit via --shutdown
+    # (the auto-start path uses --tray, which does run the guard).
     from services.single_instance import SingleInstanceGuard
     instance_guard = SingleInstanceGuard()
     if instance_guard.already_running():
@@ -234,6 +255,18 @@ def main():
         if window.system_tray is not None:
             window.system_tray._is_visible = True
     instance_guard.activate_requested.connect(_surface_window)
+    # A clean-quit request — from the installer's --shutdown before an upgrade,
+    # or from Windows ending the session (logoff/shutdown, or the installer's
+    # Restart Manager) — must tear down for real (release the camera, save
+    # config) instead of hiding to the tray, so locked files don't block an
+    # upgrade and the camera is released gracefully.
+    instance_guard.quit_requested.connect(window.quit_application)
+    try:
+        app.commitDataRequest.connect(lambda _sm: window.quit_application())
+    except (AttributeError, TypeError):
+        app_logger.debug(
+            "commitDataRequest unavailable — session-end teardown falls back to closeEvent"
+        )
 
     # Load configuration
     window.load_config()
