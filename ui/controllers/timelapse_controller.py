@@ -66,10 +66,11 @@ class TimelapseController(QObject):
     def on_capture_stopped(self):
         """Stop the active session when capture is stopped.
 
-        If a session is actively recording, ffmpeg needs to rewrite the mp4
-        atom table (+faststart) which can take 10–40 s. We offload that to a
-        background thread so the Stop button stays responsive; UI feedback
-        is provided via finalizing_started / finalizing_finished signals.
+        Finalizing flushes ffmpeg's final frames and joins the process. With
+        fragmented MP4 the file is already playable, so this is usually quick —
+        but a large buffered session on a slow disk can still take a few seconds,
+        so we offload it to a background thread to keep the Stop button
+        responsive; UI feedback comes via finalizing_started / finalizing_finished.
         """
         if not self._writer.get_status().get('recording'):
             # Fast path — no active session to finalize.

@@ -397,9 +397,9 @@ class _MainWindowCaptureMixin:
     def _wait_for_timelapse_finalization(self, timeout_sec: float = 75.0):
         """Show a non-cancelable progress dialog while the timelapse finalizes.
 
-        ffmpeg's +faststart rewrite can take 10–40 s on a long session; killing
-        it mid-rewrite truncates the mp4. We block the close with a visible
-        dialog rather than letting the window vanish silently.
+        Finalizing flushes ffmpeg's buffered frames and joins the process; the
+        fragmented MP4 on disk is already playable, but we still block the close
+        with a visible dialog rather than letting the window vanish mid-write.
         """
         if not self.timelapse_controller or not self.timelapse_controller.is_finalizing():
             return

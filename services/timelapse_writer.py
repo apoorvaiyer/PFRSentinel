@@ -250,8 +250,9 @@ class TimelapseWriter:
 
         clean_exit = True
         try:
-            # Allow up to 60 s — +faststart rewrites the entire file after encoding,
-            # which can take 20–40 s for a large overnight session.
+            # Fragmented MP4 needs no end-of-stream rewrite, so ffmpeg exits soon
+            # after stdin closes — it only has to flush the final buffered frames.
+            # The generous timeout just absorbs a slow disk on a large session.
             proc.wait(timeout=60)
             mins, secs = divmod(finished_elapsed, 60)
             app_logger.info(
@@ -267,11 +268,11 @@ class TimelapseWriter:
         self._session_date = None
         self._session_start = None
 
-        # Wait for OS to finish flushing the file to disk — ffmpeg's +faststart
-        # rewrites the MP4 atom table after encoding, and on Windows the file
-        # may not be fully available immediately after proc.wait() returns.
+        # Wait for the OS to finish flushing the file to disk — on Windows the
+        # file may not report a stable size immediately after proc.wait() returns,
+        # and the Discord poster reads it right after.
         if clean_exit and finished_path:
-            time.sleep(2)  # Initial delay for +faststart rewrite to begin
+            time.sleep(1)
             for _ in range(10):
                 try:
                     size = os.path.getsize(finished_path)
@@ -470,6 +471,11 @@ class TimelapseWriter:
         fps = self._config.get('playback_fps', 24)
         max_dim = int(self._config.get('output_max_dim', 0))
 
+        # Force a keyframe every playback-second. Each fragment is closed on a
+        # keyframe, so this bounds a fragment to ~1s of video and caps how much
+        # trailing footage a hard kill (USB drop, power loss) can lose.
+        gop = max(1, int(fps))
+
         cmd = [
             get_ffmpeg_path(),
             '-f', 'rawvideo',
@@ -481,6 +487,7 @@ class TimelapseWriter:
             '-crf', str(crf),
             '-preset', str(preset),
             '-r', str(fps),
+            '-g', str(gop),
             '-pix_fmt', 'yuv420p',
         ]
 
@@ -489,7 +496,23 @@ class TimelapseWriter:
             cmd += ['-vf', f'scale={max_dim}:{max_dim}:force_original_aspect_ratio=decrease']
 
         cmd += [
-            '-movflags', '+faststart',   # correct duration metadata; moov moved to front after encode
+            # Fragmented MP4: the header (moov) is written up front (+empty_moov)
+            # and the stream is recorded as self-contained fragments flushed at
+            # each keyframe (+frag_keyframe). This keeps the file playable even
+            # when the session ends abnormally — a camera USB sleep, crash, or
+            # power loss leaves a valid video up to the last flushed fragment
+            # instead of an unplayable file missing its trailing moov atom.
+            # +faststart is intentionally NOT used: it requires a clean end-of-
+            # stream rewrite (the exact step that never runs on an abnormal exit),
+            # and the moov is already at the front here so progressive playback
+            # still works. +default_base_moof improves player compatibility.
+            '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
+            # Flush each fragment to disk immediately instead of waiting for the
+            # ~256KB I/O buffer to fill. Matters most for a dark, well-compressing
+            # night sky, where the buffer would otherwise hold minutes of frames
+            # that a hard kill (USB sleep, power loss) would lose. Cheap at
+            # timelapse frame rates.
+            '-flush_packets', '1',
             '-y',
             output_path,
         ]

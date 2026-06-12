@@ -217,23 +217,34 @@ def main():
     
     # Check if tray mode should be enabled (from config or --tray argument)
     tray_enabled = args.tray or window.config.get('tray_mode_enabled', False)
-    
-    # System tray mode - start minimized to tray
+
+    # Start hidden in the tray ONLY when --tray was explicitly passed (the
+    # autostart-on-logon task). A manual launch with tray_mode_enabled in config
+    # just means "hide to tray on close" — the window must stay visible so it
+    # doesn't look like the app failed to open. See closeEvent in
+    # ui/main_window/lifecycle.py for the hide-to-tray-on-close behaviour.
+    start_hidden = args.tray
+
     if tray_enabled:
         try:
             from ui.system_tray_qt import SystemTrayQt
-            tray = SystemTrayQt(window, app, auto_start=args.auto_start, auto_stop=args.auto_stop)
+            tray = SystemTrayQt(
+                window, app, auto_start=args.auto_start, auto_stop=args.auto_stop,
+                start_hidden=start_hidden,
+            )
             window.system_tray = tray  # Store reference so window knows it's in tray mode
-            
+
             # If --tray was explicitly provided, save it to config
             if args.tray:
                 window.config.set('tray_mode_enabled', True)
                 window.config.save()
-            
-            # Close splash when entering tray mode
+
+            if not start_hidden:
+                window.show()
+
             splash.finish()
-            
-            # Window will be shown by tray when user clicks "Show Window"
+
+            # When start_hidden, the window is shown by the tray's "Show Window"
         except ImportError as e:
             app_logger.error(f"System tray mode requires pystray: {e}")
             print(f"Error: Install pystray with: pip install pystray", file=sys.stderr)
