@@ -28,6 +28,36 @@ def _set_roi_with_retry(camera, width, height, image_type, log, attempts=5, dela
             time.sleep(delay)
 
 
+def wait_for_controls_ready(camera, log, timeout: float = 8.0, poll_interval: float = 0.5) -> Dict:
+    """Poll get_controls() until the control count stops growing, then return it.
+
+    A freshly-opened ASI camera enumerates its controls incrementally: the
+    ASI676MC reports only ~10 of its ~17 controls in the first ~1s after
+    open(), and set_roi() returns ASI_ERROR_INVALID_SIZE for the whole
+    interval the firmware is still coming up.  A fixed sleep guesses at how
+    long that takes; polling until two consecutive reads return the same
+    count adapts to a slow cold boot without over-waiting on a warm reconnect.
+
+    Returns the final controls dict (so the caller need not re-fetch).
+    """
+    deadline = time.time() + timeout
+    prev_count = None
+    while True:
+        controls = camera.get_controls()
+        count = len(controls)
+        if count == prev_count:
+            break  # unchanged across two consecutive reads — enumeration settled
+        if prev_count is not None:
+            log(f"  Controls still enumerating: {prev_count} → {count}")
+        prev_count = count
+        if time.time() >= deadline:
+            log(f"  ⚠ Control count still changing at timeout ({count}) — proceeding anyway")
+            break
+        time.sleep(poll_interval)
+    log(f"  Available controls: {len(controls)} (enumeration settled)")
+    return controls
+
+
 def validate_control(controls, control_type, value, name, log) -> Tuple[Any, Optional[Dict]]:
     """Validate and clamp a control value to the camera's supported range."""
     ctrl = next((c for c in controls.values() if c['ControlType'] == control_type), None)

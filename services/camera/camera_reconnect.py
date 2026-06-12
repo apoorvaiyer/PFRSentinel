@@ -238,9 +238,13 @@ def reconnect_safe(conn, target_camera_name: Optional[str] = None,
     # Connect with settings.
     # post_recovery extends the per-open retry budget when we just came
     # out of a disable/enable cycle — the driver may still be binding.
+    # _skip_roi_usb_recovery: this function owns USB escalation (the
+    # stuck-handle block below), so suppress connect()'s own escalation to
+    # avoid a double disable/enable on a set_roi "Invalid size".
     if conn.connect(target_index, settings,
                     expected_camera_name=camera_to_find,
-                    post_recovery=post_recovery):
+                    post_recovery=post_recovery,
+                    _skip_roi_usb_recovery=True):
         return True
 
     # --- Stuck-handle escalation ---
@@ -260,7 +264,7 @@ def reconnect_safe(conn, target_camera_name: Optional[str] = None,
             conn.camera_index = target_index
             if conn.connect(target_index, settings,
                             expected_camera_name=camera_to_find,
-                            post_recovery=True):
+                            post_recovery=True, _skip_roi_usb_recovery=True):
                 return True
         if conn._usb_disable_enable_func and not conn._is_running_as_admin():
             conn.log("⚠ USB disable/enable was skipped because app is not running as Administrator")
@@ -281,4 +285,5 @@ def reconnect_safe(conn, target_camera_name: Optional[str] = None,
 
     target_index = detected[0]['index']
     conn.camera_index = target_index
-    return conn.connect(target_index, settings, expected_camera_name=camera_to_find)
+    return conn.connect(target_index, settings, expected_camera_name=camera_to_find,
+                        _skip_roi_usb_recovery=True)

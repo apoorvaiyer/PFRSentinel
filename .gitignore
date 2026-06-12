@@ -85,3 +85,5 @@ wiki/
 .code-review-graph/
 .kiro/
 .mcp.json
+find_asi.ps1
+fix_profile.ps1

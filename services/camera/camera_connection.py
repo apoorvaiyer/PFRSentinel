@@ -10,7 +10,7 @@ import time
 import threading
 import concurrent.futures
 from typing import Optional, List, Dict, Callable, Any
-from .camera_config import verify_camera_identity, configure_camera
+from .camera_config import verify_camera_identity, configure_camera, wait_for_controls_ready
 from .camera_utils import call_with_timeout, SDKTimeoutError
 from .sdk_lock import SDK_LOCK
 
@@ -20,6 +20,7 @@ from .sdk_lock import SDK_LOCK
 _OPEN_TIMEOUT_SEC = 20.0          # asi.Camera() — ASIOpenCamera + ASIInitCamera
 _PROPERTY_TIMEOUT_SEC = 10.0      # get_camera_property / get_controls
 _CONFIGURE_TIMEOUT_SEC = 30.0     # configure_camera (set_roi has internal retries)
+_CONTROLS_READY_TIMEOUT_SEC = 12.0  # wait_for_controls_ready (polls get_controls until settled)
 # Max wait for the capture worker to release sdk_lock during disconnect. If it
 # is wedged inside an uninterruptible SDK call it holds the lock; rather than
 # block shutdown forever, we abandon the close and let higher-level recovery
@@ -292,7 +293,8 @@ class CameraConnection:
 
     def connect(self, camera_index: int = 0, settings: Optional[Dict[str, Any]] = None,
                 expected_camera_name: Optional[str] = None,
-                post_recovery: bool = False) -> bool:
+                post_recovery: bool = False,
+                _skip_roi_usb_recovery: bool = False) -> bool:
         """
         Connect to a specific camera.
 
@@ -306,6 +308,14 @@ class CameraConnection:
                 and re-run detect_cameras() between attempts, because the camera
                 may appear in the SDK list before it's actually openable, and
                 its index may shift on re-enumeration.
+            _skip_roi_usb_recovery: Internal flag. Suppresses connect()'s own
+                USB disable/enable escalation on a set_roi "Invalid size".
+                Set True (a) on the single self-recursive retry, to prevent an
+                infinite reset loop if the camera stays wedged, and (b) by
+                reconnect_safe(), which owns escalation for its flows — so the
+                two layers don't double-fire a USB power-cycle. Direct callers
+                (e.g. the initial Start Capture path) leave it False to get
+                self-healing.
 
         Returns:
             True if successful, False otherwise
@@ -425,18 +435,17 @@ class CameraConnection:
             self.log(f"  Sensor ADC: {self.bit_depth}-bit")
             self.log(f"  RAW16 Support: {'Yes' if self.supports_raw16 else 'No'}")
 
-            # Get controls info
+            # Wait for control enumeration to settle before configuring.  The
+            # camera firmware enumerates controls incrementally after open();
+            # set_roi() returns Invalid size while it is still partial (the
+            # ASI676MC reports only 10/17 controls for ~1s on a cold boot).
+            # Polling until the count stops growing is more reliable than a
+            # fixed sleep — fast on a warm reconnect, patient on a cold boot.
             controls = call_with_timeout(
-                self.camera.get_controls, _PROPERTY_TIMEOUT_SEC,
-                hint="get_controls after open",
+                lambda: wait_for_controls_ready(self.camera, self.log),
+                _CONTROLS_READY_TIMEOUT_SEC,
+                hint="waiting for controls to enumerate",
             )
-            self.log(f"  Available controls: {len(controls)}")
-
-            # Stabilization delay — camera firmware needs time to fully enumerate
-            # controls after open().  0.3s is enough for a warm reconnect but
-            # not for a cold boot: the ASI676MC reports only 10/17 controls at
-            # 0.3s, causing set_roi to return Invalid size immediately.
-            time.sleep(1.5)
 
             # Apply settings — bounded so a camera that opens but won't
             # configure fails the connect cleanly instead of hanging.
@@ -483,6 +492,34 @@ class CameraConnection:
             # Add diagnostic information for "Invalid ID" errors
             if "Invalid ID" in str(e):
                 self._log_invalid_id_diagnostics(camera_index)
+
+            # "Invalid size" on a camera that *opened* fine means set_roi was
+            # rejected even at the camera's own native full-frame resolution —
+            # the firmware is wedged (half-enumerated controls, locked ROI).
+            # An SDK reset cannot clear this; only a USB disable/enable does.
+            # Escalate once, then retry the open+configure on a clean device.
+            if (not _skip_roi_usb_recovery
+                    and "invalid size" in str(e).lower()
+                    and expected_camera_name
+                    and self._usb_disable_enable_func):
+                if not self._is_running_as_admin():
+                    self.log("⚠ set_roi failed (camera wedged) but USB disable/enable "
+                             "needs Administrator — cannot auto-recover. Run the app as "
+                             "Administrator, or physically replug the camera's USB.")
+                    return False
+                self.log("⚠ set_roi rejected at native full-frame (wedged firmware) "
+                         "— escalating to USB disable/enable to power-cycle the camera...")
+                from .camera_reconnect import run_recovery_ladder
+                target_found, target_index, _post = run_recovery_ladder(
+                    self, expected_camera_name, force_disable_enable=True
+                )
+                if target_found and target_index is not None:
+                    return self.connect(
+                        target_index, settings,
+                        expected_camera_name=expected_camera_name,
+                        post_recovery=True, _skip_roi_usb_recovery=True,
+                    )
+                self.log("✗ Camera still not recoverable after USB disable/enable")
 
             return False
 
