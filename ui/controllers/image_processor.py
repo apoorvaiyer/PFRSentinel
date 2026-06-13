@@ -251,24 +251,7 @@ class ImageProcessorWorker(QThread):
             # Cache stretched image for preview
             stretched_for_preview = img.copy()
 
-            # Feed clean (pre-enhancement) frame to background calibration service.
-            # Must happen before auto-brightness / saturation / sharpening which
-            # make detection results non-deterministic across frames.
             allsky_cfg = config.get('allsky_overlay', {})
-            if self._calibration_service and allsky_cfg.get('enabled', False):
-                try:
-                    from services.observing_window import is_observing_window
-                    if is_observing_window(config, metadata, feature="All-sky calibration"):
-                        weather_cfg = config.get('weather', {})
-                        cal_lat = float(weather_cfg.get('latitude', 0) or 0)
-                        cal_lon = float(weather_cfg.get('longitude', 0) or 0)
-                        if cal_lat != 0 or cal_lon != 0:
-                            from datetime import timezone as _tz
-                            self._calibration_service.feed_frame(
-                                stretched_for_preview, datetime.now(_tz.utc), cal_lat, cal_lon,
-                            )
-                except Exception as e:
-                    app_logger.warning(f"Calibration feed skipped: {e}")
 
             # Apply auto brightness
             if auto_brightness:
@@ -353,6 +336,27 @@ class ImageProcessorWorker(QThread):
                 except Exception as e:
                     app_logger.debug(f"ML prediction skipped: {e}")
             
+            # Feed clean (pre-enhancement) frame to the background calibration
+            # service. Runs AFTER ML so the is_observing_window roof gate sees
+            # ROOF_STATUS — calibration and the all-sky overlay must both stay
+            # suppressed when the roof is closed. It feeds the frozen pre-enhancement
+            # copy (stretched_for_preview), so executing here (past brightness /
+            # sharpening) does not change the pixels it detects on.
+            if self._calibration_service and allsky_cfg.get('enabled', False):
+                try:
+                    from services.observing_window import is_observing_window
+                    if is_observing_window(config, metadata, feature="All-sky calibration"):
+                        weather_cfg = config.get('weather', {})
+                        cal_lat = float(weather_cfg.get('latitude', 0) or 0)
+                        cal_lon = float(weather_cfg.get('longitude', 0) or 0)
+                        if cal_lat != 0 or cal_lon != 0:
+                            from datetime import timezone as _tz
+                            self._calibration_service.feed_frame(
+                                stretched_for_preview, datetime.now(_tz.utc), cal_lat, cal_lon,
+                            )
+                except Exception as e:
+                    app_logger.warning(f"Calibration feed skipped: {e}")
+
             # Star detection tokens (gated: sun below civil twilight, and roof open if ML enabled)
             try:
                 from services.star_detection import analyze_stars, should_run_star_detection

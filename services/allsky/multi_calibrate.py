@@ -309,6 +309,8 @@ def _build_all_matches(frames, model, tol_px: float,
                        _log: bool = True) -> List[list]:
     """Match each frame's detections to catalog using the current model."""
     all_matches = []
+    discarded = 0
+    total_matched = 0
     for f in frames:
         horizon = f['above_horizon']
         if max_vmag is not None:
@@ -316,13 +318,17 @@ def _build_all_matches(frames, model, tol_px: float,
         matches = _brightness_match(f['detected'], horizon, model, tol_px=tol_px)
         if len(matches) >= min_per_image:
             all_matches.append(matches)
-            if _log:
-                log.debug(f"  {f['dt'].isoformat()}: {len(matches)} matches "
-                          f"(tol={tol_px:.0f}px)")
+            total_matched += len(matches)
         else:
-            if _log:
-                log.debug(f"  {f['dt'].isoformat()}: only {len(matches)} matches "
-                          f"— discarded (min={min_per_image})")
+            discarded += 1
+    # One summary line per call rather than one per frame: at ~60 frames over
+    # 10 tightening iterations the per-frame form emitted ~600 DEBUG lines per
+    # refinement cycle (every couple of minutes). The per-iteration INFO summary
+    # in _joint_iterative_fit covers the convergence story.
+    if _log:
+        log.debug(f"  tol={tol_px:.0f}px: kept {len(all_matches)} frames "
+                  f"({total_matched} matches), discarded {discarded} "
+                  f"(min={min_per_image}/frame)")
     return all_matches
 
 
