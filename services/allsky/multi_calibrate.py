@@ -58,7 +58,18 @@ from .calibration import (
 from .calibration_validate import (
     validate_bright_anchors,
     validate_lens_polynomial,
+    tol_scale,
 )
+
+
+def _median_sky_r(frames) -> float:
+    """Median trimmed sky radius across frames, or 0.0 if unknown.
+
+    Used to scale match tolerances to the frame resolution (F10). Frames built
+    by dev scripts may omit 'sky_r'; 0.0 makes tol_scale() neutral.
+    """
+    rs = [f.get('sky_r') for f in frames if f.get('sky_r')]
+    return float(np.median(rs)) if rs else 0.0
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -96,7 +107,8 @@ def refine_from_detections(
 
     log.info(f"Refining from {len(frames)} pre-processed frame(s)")
 
-    all_matches = _build_all_matches(frames, seed_model, tol_px=50.0,
+    _ts = tol_scale(_median_sky_r(frames))
+    all_matches = _build_all_matches(frames, seed_model, tol_px=50.0 * _ts,
                                      min_per_image=min_matches_per_image)
     total = sum(len(m) for m in all_matches)
     log.info(f"Initial matches: {total} across {len(all_matches)} frame(s)")
@@ -109,6 +121,7 @@ def refine_from_detections(
     model, rms = _joint_iterative_fit(
         all_matches, frames, seed_model,
         min_matches_per_image, min_total_matches, max_residual_px,
+        tol_scale_factor=_ts,
     )
 
     if rms > max_residual_px:
@@ -122,16 +135,35 @@ def refine_from_detections(
     # real sky. Guard with lens-polynomial physics + bright-anchor hit rate
     # on the most recent frame.
     poly_ok, poly_msg = validate_lens_polynomial(model)
-    latest = frames[-1]
-    anch_ok, anch_msg = validate_bright_anchors(
-        model, latest['above_horizon'], latest['detected'],
-    )
+
+    # Validate bright anchors on the 3 most recent frames — require majority
+    # (at least 2 of 3) to pass. Single-frame validation was fragile: one
+    # partially-cloudy frame could silently gate the entire calibration path.
+    recent = frames[-3:]
+    anch_results = [
+        validate_bright_anchors(model, f['above_horizon'], f['detected'],
+                                sky_r=f.get('sky_r'))
+        for f in recent
+    ]
+    n_ok = sum(1 for ok, _ in anch_results if ok)
+    min_ok = max(1, len(recent) - 1)  # 2/3 frames, 1/2 frames, or 1/1 frame
+    anch_ok = n_ok >= min_ok
+    if anch_ok:
+        anch_msg = f"{n_ok}/{len(recent)} recent frames pass anchor check"
+    else:
+        fail_msgs = [m for ok, m in anch_results if not ok]
+        anch_msg = (f"only {n_ok}/{len(recent)} recent frames pass anchor check: "
+                    + "; ".join(fail_msgs[:2]))
+
     if not (poly_ok and anch_ok):
         reason = "; ".join(
             m for ok, m in ((poly_ok, poly_msg), (anch_ok, anch_msg)) if not ok
         )
         raise CalibrationError(f"Refinement failed sanity check: {reason}")
 
+    latest = frames[-1]
+    model.image_width = latest.get('image_width', 0)
+    model.image_height = latest.get('image_height', 0)
     model.calibrated_at = datetime.now(timezone.utc).isoformat()
     log.info(f"Refinement succeeded: {model} ({poly_msg}; {anch_msg})")
     return model
@@ -221,7 +253,8 @@ def multi_calibrate(
     # ------------------------------------------------------------------
     # Step 3: Initial matching for all frames using the seed model
     # ------------------------------------------------------------------
-    all_matches = _build_all_matches(frames, seed_model, tol_px=50.0,
+    _ts = tol_scale(_median_sky_r(frames))
+    all_matches = _build_all_matches(frames, seed_model, tol_px=50.0 * _ts,
                                      min_per_image=min_matches_per_image)
     total = sum(len(m) for m in all_matches)
     log.info(f"Initial total matches: {total} across {len(all_matches)} frame(s)")
@@ -237,7 +270,8 @@ def multi_calibrate(
     # ------------------------------------------------------------------
     model, rms = _joint_iterative_fit(
         all_matches, frames, seed_model,
-        min_matches_per_image, min_total_matches, max_residual_px
+        min_matches_per_image, min_total_matches, max_residual_px,
+        tol_scale_factor=_ts,
     )
 
     if rms > max_residual_px:
@@ -296,6 +330,7 @@ def _joint_iterative_fit(
     all_matches, frames, model, min_per_image, min_total, max_residual,
     cx_range: float = 100.0,
     cy_range: float = 100.0,
+    tol_scale_factor: float = 1.0,
 ) -> Tuple[FisheyeModel, float]:
     """
     Iterative joint optimisation over all matched frames.
@@ -323,7 +358,7 @@ def _joint_iterative_fit(
     # loss even when the tightening regular tolerance would exclude them.  Without
     # this, the optimizer can settle into a false minimum where hundreds of dim stars
     # match well but Arcturus/Vega/Antares/Deneb are 50-90 px off.
-    _ANCH_TOL = 100.0
+    _ANCH_TOL = 100.0 * tol_scale_factor
     _ANCH_MAX_VMAG = 3.5
     _ANCH_WEIGHT = 4.0  # multiply residuals → 16x contribution to squared loss
     anchor_matches = _build_all_matches(
@@ -388,8 +423,9 @@ def _joint_iterative_fit(
             log.warning(f"Joint fit iteration {iteration} failed: {e}")
             break
 
-        # Re-match every frame at tightening tolerance
-        tol = max(8.0, 50.0 - iteration * 5.0)
+        # Re-match every frame at tightening tolerance (schedule shape fixed;
+        # endpoints scaled to the sky radius for resolution-independence, F10)
+        tol = tol_scale_factor * max(8.0, 50.0 - iteration * 5.0)
         all_matches = _build_all_matches(frames, model, tol_px=tol,
                                          min_per_image=min_per_image)
         # Rebuild anchor matches with updated model (fixed large tolerance)

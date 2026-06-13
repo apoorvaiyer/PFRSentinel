@@ -56,6 +56,8 @@ class FisheyeModel:
     n_images: int = 1
     span_minutes: float = 0.0
     calibrated_at: str = ""
+    image_width: int = 0   # width of image used for calibration (px); 0 = unknown
+    image_height: int = 0  # height of image used for calibration (px); 0 = unknown
 
     def is_valid(self) -> bool:
         """True if model has been successfully calibrated."""

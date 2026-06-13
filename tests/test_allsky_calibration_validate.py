@@ -18,7 +18,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from services.allsky.calibration_validate import (
     A3_MAX,
     A3_MIN,
+    REF_SKY_R_PX,
     score_matches_with_spread,
+    tol_scale,
     validate_bright_anchors,
     validate_lens_polynomial,
     warn_sky_coverage,
@@ -160,18 +162,50 @@ class TestValidateBrightAnchors:
         assert ok, f"Expected 5/6 to be accepted; got ({msg})"
 
     def test_skips_when_too_few_anchors_visible(self):
-        """Only 2 anchors above min_alt=10° → check is skipped (ok=True)."""
+        """Only 2 anchors above min_alt=15° → check is skipped (ok=True)."""
         model = self._zenith_model()
         ah = [
             ({'name': 'A', 'vmag': 1.0}, 30.0, 90.0),
             ({'name': 'B', 'vmag': 2.0}, 20.0, 270.0),
-            # Rest below 10°, ignored
+            # Rest below 15°, ignored
             ({'name': 'C', 'vmag': 3.0},  5.0, 180.0),
         ]
         det = [(0.0, 0.0, 1.0)]
         ok, msg = validate_bright_anchors(model, ah, det)
         assert ok
         assert 'skipping' in msg
+
+    def test_altitude_floor_15_excludes_dead_zone(self):
+        """Stars in 10-14° are in the detection mask's dead zone and are never
+        detected.  With the old 10° floor they counted as missed anchors and
+        gated calibration; with the new 15° floor they are excluded and the
+        remaining well-detected stars still pass.
+
+        Setup: 3 bright stars above 15° (all detected) + 3 stars at 11-13°
+        (none detected because in dead zone).  Old 10° floor → 3/6 anchors
+        hit < min_hits=5 → reject.  New 15° floor → only 3 anchors remain,
+        < min_hits=5 → check skipped → accept.
+        """
+        model = self._zenith_model()
+
+        # 3 well-detected stars above 15°
+        positions_high = [(65.0, 0.0), (50.0, 120.0), (40.0, 240.0)]
+        # 3 stars in the 10-14° dead zone — never in detections
+        positions_dead = [(13.0, 60.0), (11.5, 180.0), (10.5, 300.0)]
+
+        ah = self._above_horizon(model, positions_high + positions_dead)
+        det = self._detect_from_projection(model, positions_high, jitter=1.0)
+
+        # New default 15° floor: 3 high-alt anchors < min_hits=5 → skipped → ok
+        ok_new, msg_new = validate_bright_anchors(model, ah, det)
+        assert ok_new, f"15° floor: expected skip, got reject ({msg_new})"
+        assert 'skipping' in msg_new
+
+        # Old 10° floor: 6 anchors checked, only 3 hit → 3 < min_hits=5 → reject
+        ok_old, _msg_old = validate_bright_anchors(
+            model, ah, det, min_alt_deg=10.0,
+        )
+        assert not ok_old, "10° floor should reject when dead-zone stars are missed"
 
     def test_empty_detections_rejects(self):
         model = self._zenith_model()
@@ -181,6 +215,50 @@ class TestValidateBrightAnchors:
         ok, msg = validate_bright_anchors(model, ah, [])
         assert not ok
         assert 'no detected' in msg.lower()
+
+
+# ===================================================================
+# Resolution-independent tolerances (F10)
+# ===================================================================
+
+class TestToleranceScaling:
+    def test_reference_radius_is_unity(self):
+        assert abs(tol_scale(REF_SKY_R_PX) - 1.0) < 1e-9
+
+    def test_scales_linearly_with_radius(self):
+        assert abs(tol_scale(REF_SKY_R_PX / 2) - 0.5) < 1e-9
+        assert abs(tol_scale(REF_SKY_R_PX * 2) - 2.0) < 1e-9
+
+    def test_unknown_radius_is_neutral(self):
+        assert tol_scale(None) == 1.0
+        assert tol_scale(0) == 1.0
+        assert tol_scale(-5.0) == 1.0
+
+    def test_anchor_max_miss_scales_with_sky_r(self):
+        """A fixed pixel miss that passes at native resolution must fail when
+        the same model is judged at half resolution — the tolerance halves with
+        the sky radius rather than staying a fixed pixel count."""
+        model = FisheyeModel(
+            cx=960.0, cy=540.0, a1=600.0, a3=0.0, a5=0.0,
+            roll=0.0, axis_alt=90.0, axis_az=0.0, east_left=True,
+        )
+        positions = [(70.0, 0.0), (60.0, 60.0), (55.0, 120.0),
+                     (50.0, 200.0), (45.0, 260.0), (40.0, 320.0)]
+        ah = [({'name': f'S{i}', 'vmag': float(i)}, alt, az)
+              for i, (alt, az) in enumerate(positions)]
+        # Each detection sits 30 px from its projected anchor (single axis).
+        det = []
+        for alt, az in positions:
+            xy = model.altaz_to_pixel(alt, az)
+            det.append((xy[0] + 30.0, xy[1], 1000.0))
+
+        # Native: effective max_miss = 40 px → 30 px miss passes.
+        ok_native, _ = validate_bright_anchors(model, ah, det, sky_r=REF_SKY_R_PX)
+        assert ok_native
+
+        # Half resolution: effective max_miss = 20 px → 30 px miss fails.
+        ok_half, _ = validate_bright_anchors(model, ah, det, sky_r=REF_SKY_R_PX / 2)
+        assert not ok_half
 
 
 # ===================================================================

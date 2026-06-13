@@ -1,11 +1,18 @@
 """
 Meteor Controller
-Receives processed frames, runs meteor detection in a daemon thread,
-saves thumbnails, persists detections, and handles user rejections.
+Receives detection frames from ImageProcessor, runs the Phase 2+ detection
+pipeline in a daemon thread, saves thumbnails, persists events, and handles
+user confirmation/rejection.
 
-Detection uses frame differencing: consecutive frames are subtracted so only
-transient events (meteors) produce edges.  A sky circle mask restricts
-detection to the fisheye's circular sky region.
+Detection pipeline (Phase 2–4):
+  1. Pre-stretch grayscale detection frame (linear, downscaled) pushed to FrameStack.
+  2. FrameStack.transient_map() = max−mean: static scene cancels automatically.
+  3. FrameStack.hot_mask(): pixels bright in ALL frames masked (equipment edges).
+  4. DiffNoiseEMA → noise_to_threshold(): proper diff-noise adaptive threshold.
+  5. detect_meteors() with feathered sky-circle mask and tight Hough maxLineGap.
+  6. Streak profile scoring (dash periodicity + peak-fade shape).
+  7. PersistenceFilter: single-frame candidate held one frame; if collinear+advanced
+     streak appears next frame → plane (reject); else → meteor (report).
 """
 import math
 import os
@@ -14,21 +21,22 @@ import time
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal, QTimer
+import numpy as np
 from PIL import Image
+from PySide6.QtCore import QObject, Signal, QTimer
 
 from services.logger import app_logger
 from services.dev_mode_config import is_dev_mode_available
-from services.meteor.detector import (
-    detect_meteors, annotate_image, MeteorDetection,
-    compute_frame_difference, apply_sky_circle_mask,
-    estimate_adaptive_threshold, check_speed_plausibility,
-)
+from services.meteor.detection_scale import DetectionScale, make_scale
+from services.meteor.frame_stack import FrameStack
+from services.meteor.noise import DiffNoiseEMA, noise_to_threshold
+from services.meteor.detector import detect_meteors, MeteorDetection, annotate_image
+from services.meteor.streak_profile import sample_profile, dash_score, peak_fade_score
+from services.meteor.persistence import PersistenceFilter
 from services.meteor.storage import log_detections, log_event, save_thumbnail
 from services.meteor.mask import (
     zone_from_detection, zones_from_config, zones_to_config, ExclusionZone,
 )
-from services.meteor.tracker import MeteorTracker
 
 
 _MAX_RECENT_EVENTS = 20
@@ -37,11 +45,10 @@ _MAX_RECENT_EVENTS = 20
 class MeteorController(QObject):
     """
     Responsibilities:
-    - Receive timelapse_ready signal from ImageProcessor (clean + overlaid frame)
-    - Run detect_meteors (with active exclusion zones) in a daemon thread
-    - Save a 300×300 annotated thumbnail crop per event
-    - Persist events to a JSONL log file
-    - Handle "Not a Meteor" rejections: add exclusion zone, purge thumbnail
+    - Receive detection_frame_ready signal from ImageProcessor
+    - Maintain an N-frame FrameStack; run detection when stack is full
+    - Apply streak profile scoring and persistence filter to classify candidates
+    - Save thumbnails, persist to JSONL, handle user confirm/reject
     - Emit status_updated for MeteorPanel
     """
 
@@ -50,19 +57,27 @@ class MeteorController(QObject):
     def __init__(self, main_window):
         super().__init__(main_window)
         self._main_window = main_window
-        self._lock = threading.Lock()  # Detection threads and Qt timer both touch counters/events
-        self._detection_semaphore = threading.Semaphore(1)  # Drop frames if detection is slower than capture
+        self._lock = threading.Lock()
+        self._detection_semaphore = threading.Semaphore(1)
 
         self._session_frames: int = 0
         self._session_detections: int = 0
         self._last_detection_time: Optional[str] = None
         self._recent_events: List[dict] = []
 
-        # Frame differencing state
-        self._previous_frame: Optional[Image.Image] = None
-        self._last_detection_ts: float = 0.0   # monotonic, for cooldown
-        self._sky_circle: Optional[Tuple[float, float, float]] = None  # (cx, cy, r)
-        self._tracker: Optional[MeteorTracker] = None
+        # Detection pipeline state
+        self._stack: Optional[FrameStack] = None
+        self._noise_ema: Optional[DiffNoiseEMA] = None
+        self._filter: Optional[PersistenceFilter] = None
+        self._detection_scale: Optional[DetectionScale] = None
+        self._sky_circle: Optional[Tuple[float, float, float]] = None  # detection coords
+        self._frame_idx: int = 0
+        self._last_detection_ts: float = 0.0
+        # Full-res image of the frame whose candidates the PersistenceFilter is
+        # currently holding. Released meteors come from the PREVIOUS frame, so
+        # thumbnails must be cropped from that frame — the streak is absent
+        # from the current one by definition. Detection-thread access only.
+        self._held_full_res: Optional[Image.Image] = None
 
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(5000)
@@ -73,136 +88,234 @@ class MeteorController(QObject):
     #  Frame handling                                                      #
     # ------------------------------------------------------------------ #
 
-    def on_frame_ready(self, clean_image: Image.Image, _overlaid: Image.Image):
-        """Called for every processed frame via image_processor.timelapse_ready."""
-        # Meteor tracking is not ready for real-time capture — gate it behind
-        # dev mode so it never runs in production builds, regardless of the
-        # persisted "enabled" flag or how the frame signal is wired.
+    def on_frame_ready(self, detection_gray: Image.Image, full_res_clean: Image.Image):
+        """
+        Called per frame via image_processor.detection_frame_ready.
+
+        *detection_gray*: grayscale PIL Image at detection scale, pre-stretch.
+        *full_res_clean*: full-resolution stretched clean PIL Image for thumbnails.
+        """
         if not is_dev_mode_available():
             return
         cfg = self._get_config()
         if not cfg.get("enabled", False):
             return
 
-        # --- Roof gate (soft — only blocks when confirmed closed) ---
+        # Roof gate — invalidate the whole pipeline when confirmed closed, so a
+        # stale pre-closure candidate can't be released after reopening.
         ml_results = getattr(self._main_window, 'last_ml_results', None) or {}
         if ml_results.get('roof_status') == 'Closed':
-            self._previous_frame = None  # invalidate diff chain
+            if self._stack and self._detection_semaphore.acquire(blocking=False):
+                try:
+                    self._stack.clear()
+                    if self._filter:
+                        self._filter.reset()
+                    if self._noise_ema:
+                        self._noise_ema.reset()
+                    self._held_full_res = None
+                finally:
+                    self._detection_semaphore.release()
             return
 
         with self._lock:
             self._session_frames += 1
-        current = clean_image.copy()
 
-        # --- Cooldown gate ---
+        # Lazy-init detection objects
+        n_frames = int(cfg.get("stack_frames", 6))
+        if self._stack is None or self._stack.maxlen != n_frames:
+            self._reset_stack(n_frames)
+
+        if self._filter is None:
+            suppress_sec = float(cfg.get("track_suppress_minutes", 10)) * 60
+            exposure = self._get_exposure_sec()
+            frame_interval = max(1.0, exposure if exposure > 0 else 15.0)
+            suppress_frames = max(5, int(suppress_sec / frame_interval))
+            self._filter = PersistenceFilter(
+                suppress_frames=suppress_frames,
+                residue_suppress_frames=n_frames + 2,
+            )
+
+        # Derive or reset detection scale from frame dimensions
+        gray_arr = np.array(detection_gray if detection_gray.mode == 'L'
+                            else detection_gray.convert('L'))
+        if self._detection_scale is None and full_res_clean is not None:
+            self._detection_scale = make_scale(
+                gray_arr.shape[1], full_res_clean.width)
+        elif (self._detection_scale is not None and full_res_clean is not None
+              and abs(self._detection_scale.factor -
+                      gray_arr.shape[1] / max(full_res_clean.width, 1)) > 0.05):
+            # Resolution changed — everything downstream holds coordinates or
+            # statistics from the old scale; reset the full pipeline.
+            self._detection_scale = make_scale(gray_arr.shape[1], full_res_clean.width)
+            self._sky_circle = None
+            self._held_full_res = None
+            self._reset_stack(n_frames)
+
+        # Resolve sky circle (in detection coords) once
+        if self._sky_circle is None:
+            self._resolve_sky_circle(detection_gray)
+
+        self._stack.push(gray_arr)
+        self._frame_idx += 1
+
+        if not self._stack.full:
+            app_logger.debug(
+                f"Meteor: stack warming ({self._stack.count}/{self._stack.maxlen})")
+            return
+
+        # Cooldown gate — keep pushing frames (so the stack stays fresh and a
+        # reported streak evicts naturally) but skip detection runs.
         cooldown = float(cfg.get("detection_cooldown", 30))
         if cooldown > 0 and (time.monotonic() - self._last_detection_ts) < cooldown:
-            self._previous_frame = current
             return
 
-        # --- First-frame guard + sky circle init ---
-        if self._previous_frame is None:
-            self._previous_frame = current
-            self._resolve_sky_circle(current)
-            return
-
-        # --- Frame differencing (adaptive or fixed threshold) ---
-        if cfg.get("adaptive_threshold", True):
-            threshold = estimate_adaptive_threshold(current)
-        else:
-            threshold = int(cfg.get("diff_threshold", 25))
-        diff_image = compute_frame_difference(
-            current, self._previous_frame, threshold)
-        self._previous_frame = current
-
-        # --- Sky circle mask ---
-        if self._sky_circle:
-            diff_image = apply_sky_circle_mask(diff_image, *self._sky_circle)
-
-        # --- Ensure tracker is initialised if multi-frame mode enabled ---
-        if cfg.get("multi_frame_confirm", False) and self._tracker is None:
-            self._tracker = MeteorTracker(
-                min_frames=int(cfg.get("min_confirm_frames", 2)))
-        elif not cfg.get("multi_frame_confirm", False):
-            self._tracker = None
-
-        # Non-blocking: skip this frame if a detection is already running
+        # Non-blocking: drop frame if a detection thread is already running
         if not self._detection_semaphore.acquire(blocking=False):
             return
 
+        transient = self._stack.transient_map()
+        hot = self._stack.hot_mask()
+        frame_idx_snap = self._frame_idx
+
         threading.Thread(
             target=self._run_detection,
-            args=(diff_image, current, cfg),
+            args=(transient, hot, full_res_clean, cfg, frame_idx_snap),
             daemon=True,
         ).start()
 
+    def _reset_stack(self, n_frames: int) -> None:
+        """Rebuild the frame stack and the per-stack statistics that depend on
+        it. The persistence filter is reset too (lazily rebuilt below) since its
+        suppression windows are sized against the stack length."""
+        self._stack = FrameStack(maxlen=n_frames)
+        self._noise_ema = DiffNoiseEMA()
+        self._filter = None
+
     # ------------------------------------------------------------------ #
-    #  Detection  (background thread — no Qt calls allowed)               #
+    #  Detection thread                                                    #
     # ------------------------------------------------------------------ #
 
-    def _run_detection(self, diff_image: Image.Image,
-                       original_image: Image.Image, cfg: dict):
+    def _run_detection(self, transient: np.ndarray, hot_mask: np.ndarray,
+                       full_res: Image.Image, cfg: dict, frame_idx: int):
         try:
-            min_length = int(cfg.get("min_length", 100))
+            sensitivity = cfg.get("noise_sensitivity", "normal")
+            sigma = self._noise_ema.update(transient) if self._noise_ema else 15.0
+            threshold = noise_to_threshold(sigma, sensitivity)
+
+            # Suppress hot pixels (static equipment edges)
+            masked = transient.copy()
+            if hot_mask is not None:
+                masked[hot_mask > 0] = 0
+
+            # Scale exclusion zones to detection coordinates
+            scale = self._detection_scale
             zones = zones_from_config(cfg)
+            det_zones: Optional[List[ExclusionZone]] = None
+            if zones and scale and scale.factor < 1.0:
+                det_zones = [ExclusionZone(
+                    x=int(z.x * scale.factor), y=int(z.y * scale.factor),
+                    w=max(1, int(z.w * scale.factor)),
+                    h=max(1, int(z.h * scale.factor)),
+                    note=z.note,
+                ) for z in zones]
+            elif zones:
+                det_zones = zones
+
+            min_length_full = int(cfg.get("min_length", 100))
+            min_length_det = (scale.scale_length(min_length_full)
+                              if scale else min_length_full)
+
             detections = detect_meteors(
-                diff_image, min_length=min_length,
-                exclusion_zones=zones or None,
-                strict_validation=True,
+                Image.fromarray(masked),
+                min_length=min_length_det,
+                exclusion_zones=det_zones or None,
+                sky_circle=self._sky_circle,
+                threshold=threshold,
+                max_nonline_prob=float(cfg.get("max_nonline_prob", 0.15)),
+                min_brightness=int(cfg.get("min_brightness", 20)),
             )
 
-            if not detections:
-                # Still feed empty frame to tracker so series can expire
-                if self._tracker:
-                    self._process_confirmed(
-                        self._tracker.update([], time.monotonic()),
-                        original_image, cfg)
-                return
+            # Absolute length ceiling: a streak spanning most of the sky in one
+            # exposure is a satellite/plane/ISS pass, not a verifiable meteor.
+            max_len_det = float(cfg.get("max_length_frac", 0.5)) * transient.shape[1]
+            detections = [d for d in detections if d.length <= max_len_det]
 
-            # --- Speed plausibility filter ---
-            exposure_sec = self._get_exposure_sec()
-            if exposure_sec > 0:
-                detections = [
-                    d for d in detections
-                    if check_speed_plausibility(
-                        d, exposure_sec, original_image.width)
-                ]
-                if not detections:
-                    if self._tracker:
-                        self._process_confirmed(
-                            self._tracker.update([], time.monotonic()),
-                            original_image, cfg)
-                    return
+            # Scale detections back to full-res coords for thumbnails and zones
+            if detections and scale and scale.factor < 1.0:
+                inv = 1.0 / scale.factor
+                detections = [MeteorDetection(
+                    x1=int(d.x1 * inv), y1=int(d.y1 * inv),
+                    x2=int(d.x2 * inv), y2=int(d.y2 * inv),
+                    length=d.length * inv,
+                    angle_deg=d.angle_deg,
+                    nonline_prob=d.nonline_prob,
+                ) for d in detections]
 
-            # --- Multi-frame confirmation or direct report ---
-            if self._tracker:
-                confirmed = self._tracker.update(detections, time.monotonic())
-                self._process_confirmed(confirmed, original_image, cfg)
-            else:
-                self._report_detections(detections, original_image, cfg)
+            if detections:
+                detections = self._apply_profile_filters(detections, full_res, cfg)
+
+            # Persistence filter: hold one frame, report as meteor if absent
+            # next frame. Must run EVERY frame — an empty frame is what releases
+            # the previous frame's held candidate as a meteor.
+            if self._filter:
+                prev_held_img = self._held_full_res
+                released, planes = self._filter.update(detections, frame_idx)
+                self._held_full_res = full_res if detections else None
+                if planes:
+                    app_logger.debug(f"Meteor: {planes} plane track(s) suppressed")
+                if released:
+                    self._report_detections(
+                        released, prev_held_img or full_res, cfg)
+            elif detections:
+                self._report_detections(detections, full_res, cfg)
 
         except Exception as exc:
             app_logger.error(f"Meteor detection error: {exc}")
         finally:
             self._detection_semaphore.release()
 
+    def _apply_profile_filters(
+        self,
+        detections: List[MeteorDetection],
+        full_res: Image.Image,
+        cfg: dict,
+    ) -> List[MeteorDetection]:
+        """Score and filter detections by streak photometry."""
+        dash_reject = float(cfg.get("dash_reject_score", 0.6))
+        gray = np.array(full_res.convert('L'))
+        kept = []
+        for det in detections:
+            profile = sample_profile(gray, det)
+            ds = dash_score(profile)
+            pf = peak_fade_score(profile)
+            scores = (f"dash={ds:.2f}, peak_fade={pf:.2f} "
+                      f"({det.length:.0f}px @{det.angle_deg:.0f}°)")
+            if ds > dash_reject:
+                app_logger.debug(f"Meteor: rejected by dash periodicity ({scores})")
+                continue
+            app_logger.debug(f"Meteor: profile scores {scores}")
+            kept.append(det)
+        return kept
+
+    # ------------------------------------------------------------------ #
+    #  Reporting                                                           #
+    # ------------------------------------------------------------------ #
+
     def _report_detections(self, detections: List[MeteorDetection],
-                           original_image: Image.Image, cfg: dict):
-        """Report detections directly (single-frame mode)."""
+                           full_res: Image.Image, cfg: dict):
         self._last_detection_ts = time.monotonic()
         timestamp = datetime.now().isoformat(timespec="seconds")
         best = max(detections, key=lambda d: d.length)
 
         thumb_info = save_thumbnail(
-            original_image, best,
+            full_res, best,
             thumb_dir=self._resolve_thumb_dir(),
             timestamp=timestamp,
         )
 
         annotated_path = ""
         if cfg.get("save_annotated", False):
-            annotated_path = self._save_annotated(
-                original_image, detections, cfg, timestamp)
+            annotated_path = self._save_annotated(full_res, detections, cfg, timestamp)
 
         event = {
             "timestamp":      timestamp,
@@ -221,8 +334,7 @@ class MeteorController(QObject):
             "length_px":      thumb_info.get("length_px", int(round(best.length))),
             "best_x1": best.x1, "best_y1": best.y1,
             "best_x2": best.x2, "best_y2": best.y2,
-            "img_w":   original_image.width,
-            "img_h":   original_image.height,
+            "img_w": full_res.width, "img_h": full_res.height,
         }
 
         if cfg.get("save_detections", True):
@@ -231,7 +343,6 @@ class MeteorController(QObject):
         with self._lock:
             self._session_detections += len(detections)
             self._last_detection_time = timestamp
-
             new_list = ([event] + self._recent_events)[:_MAX_RECENT_EVENTS]
             evicted = self._recent_events[_MAX_RECENT_EVENTS - 1:]
             self._recent_events = new_list
@@ -241,28 +352,10 @@ class MeteorController(QObject):
 
         app_logger.info(
             f"Meteor: {len(detections)} detection(s), "
-            f"longest={event['max_length']}px"
-        )
+            f"longest={event['max_length']}px, "
+            f"nonline_prob={best.nonline_prob:.2f}")
 
-    def _process_confirmed(self, events, original_image: Image.Image,
-                           cfg: dict):
-        """Handle confirmed events from the multi-frame tracker."""
-        for meteor_event in events:
-            self._report_detections(
-                [meteor_event.best], original_image, cfg)
-            app_logger.info(
-                f"Meteor: confirmed across {meteor_event.frame_count} frames, "
-                f"direction_std={meteor_event.direction_std:.2f} rad"
-            )
-
-    def _save_annotated(
-        self,
-        image: Image.Image,
-        detections: List[MeteorDetection],
-        cfg: dict,
-        timestamp: str,
-    ) -> str:
-        """Save the full-frame annotated image and return its path ("" on failure)."""
+    def _save_annotated(self, image, detections, cfg, timestamp) -> str:
         annotated_dir = cfg.get("annotated_dir", "").strip()
         if not annotated_dir:
             return ""
@@ -278,28 +371,16 @@ class MeteorController(QObject):
             return ""
 
     # ------------------------------------------------------------------ #
-    #  Rejection                                                           #
+    #  Rejection / Confirmation                                            #
     # ------------------------------------------------------------------ #
 
     def on_detection_rejected(self, timestamp: str):
-        """
-        User marked an event as 'Not a Meteor'.
-
-        1. Find the event by timestamp.
-        2. Build an ExclusionZone from its detection coords.
-        3. Append zone to config and save.
-        4. Remove event from history and delete its thumbnail.
-        5. Emit updated status so the panel rebuilds immediately.
-        """
         with self._lock:
-            event = next(
-                (e for e in self._recent_events if e.get("timestamp") == timestamp),
-                None,
-            )
+            event = next((e for e in self._recent_events
+                          if e.get("timestamp") == timestamp), None)
         if not event:
             return
 
-        # Build exclusion zone with 80px padding around the rejected line
         zone = zone_from_detection(
             x1=event["best_x1"], y1=event["best_y1"],
             x2=event["best_x2"], y2=event["best_y2"],
@@ -310,46 +391,26 @@ class MeteorController(QObject):
         zone.note = f"Rejected {timestamp}"
 
         cfg = self._get_config()
-        existing_zones = zones_from_config(cfg)
-        existing_zones.append(zone)
-
-        # Preserve all other meteor config keys, update only exclusion_zones
-        updated_cfg = dict(cfg)
-        updated_cfg["exclusion_zones"] = zones_to_config(existing_zones)
-        self._main_window.config.set("meteor", updated_cfg)
+        existing = zones_from_config(cfg)
+        existing.append(zone)
+        updated = dict(cfg)
+        updated["exclusion_zones"] = zones_to_config(existing)
+        self._main_window.config.set("meteor", updated)
         self._main_window.config.save()
 
-        # Remove from history (delete both thumbnail and full annotated frame)
         self._evict_event_files(event)
         with self._lock:
-            self._recent_events = [
-                e for e in self._recent_events if e.get("timestamp") != timestamp
-            ]
+            self._recent_events = [e for e in self._recent_events
+                                   if e.get("timestamp") != timestamp]
 
-        app_logger.info(
-            f"Meteor: rejection saved — zone added at "
-            f"({zone.x},{zone.y}) {zone.w}×{zone.h}px"
-        )
+        app_logger.info(f"Meteor: rejection saved — zone at "
+                        f"({zone.x},{zone.y}) {zone.w}×{zone.h}px")
         self._emit_status()
 
-    # ------------------------------------------------------------------ #
-    #  Confirmation                                                         #
-    # ------------------------------------------------------------------ #
-
     def on_detection_confirmed(self, timestamp: str):
-        """
-        User marked an event as a real meteor.
-
-        Moves the thumbnail (and full annotated frame if present) into a
-        ``confirmed/`` subdirectory so future evictions don't delete them,
-        marks the event ``confirmed=True`` so the card shows a Confirmed
-        badge, and appends a record to the JSONL log for persistence.
-        """
         with self._lock:
-            event = next(
-                (e for e in self._recent_events if e.get("timestamp") == timestamp),
-                None,
-            )
+            event = next((e for e in self._recent_events
+                          if e.get("timestamp") == timestamp), None)
         if not event or event.get("confirmed"):
             return
 
@@ -380,12 +441,10 @@ class MeteorController(QObject):
 
     @staticmethod
     def _move_to_confirmed(path: str) -> str:
-        """Move *path* into a sibling ``confirmed/`` folder; return the new path."""
         if not path or not os.path.isfile(path):
             return ""
         try:
-            parent = os.path.dirname(path)
-            confirmed_dir = os.path.join(parent, "confirmed")
+            confirmed_dir = os.path.join(os.path.dirname(path), "confirmed")
             os.makedirs(confirmed_dir, exist_ok=True)
             new_path = os.path.join(confirmed_dir, os.path.basename(path))
             os.replace(path, new_path)
@@ -398,29 +457,55 @@ class MeteorController(QObject):
     # ------------------------------------------------------------------ #
 
     def on_capture_stopped(self):
-        if self._tracker:
-            self._tracker.flush()  # expire any pending series
-            self._tracker = None
+        # Wait for an in-flight detection thread before tearing down — it
+        # reads _filter/_noise_ema/_held_full_res and reports into
+        # _recent_events; tearing down underneath it races.
+        acquired = self._detection_semaphore.acquire(timeout=5.0)
+        try:
+            if self._filter:
+                # Flush held candidates — no next frame will come to refute them
+                held = self._filter.flush()
+                if held:
+                    app_logger.info(
+                        f"Meteor: capture ended, {len(held)} held candidate(s) "
+                        "unverified (no next frame)")
+            self._filter = None
+            self._stack = None
+            self._noise_ema = None
+            self._detection_scale = None
+            self._sky_circle = None
+            self._held_full_res = None
+            self._frame_idx = 0
+            self._last_detection_ts = 0.0
+        finally:
+            if acquired:
+                self._detection_semaphore.release()
+
         with self._lock:
             old_events = list(self._recent_events)
             self._session_frames = 0
             self._session_detections = 0
             self._last_detection_time = None
             self._recent_events = []
-        # Clean up any unconfirmed files lingering from this session
+
         for ev in old_events:
             self._evict_event_files(ev)
-        self._previous_frame = None
-        self._last_detection_ts = 0.0
-        self._sky_circle = None
+
         self._emit_status()
 
     def shutdown(self):
-        if self._tracker:
-            self._tracker.reset()
-            self._tracker = None
-        self._previous_frame = None
-        self._sky_circle = None
+        acquired = self._detection_semaphore.acquire(timeout=3.0)
+        try:
+            if self._filter:
+                self._filter.reset()
+            self._filter = None
+            self._stack = None
+            self._noise_ema = None
+            self._sky_circle = None
+            self._held_full_res = None
+        finally:
+            if acquired:
+                self._detection_semaphore.release()
         app_logger.debug("Meteor controller shutdown")
 
     # ------------------------------------------------------------------ #
@@ -430,10 +515,10 @@ class MeteorController(QObject):
     def get_status(self) -> dict:
         with self._lock:
             return {
-                "session_frames":     self._session_frames,
-                "session_detections": self._session_detections,
+                "session_frames":      self._session_frames,
+                "session_detections":  self._session_detections,
                 "last_detection_time": self._last_detection_time,
-                "recent_events":      list(self._recent_events),
+                "recent_events":       list(self._recent_events),
             }
 
     def _emit_status(self):
@@ -443,42 +528,41 @@ class MeteorController(QObject):
     #  Helpers                                                             #
     # ------------------------------------------------------------------ #
 
-    def _resolve_sky_circle(self, image: Image.Image):
-        """Compute and cache the sky circle (cx, cy, radius) for masking."""
-        if self._sky_circle is not None:
-            return
+    def _resolve_sky_circle(self, detection_gray: Image.Image):
+        """Compute and cache sky circle in detection-scale pixel coordinates."""
+        scale = self._detection_scale.factor if self._detection_scale else 1.0
         try:
-            # Prefer calibration model (precise optical centre)
             ctrl = getattr(self._main_window, 'allsky_controller', None)
             model = getattr(ctrl, '_model', None) if ctrl else None
             if model and hasattr(model, 'cx') and hasattr(model, 'a1'):
-                r = model.a1 * (math.pi / 2)  # 90-deg horizon radius
-                self._sky_circle = (model.cx, model.cy, r)
+                r = model.a1 * (math.pi / 2)
+                self._sky_circle = (
+                    model.cx * scale, model.cy * scale, r * scale)
                 app_logger.info(
                     f"Meteor: sky circle from calibration — "
-                    f"cx={model.cx:.0f}, cy={model.cy:.0f}, r={r:.0f}")
+                    f"cx={self._sky_circle[0]:.0f}, "
+                    f"cy={self._sky_circle[1]:.0f}, "
+                    f"r={self._sky_circle[2]:.0f} (det coords)")
                 return
         except Exception:
             pass
         try:
             from services.allsky.star_centroid import estimate_sky_circle
-            cx, cy, r = estimate_sky_circle(image)
+            cx, cy, r = estimate_sky_circle(detection_gray)
             self._sky_circle = (cx, cy, r)
             app_logger.info(
                 f"Meteor: sky circle auto-detected — "
                 f"cx={cx:.0f}, cy={cy:.0f}, r={r:.0f}")
         except Exception as exc:
-            app_logger.debug(f"Meteor: sky circle detection failed ({exc}), "
-                             "running without mask")
+            app_logger.debug(
+                f"Meteor: sky circle detection failed ({exc}), no mask applied")
 
     def _get_exposure_sec(self) -> float:
-        """Return current exposure time in seconds, or 0 if unavailable."""
         try:
             cfg = self._main_window.config
-            cam_name = cfg.get("zwo_selected_camera_name", "") or cfg.get("zwo_camera_name", "")
+            cam_name = cfg.get("zwo_camera_name", "") or ""
             profile = cfg.get_camera_profile(cam_name) if cam_name else {}
-            ms = float(profile.get("exposure_ms", 0))
-            return ms / 1000.0
+            return float(profile.get("exposure_ms", 0)) / 1000.0
         except (TypeError, ValueError, AttributeError):
             return 0.0
 
@@ -487,9 +571,7 @@ class MeteorController(QObject):
 
     def _resolve_log_path(self, cfg: dict) -> str:
         log_file = cfg.get("log_file", "").strip()
-        if log_file:
-            return log_file
-        return os.path.join(self._appdata_dir(), "meteor_detections.jsonl")
+        return log_file or os.path.join(self._appdata_dir(), "meteor_detections.jsonl")
 
     def _resolve_thumb_dir(self) -> str:
         return os.path.join(self._appdata_dir(), "meteor_thumbnails")
@@ -507,8 +589,6 @@ class MeteorController(QObject):
                 pass
 
     def _evict_event_files(self, event: dict):
-        """Delete thumbnail + full annotated frame for an unconfirmed event.
-        Confirmed events keep their files (they live in confirmed/ subdirs)."""
         if event.get("confirmed"):
             return
         self._delete_file(event.get("thumbnail_path", ""))

@@ -12,7 +12,6 @@ import qtawesome as qta
 
 from ..theme.tokens import Colors, Typography, Spacing, Layout
 from ..theme.styles import get_nav_item_style
-from services.dev_mode_config import is_dev_mode_available
 
 
 class NavButton(QPushButton):
@@ -200,10 +199,7 @@ class NavRail(QFrame):
             (_ico('sphere'), "All-Sky", 'allsky'),
             (_ico('filmstrip-box-multiple'), "Timelapse", 'timelapse'),
         ]
-        # Meteor Tracker is dev-only — not ready for real-time capture, so it
-        # only appears when the app is run with dev mode enabled.
-        if is_dev_mode_available():
-            nav_items.append((_ico('meteor'), "Meteor Tracker", 'meteor'))
+        nav_items.append((_ico('meteor'), "Meteor Tracker", 'meteor'))
         nav_items.append((_ico('math-log'), "Logs", 'logs'))
 
         for icon, label, key in nav_items:
@@ -221,9 +217,10 @@ class NavRail(QFrame):
         layout.addWidget(settings_btn)
         self._buttons['settings'] = settings_btn
         
-        # All-Sky is still in beta — mark it with a persistent amber badge.
-        if 'allsky' in self._buttons:
-            self._buttons['allsky'].set_badge(True, "BETA", Colors.warning_default)
+        # Both All-Sky and Meteor Tracker are still in beta.
+        for beta_key in ('allsky', 'meteor'):
+            if beta_key in self._buttons:
+                self._buttons[beta_key].set_badge(True, "BETA", Colors.warning_default)
 
         # Set initial selection
         self._buttons['capture'].set_selected(True)

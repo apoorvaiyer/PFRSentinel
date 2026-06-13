@@ -19,7 +19,6 @@ Thread safety:
   - _RefineWorker runs in its own QThread.
 """
 import copy
-import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -129,13 +128,16 @@ def model_quality(
 class _RefineWorker(QThread):
     """Run multi-image joint calibration in a background thread."""
 
-    finished = Signal(object)   # FisheyeModel on success
-    failed = Signal(str)        # error message
+    finished = Signal(object, int, float)  # (FisheyeModel, n_images, span_min)
+    failed = Signal(str)                   # error message
 
-    def __init__(self, frames, seed_model, parent=None):
+    def __init__(self, frames, seed_model, n_images: int, span_min: float,
+                 parent=None):
         super().__init__(parent)
         self._frames = frames
         self._seed = seed_model
+        self._n_images = n_images
+        self._span_min = span_min
 
     def run(self):
         try:
@@ -144,7 +146,7 @@ class _RefineWorker(QThread):
                 self._seed,
                 max_residual_px=MAX_RESIDUAL_PX,
             )
-            self.finished.emit(model)
+            self.finished.emit(model, self._n_images, self._span_min)
         except Exception as e:
             self.failed.emit(str(e))
 
@@ -199,11 +201,18 @@ class CalibrationService(QObject):
         self._lock = threading.Lock()
         self._model: Optional[FisheyeModel] = None
         self._quality = 'none'
+        self._model_generation = 0  # incremented by set_model() to detect stale refinements
         self._last_refine_time = 0.0
         self._last_initial_attempt_time = 0.0
         self._refine_worker: Optional[_RefineWorker] = None
         self._initial_worker: Optional[_InitialCalWorker] = None
         self._pending_initial = None   # (image, dt, lat, lon) awaiting cal
+        self._refine_gen = -1          # generation when last refine was launched
+        # F9: per-frame skips stay at DEBUG (log spam on cloudy nights); a
+        # WARNING summary is emitted at most once per cooldown so the user can
+        # see "calibration is running but skipping frames" without the noise.
+        self._skipped_frames = 0
+        self._last_skip_summary_t = 0.0
         self._check_refine.connect(self._maybe_refine)
 
     # ------------------------------------------------------------------
@@ -227,6 +236,7 @@ class CalibrationService(QObject):
         Resets the frame buffer so accumulation starts fresh.
         """
         self._model = model
+        self._model_generation += 1
         new_q = model_quality(model, model.n_images, model.span_minutes)
         with self._lock:
             self._frames.clear()
@@ -269,6 +279,19 @@ class CalibrationService(QObject):
         # ------ Normal path: detect stars, store frame data -----------
         frame = self._detect_frame(image, dt, lat, lon)
         if frame is None:
+            self._skipped_frames += 1
+            now = time.monotonic()
+            if self._last_skip_summary_t == 0.0:
+                # Start the summary window on the first skip (stay quiet for now).
+                self._last_skip_summary_t = now
+            elif now - self._last_skip_summary_t >= REFINE_COOLDOWN_S:
+                log.warning(
+                    f"Calibration skipped {self._skipped_frames} frame(s) in the "
+                    "last cycle (too few stars / detection failed) — sky may be "
+                    "cloudy or the lens obstructed."
+                )
+                self._skipped_frames = 0
+                self._last_skip_summary_t = now
             return
 
         with self._lock:
@@ -326,6 +349,8 @@ class CalibrationService(QObject):
                     above_horizon.append((s, float(alt), float(az)))
             above_horizon.sort(key=lambda x: x[0]['vmag'])
 
+            img_w = image.width if hasattr(image, 'width') else 0
+            img_h = image.height if hasattr(image, 'height') else 0
             return {
                 'dt': dt,
                 'detected': detected,
@@ -333,9 +358,11 @@ class CalibrationService(QObject):
                 'sky_cx': sky_cx,
                 'sky_cy': sky_cy,
                 'sky_r': sky_r,
+                'image_width': img_w,
+                'image_height': img_h,
             }
         except Exception as e:
-            log.debug(f"CalibrationService frame detection failed: {e}")
+            log.warning(f"CalibrationService frame detection failed: {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -381,9 +408,10 @@ class CalibrationService(QObject):
                  f"({n} frames, {span_min:.1f} min span)")
         self.status_changed.emit(f"Refining calibration ({n} frames)\u2026")
         self._last_refine_time = now
+        self._refine_gen = self._model_generation  # snapshot for stale-result detection
 
         self._refine_worker = _RefineWorker(
-            frames_copy, self._model, parent=self,
+            frames_copy, self._model, n, span_min, parent=self,
         )
         self._refine_worker.finished.connect(self._on_refine_done)
         self._refine_worker.failed.connect(self._on_refine_failed)
@@ -411,6 +439,10 @@ class CalibrationService(QObject):
 
     def _on_initial_done(self, model: FisheyeModel) -> None:
         self._pending_initial = None
+        # Discard if the user clicked Calibrate Now while the worker was running.
+        if self._model_generation > 0:
+            log.info("Discarding initial auto-calibration — model was replaced by manual calibration")
+            return
         self._model = model
         model.n_images = 1
         model.span_minutes = 0.0
@@ -441,20 +473,23 @@ class CalibrationService(QObject):
     # Multi-image refinement results
     # ------------------------------------------------------------------
 
-    def _on_refine_done(self, model: FisheyeModel) -> None:
-        with self._lock:
-            n_images = len(self._frames)
-            dts = [f['dt'] for f in self._frames]
-            span_min = (
-                (max(dts) - min(dts)).total_seconds() / 60.0
-                if dts else 0.0
-            )
+    def _on_refine_done(self, model: FisheyeModel, n_images: int, span_min: float) -> None:
+        # Discard if Calibrate Now replaced the model while the worker was running.
+        if self._refine_gen != self._model_generation:
+            log.info("Discarding stale refinement — model was replaced during calibration")
+            return
 
         model.n_images = n_images
         model.span_minutes = round(span_min, 1)
 
         new_q = model_quality(model, n_images, span_min)
-        improved = (
+        # Reject if the new model is more than 15% worse by RMS — a quality-rank
+        # upgrade is not sufficient justification for overwriting a precise model.
+        rms_ok = (
+            self._model is None
+            or model.rms_residual <= self._model.rms_residual * 1.15
+        )
+        improved = rms_ok and (
             CalibrationQuality.rank(new_q) > CalibrationQuality.rank(self._quality)
             or (
                 model.rms_residual < self._model.rms_residual
@@ -497,18 +532,14 @@ class CalibrationService(QObject):
     # Persistence
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _save_model(model: FisheyeModel) -> None:
+    def _save_model(self, model: FisheyeModel) -> None:
         """Save model to the production calibration file."""
         try:
-            from services.app_config import APP_DATA_FOLDER
-            cal_dir = os.path.join(
-                os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER,
-            )
-            os.makedirs(cal_dir, exist_ok=True)
-            cal_path = os.path.join(cal_dir, 'allsky_calibration.json')
+            from services.app_config import get_calibration_path
+            cal_path = get_calibration_path()
             model.calibrated_at = datetime.now(timezone.utc).isoformat()
             model.save(cal_path)
             log.info(f"Calibration saved to {cal_path}")
         except Exception as e:
             log.error(f"Failed to save calibration: {e}")
+            self.status_changed.emit(f"Calibration save failed: {e}")

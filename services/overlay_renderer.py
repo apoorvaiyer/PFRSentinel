@@ -146,14 +146,6 @@ def add_overlays(image_input, overlays, metadata, image_cache=None, weather_serv
         if img.mode != 'RGBA':
             img = img.convert('RGBA')
 
-        allsky_config = metadata.get('__allsky_config')
-        if allsky_config and allsky_config.get('enabled', False):
-            try:
-                from .allsky import render_allsky_overlay
-                img = render_allsky_overlay(img, allsky_config, metadata)
-            except Exception:
-                pass
-
         for overlay in overlays:
             overlay_type = overlay.get('type', 'text')
 

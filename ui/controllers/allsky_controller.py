@@ -7,7 +7,6 @@ Manages:
   - Config save/load for allsky_overlay section
   - Signals to panel for status updates
 """
-import os
 from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 
@@ -136,18 +135,11 @@ class AllSkyController(QObject):
             self.status_changed.emit("No image available — start capture first.")
             return
 
-        # The cached frame is the RAW (pre-resize) image, but the overlay is
-        # rendered on the post-resize frame (resize_percent). A model calibrated
-        # at raw scale would project stars at the wrong radius on the rendered
-        # image. Match the render resolution so the model is directly usable.
-        resize_percent = int(self._mw.config.get('resize_percent', 100) or 100)
-        if resize_percent < 100:
-            from PIL import Image as _PILImage
-            w = int(image.width * resize_percent / 100)
-            h = int(image.height * resize_percent / 100)
-            image = image.resize((w, h), _PILImage.Resampling.LANCZOS)
-            log.info(f"Calibrate Now: resized frame to {resize_percent}% "
-                     f"({w}x{h}) to match render resolution")
+        # No pre-resize: calibrate() resolution-binds the model to whatever
+        # frame it is given (model.image_width/height), and the renderer scales
+        # the model to the actual render resolution (overlay_renderer.py). A
+        # manual resize here would just double-resize the watch-mode frame,
+        # which is already at output resolution.
 
         lat = float(self._mw.config.get('weather', {}).get('latitude', 0) or 0)
         lon = float(self._mw.config.get('weather', {}).get('longitude', 0) or 0)
@@ -197,18 +189,13 @@ class AllSkyController(QObject):
     # ------------------------------------------------------------------
 
     def _on_calibration_done(self, model) -> None:
-        from services.app_config import APP_DATA_FOLDER
-        import os
+        from services.app_config import get_calibration_path
 
         self._model = model
         info = self.get_calibration_info()
 
         # Persist model JSON
-        cal_dir = os.path.join(
-            os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER
-        )
-        os.makedirs(cal_dir, exist_ok=True)
-        cal_path = os.path.join(cal_dir, 'allsky_calibration.json')
+        cal_path = get_calibration_path()
         try:
             model.save(cal_path)
             # Update config with new calibration path
@@ -269,11 +256,8 @@ class AllSkyController(QObject):
         self._model = model
         info = self.get_calibration_info()
         # Update config path (service already saved the file)
-        from services.app_config import APP_DATA_FOLDER
-        cal_path = os.path.join(
-            os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER,
-            'allsky_calibration.json',
-        )
+        from services.app_config import get_calibration_path
+        cal_path = get_calibration_path()
         allsky_cfg = dict(self._mw.config.get('allsky_overlay', {}))
         allsky_cfg['calibration_file'] = cal_path
         self._mw.config.set('allsky_overlay', allsky_cfg)
@@ -284,14 +268,19 @@ class AllSkyController(QObject):
         self.settings_changed.emit()
 
     def _get_latest_frame(self):
-        """Return (image, source_description) for the most recent frame.
+        """Return (image, source_description) for the most recent clean frame.
 
         Tries, in order:
-          1. MainWindow._cached_raw_image — set for BOTH Watch and Camera
-             modes whenever a raw frame arrives. Primary source.
-          2. CameraController._last_frame — legacy fallback (may not exist).
-          3. MainWindow.last_processed_image — path on disk to the last
-             saved output image. Loaded as a PIL image.
+          1. MainWindow._cached_raw_image — Camera mode caches the RAW
+             pre-overlay frame in on_image_captured; Watch mode caches the
+             clean (no all-sky) output frame in _on_image_processed. Primary
+             source for both modes.
+          2. CameraController._last_frame — legacy in-memory fallback.
+
+        The old "load the last saved output image from disk" fallback was
+        removed: that file is overlay-contaminated and already resized, so
+        calibrating on it produced misaligned models. If no clean in-memory
+        frame exists we fail with a clear status message instead.
 
         Returns (None, '') if nothing is available.
         """
@@ -308,14 +297,6 @@ class AllSkyController(QObject):
                         return frame, "camera controller"
         except Exception as e:
             log.debug(f"Camera controller probe failed: {e}")
-
-        output_path = getattr(self._mw, 'last_processed_image', None)
-        if output_path and os.path.isfile(output_path):
-            try:
-                from PIL import Image as PILImage
-                return PILImage.open(output_path).copy(), f"disk ({output_path})"
-            except Exception as e:
-                log.debug(f"Could not load last processed image: {e}")
 
         return None, ""
 

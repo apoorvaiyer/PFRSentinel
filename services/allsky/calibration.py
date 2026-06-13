@@ -38,6 +38,7 @@ from .calibration_validate import (
     validate_bright_anchors,
     validate_lens_polynomial,
     warn_sky_coverage,
+    tol_scale,
 )
 
 
@@ -122,9 +123,13 @@ def calibrate(
             "check lat/lon configuration and UTC datetime."
         )
 
+    # Resolution-independent match tolerances: scale every pixel tolerance by
+    # the actual sky radius relative to the reference resolution (F10).
+    _tol_scale = tol_scale(_sky_r)
+
     # --- Step 4: Grid search for best initial a1 ---
     model, matches = _find_best_initial_model(
-        detected, above_horizon, cx0, cy0, sky_radius_px
+        detected, above_horizon, cx0, cy0, sky_radius_px, tol_scale=_tol_scale,
     )
     log.info(f"Calibration: best initial model a1={model.a1:.1f}, "
              f"{len(matches)} initial matches")
@@ -140,7 +145,7 @@ def calibrate(
                 sky_cx=_sky_cx, sky_cy=_sky_cy, sky_radius=_sky_r,
                 min_matches=min_matches, max_residual_px=max_residual_px,
             )
-        except (CalibrationError, Exception) as e:
+        except CalibrationError as e:
             log.info(f"Triangle fallback also failed: {e}")
 
         raise CalibrationError(
@@ -156,7 +161,8 @@ def calibrate(
     # --- Step 5: Iterative fit ---
     model, rms = _iterative_fit(
         matches, model, lat_deg, lon_deg, dt,
-        above_horizon, detected, min_matches, max_residual_px
+        above_horizon, detected, min_matches, max_residual_px,
+        tol_scale=_tol_scale,
     )
 
     if rms > max_residual_px:
@@ -174,7 +180,8 @@ def calibrate(
     #       rejects spurious density-noise fits that look fine on average
     #       but miss Sirius/Vega/etc. by 100+ px.
     poly_ok, poly_msg = validate_lens_polynomial(model)
-    anch_ok, anch_msg = validate_bright_anchors(model, above_horizon, detected)
+    anch_ok, anch_msg = validate_bright_anchors(
+        model, above_horizon, detected, sky_r=_sky_r)
     if not (poly_ok and anch_ok):
         reason = "; ".join(m for ok, m in ((poly_ok, poly_msg), (anch_ok, anch_msg)) if not ok)
         log.warning(
@@ -198,6 +205,8 @@ def calibrate(
 
     warn_sky_coverage(model)
 
+    model.image_width = img_w
+    model.image_height = img_h
     model.calibrated_at = datetime.now(timezone.utc).isoformat()
     log.info(f"Calibration succeeded: {model}")
     return model
@@ -217,6 +226,7 @@ def _find_best_initial_model(
     cx0: float,
     cy0: float,
     sky_radius_px: Optional[float],
+    tol_scale: float = 1.0,
 ) -> Tuple[FisheyeModel, List[Tuple]]:
     """
     Grid search over a1, axis_alt, and axis_az to find the initial model that
@@ -269,7 +279,8 @@ def _find_best_initial_model(
                             axis_az=axis_az,
                             east_left=east_left,
                         )
-                        matches = _brightness_match(detected, above_horizon, model, tol_px=50.0)
+                        matches = _brightness_match(detected, above_horizon, model,
+                                                    tol_px=50.0 * tol_scale)
                         score = score_matches_with_spread(matches)
                         if score > best_score:
                             best_score = score
@@ -294,7 +305,8 @@ def _find_best_initial_model(
     # yielded a sub-optimal phase-1 match.  Sweeping 16 roll angles here
     # costs only 16 extra _brightness_match calls — negligible overhead.
     best_model, best_matches, best_score = _roll_sweep(
-        best_model, best_matches, best_score, detected, above_horizon, tol_px=50.0
+        best_model, best_matches, best_score, detected, above_horizon,
+        tol_px=50.0 * tol_scale,
     )
     log.info(f"  Roll sweep: best roll={np.degrees(best_model.roll):.1f}°, "
              f"score={best_score:.1f} ({len(best_matches)} matches)")
@@ -452,7 +464,8 @@ def _brightness_match(
 
 
 def _iterative_fit(
-    matches, model, lat, lon, dt, above_horizon, detected, min_matches, max_residual
+    matches, model, lat, lon, dt, above_horizon, detected, min_matches, max_residual,
+    tol_scale: float = 1.0,
 ):
     """Iterative fit with scipy.optimize.least_squares."""
     if _least_squares is None:
@@ -509,8 +522,10 @@ def _iterative_fit(
             log.warning(f"Calibration fit iteration {iteration} failed: {e}")
             break
 
-        # Re-match with tighter tolerance as fit improves
-        tol = max(10.0, 50.0 - iteration * 6.0)
+        # Re-match with tighter tolerance as fit improves. The 50->10 px
+        # schedule shape is preserved (an invariant); only the endpoints are
+        # scaled to the sky radius so behaviour is resolution-independent.
+        tol = tol_scale * max(10.0, 50.0 - iteration * 6.0)
         matches = _brightness_match(detected, above_horizon, model, tol_px=tol)
         rms = _compute_rms(matches, model)
         log.info(f"  Iteration {iteration}: {len(matches)} matches, RMS={rms:.2f}px, "

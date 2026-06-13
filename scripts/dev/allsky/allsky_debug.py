@@ -687,8 +687,8 @@ def _get_latlon(lat_arg, lon_arg):
 def _find_default_cal() -> str:
     """Try to find a calibration file in the app data folder."""
     try:
-        from services.app_config import APP_DATA_FOLDER
-        path = os.path.join(os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER, 'allsky_calibration.json')
+        from services.app_config import get_calibration_path
+        path = get_calibration_path()
         if os.path.exists(path):
             return path
     except Exception:

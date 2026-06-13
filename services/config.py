@@ -245,25 +245,34 @@ DEFAULT_CONFIG = {
         "video_crf": 23,               # H.264 CRF quality (0-51, lower=better, 23=default)
         "video_preset": "fast",        # ffmpeg preset (ultrafast/fast/medium/slow)
         "include_overlays": False,     # False = clean frame, True = frame with overlays
-        "include_allsky_overlay": False,  # Only applies when include_overlays=True: bake all-sky stars/constellations into timelapse
         "output_dir": "",              # "" = AppData/PFRSentinel/timelapse/
         "max_videos_to_keep": 30,      # Auto-delete oldest beyond this many days
     },
 
-    # Meteor Tracker — frame-differencing trail detection
+    # Meteor Tracker — temporal-stack trail detection (see docs/METEOR_DETECTION_PLAN.md)
     "meteor": {
         "enabled": False,
-        "min_length": 100,              # Minimum trail length in pixels
-        "diff_threshold": 25,           # Pixel threshold for frame differencing (5-100)
-        "adaptive_threshold": True,     # Auto-compute threshold from sky noise (overrides diff_threshold)
+        "min_length": 100,              # Minimum trail length in pixels (full-res)
         "detection_cooldown": 30,       # Seconds between detection events (0 = disabled)
-        "multi_frame_confirm": False,   # Require detections across 2+ frames (short exposures only)
-        "min_confirm_frames": 2,        # Frames needed when multi_frame_confirm is True
         "save_detections": True,        # Append events to a JSONL log
         "log_file": "",                 # "" = %LOCALAPPDATA%\PFRSentinel\meteor_detections.jsonl
         "save_annotated": False,        # Save annotated full-frame copies with detections
         "annotated_dir": "",            # "" = disabled
         "exclusion_zones": [],          # [{x,y,w,h,note}] — user-rejected regions
+        # --- Temporal stack detector (Phase 2+) ---
+        "stack_frames": 6,              # FrameStack ring-buffer depth
+        "detection_long_side": 1280,    # Detection working resolution (long side, px)
+        "noise_sensitivity": "normal",  # low | normal | high → diff-noise threshold mapping
+        "min_brightness": 20,           # Min mean transient value along trail (0 = off)
+        "max_nonline_prob": 0.15,       # Reject blobs fatter than this width/length ratio
+        "max_length_frac": 0.5,         # Reject streaks longer than this fraction of frame width
+        "dash_reject_score": 0.6,       # Dash-periodicity score above which → plane strobes
+        "track_suppress_minutes": 10,   # Plane-trajectory suppression TTL
+        # --- Deprecated (pre-rework, read-but-ignored; remove in Phase 6) ---
+        "diff_threshold": 25,
+        "adaptive_threshold": True,
+        "multi_frame_confirm": False,
+        "min_confirm_frames": 2,
     },
 
     # All-sky overlay — astronomical annotations on each frame

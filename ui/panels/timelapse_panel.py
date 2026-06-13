@@ -386,13 +386,6 @@ class TimelapsePanel(QScrollArea):
         self._overlays_switch.toggled.connect(self._on_settings_changed)
         quality_card.add_widget(self._overlays_switch)
 
-        self._allsky_overlay_switch = SwitchRow(
-            "Include all-sky overlay in video",
-            "Bake stars, constellations and planets into timelapse frames (only when overlays are enabled)"
-        )
-        self._allsky_overlay_switch.toggled.connect(self._on_settings_changed)
-        quality_card.add_widget(self._allsky_overlay_switch)
-
         layout.addWidget(quality_card)
 
         # === FPS CALCULATOR ===
@@ -619,7 +612,6 @@ class TimelapsePanel(QScrollArea):
         _quality_map = {0: 28, 1: 23, 2: 18, 3: 12}
         tl['video_crf'] = _quality_map.get(self._quality_combo.currentIndex(), 23)
         tl['include_overlays'] = self._overlays_switch.is_checked()
-        tl['include_allsky_overlay'] = self._allsky_overlay_switch.is_checked()
         tl['output_dir'] = self._output_dir_input.text()
         tl['max_videos_to_keep'] = self._keep_spin.value()
         tl['calc_session_hours'] = self._calc_hours_spin.value()
@@ -670,7 +662,6 @@ class TimelapsePanel(QScrollArea):
                 _quality_reverse.get(tl.get('video_crf', 23), 1)
             )
             self._overlays_switch.set_checked(tl.get('include_overlays', False))
-            self._allsky_overlay_switch.set_checked(tl.get('include_allsky_overlay', False))
             self._output_dir_input.setText(tl.get('output_dir', ''))
             self._keep_spin.setValue(tl.get('max_videos_to_keep', 30))
             self._calc_hours_spin.setValue(tl.get('calc_session_hours', 6))

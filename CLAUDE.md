@@ -1,6 +1,6 @@
 # CLAUDE.md — PFR Sentinel
 
-PFR Sentinel is a dual-mode astrophotography monitoring app built for 24/7 unattended observatory use. It either (1) watches a directory for new images written by another capture program (e.g. NINA), or (2) captures directly from a ZWO ASI camera. Either way, it adds configurable metadata + weather overlays and pushes the result to multiple output sinks simultaneously (file, web, Discord, RTSP).
+PFR Sentinel is a dual-mode astrophotography monitoring app built for 24/7 unattended observatory use. It either (1) watches a directory for new images written by another capture program (e.g. NINA), or (2) captures directly from a ZWO ASI camera. Either way, it adds configurable metadata + weather overlays and pushes the result to multiple output sinks simultaneously (file, web, Discord).
 
 Stack: Python 3.13, PySide6 6.8.1 + qfluentwidgets 1.10.5 (Windows 11 Fluent Design), Pillow, OpenCV, watchdog, ONNX runtime for ML inference. Packaged as a Windows installer via PyInstaller + Inno Setup.
 
@@ -14,7 +14,6 @@ Stack: Python 3.13, PySide6 6.8.1 + qfluentwidgets 1.10.5 (Windows 11 Fluent Des
 - **File** — saves to disk
 - **Web** — HTTP server, `/latest` (image) and `/status` (JSON) endpoints
 - **Discord** — periodic webhook posts with weather embeds
-- **RTSP** — H.264 live stream via ffmpeg at `rtsp://127.0.0.1:8554/stream`
 
 All output dispatch goes through `_push_to_output_servers()` in the processor.
 
@@ -42,7 +41,6 @@ PFRSentinel/
 │   ├── discord_alerts.py       # Discord webhook client
 │   ├── weather.py              # OpenWeatherMap API, 10-min cache
 │   ├── web_output.py           # HTTP server
-│   ├── rtsp_output.py          # ffmpeg RTSP stream
 │   ├── timelapse_writer.py     # ffmpeg stdin pipe, time-gated capture
 │   ├── ffmpeg_utils.py         # Shared ffmpeg detection
 │   └── allsky/                 # All-sky fisheye calibration + overlay
@@ -63,7 +61,7 @@ PFRSentinel/
 - **Camera mode**: `zwo_camera.py` → debayer → PIL Image + metadata → `capture_controller.py` → `processor.py` → outputs
 
 ### Threading
-- Camera capture, watcher observer, Discord poster, web server, RTSP stream all run on background threads.
+- Camera capture, watcher observer, Discord poster, and web server all run on background threads.
 - All GUI updates flow through Qt signals/slots or `QMetaObject.invokeMethod()` — never touch widgets from worker threads.
 - Logger uses a queue to avoid race conditions.
 
@@ -168,13 +166,14 @@ Standalone (not in pytest suite):
 | onnxruntime | ML inference |
 | astral | Sunset/sunrise for timelapse windows |
 | requests | Weather API + Discord webhooks |
-| ffmpeg (external) | Timelapse + RTSP |
+| ffmpeg (external) | Timelapse |
 | PyInstaller 6.17.0 | Standalone executable |
 
 ## Active plans
 
 - [`docs/CODE_QUALITY_PLAN.md`](docs/CODE_QUALITY_PLAN.md) — code quality + structure roadmap
 - [`docs/ALLSKY_CALIBRATION_PLAN.md`](docs/ALLSKY_CALIBRATION_PLAN.md) — read before touching all-sky calibration
+- [`docs/METEOR_DETECTION_PLAN.md`](docs/METEOR_DETECTION_PLAN.md) — meteor detection rework for the long-exposure regime; read before touching `services/meteor/`
 
 Developer-facing technical reference (feature design, build/release tooling, vendor SDK) lives in [`docs/dev/`](docs/dev/README.md). End-user content is on the project wiki.
 

@@ -18,6 +18,7 @@ from services.logger import app_logger
 from services.processor import add_overlays, auto_stretch_image
 from services.sharpening import apply_unsharp_mask
 from services.ml_service import get_ml_service, analyze_image_for_tokens
+from services.allsky.overlay_renderer import render_allsky_for_preview as _render_allsky_for_preview
 from .dev_mode_utils import dev_mode_saver, collect_ml_contribution_sample
 
 
@@ -31,14 +32,15 @@ class ImageProcessingTask:
 
 class ImageProcessorWorker(QThread):
     """Background worker for image processing"""
-    
+
     # Signals
-    processing_complete = Signal(object, dict, str)  # processed PIL Image, metadata, output_path
-    preview_ready = Signal(object, dict)  # PIL Image for preview, histogram data
+    processing_complete = Signal(object, object, dict, str)  # preview PIL Image, output PIL Image, metadata, output_path
+    preview_ready = Signal(object, dict)  # clean pre-overlay PIL Image, histogram data
     error_occurred = Signal(str)
-    timelapse_ready = Signal(object, object)  # (clean PIL Image pre-overlay, overlaid PIL Image)
+    timelapse_ready = Signal(object, object)  # (clean pre-overlay PIL Image, output PIL Image)
+    detection_frame_ready = Signal(object, object)  # (grayscale PIL at detection scale, full-res clean PIL)
     processing_time = Signal(float)  # elapsed seconds for last frame
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._queue = queue.Queue(maxsize=10)
@@ -210,6 +212,28 @@ class ImageProcessorWorker(QThread):
                 new_height = int(img.height * resize_percent / 100)
                 img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
             
+            # === Detection frame for meteor stack (pre-stretch, linear, downscaled) ===
+            # Derived here so it reflects the linear scene BEFORE per-frame MTF stretch.
+            # A fixed linear scale means consecutive frames of a static scene are
+            # photometrically stable, so their diff genuinely cancels.
+            # Only computed when the meteor feature can actually consume it —
+            # this is a full-frame LANCZOS resize on every capture otherwise.
+            _det_frame = None
+            _meteor_cfg = config.get('meteor', {})
+            if _meteor_cfg.get('enabled', False):
+                from services.dev_mode_config import is_dev_mode_available
+                if is_dev_mode_available():
+                    _det_long_side = int(_meteor_cfg.get('detection_long_side', 1280))
+                    _det_factor = min(1.0, _det_long_side / max(img.width, img.height))
+                    if _det_factor < 1.0:
+                        _det_frame = img.resize(
+                            (max(1, int(img.width * _det_factor)),
+                             max(1, int(img.height * _det_factor))),
+                            Image.Resampling.LANCZOS,
+                        ).convert('L')
+                    else:
+                        _det_frame = img.convert('L')
+
             # Apply auto-stretch (MTF) if enabled
             # Use 16-bit raw data when available for higher precision stretching
             if auto_stretch_config.get('enabled', False):
@@ -226,7 +250,26 @@ class ImageProcessorWorker(QThread):
             
             # Cache stretched image for preview
             stretched_for_preview = img.copy()
-            
+
+            # Feed clean (pre-enhancement) frame to background calibration service.
+            # Must happen before auto-brightness / saturation / sharpening which
+            # make detection results non-deterministic across frames.
+            allsky_cfg = config.get('allsky_overlay', {})
+            if self._calibration_service and allsky_cfg.get('enabled', False):
+                try:
+                    from services.observing_window import is_observing_window
+                    if is_observing_window(config, metadata, feature="All-sky calibration"):
+                        weather_cfg = config.get('weather', {})
+                        cal_lat = float(weather_cfg.get('latitude', 0) or 0)
+                        cal_lon = float(weather_cfg.get('longitude', 0) or 0)
+                        if cal_lat != 0 or cal_lon != 0:
+                            from datetime import timezone as _tz
+                            self._calibration_service.feed_frame(
+                                stretched_for_preview, datetime.now(_tz.utc), cal_lat, cal_lon,
+                            )
+                except Exception as e:
+                    app_logger.warning(f"Calibration feed skipped: {e}")
+
             # Apply auto brightness
             if auto_brightness:
                 gray_img = img.convert('L')
@@ -323,60 +366,19 @@ class ImageProcessorWorker(QThread):
 
             del raw_array  # Last use above — release the 76 MB numpy array before overlay rendering
 
-            # Feed frame to background calibration service (before overlays).
-            # Same gate as the overlay itself: sun below civil twilight and
-            # (if ML is on) roof open — calibration is pointless otherwise and
-            # wastes ~30s of CPU on each cooldown cycle during the day.
-            allsky_cfg = config.get('allsky_overlay', {})
-            if self._calibration_service and allsky_cfg.get('enabled', False):
-                try:
-                    from services.observing_window import is_observing_window
-                    if is_observing_window(config, metadata, feature="All-sky calibration"):
-                        weather_cfg = config.get('weather', {})
-                        cal_lat = float(weather_cfg.get('latitude', 0) or 0)
-                        cal_lon = float(weather_cfg.get('longitude', 0) or 0)
-                        if cal_lat != 0 or cal_lon != 0:
-                            from datetime import timezone as _tz
-                            self._calibration_service.feed_frame(
-                                img, datetime.now(_tz.utc), cal_lat, cal_lon,
-                            )
-                except Exception as e:
-                    app_logger.debug(f"Calibration feed skipped: {e}")
+            # Base render — no all-sky overlay. This image is saved to disk and
+            # pushed to all output sinks (file, web, Discord). Never contains
+            # the all-sky overlay regardless of calibration state.
+            output_img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
 
-            from services.processor import _inject_allsky_metadata
-            _inject_allsky_metadata(config, metadata)
+            # Preview render — all-sky overlay drawn on a copy, never leaves the app.
+            preview_img = _render_allsky_for_preview(output_img, allsky_cfg, config, metadata)
 
-            # Add overlays using services/processor.py function
-            # stretched_for_preview is the clean pre-overlay frame (set at line ~194)
-            # When timelapse wants overlays but explicitly excludes all-sky, render twice:
-            # once without all-sky for the timelapse sink, once with for the main output.
-            timelapse_cfg = config.get('timelapse', {})
-            # Render a separate timelapse frame without the all-sky overlay whenever
-            # allsky is calibrated and the user hasn't explicitly enabled allsky in the
-            # timelapse.  The include_overlays check is intentionally absent: when
-            # include_overlays=False the controller picks clean_image anyway, but we
-            # still need img_for_timelapse to be allsky-free in case include_overlays
-            # is True.  The extra render is negligible and avoids the overlay leaking
-            # regardless of the include_overlays state.
-            needs_timelapse_no_allsky = (
-                '__allsky_config' in metadata
-                and timelapse_cfg.get('enabled', False)
-                and not timelapse_cfg.get('include_allsky_overlay', False)
-            )
-            if needs_timelapse_no_allsky:
-                metadata_no_allsky = dict(metadata)
-                metadata_no_allsky.pop('__allsky_config', None)
-                img_for_timelapse = add_overlays(
-                    img.copy(), overlays, metadata_no_allsky,
-                    weather_service=self._weather_service,
-                )
-                img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
-            else:
-                img = add_overlays(img, overlays, metadata, weather_service=self._weather_service)
-                img_for_timelapse = img
-
-            # Emit both versions for timelapse (controller picks based on include_overlays setting)
-            self.timelapse_ready.emit(stretched_for_preview, img_for_timelapse)
+            # Timelapse receives the clean output image.
+            self.timelapse_ready.emit(stretched_for_preview, output_img)
+            # Meteor stack receives the pre-stretch detection frame + full-res clean.
+            if _det_frame is not None:
+                self.detection_frame_ready.emit(_det_frame, stretched_for_preview)
 
             # Generate output path
             session = metadata.get('session', datetime.now().strftime('%Y-%m-%d'))
@@ -388,15 +390,14 @@ class ImageProcessorWorker(QThread):
             output_filename += '.png' if output_format.lower() == 'png' else '.jpg'
             output_path = os.path.join(output_dir, output_filename)
             
-            # Save to disk
+            # Save to disk (output_img — clean, no all-sky)
             if output_format.lower() == 'png':
-                img.save(output_path, 'PNG')
+                output_img.save(output_path, 'PNG')
             else:
-                img.save(output_path, 'JPEG', quality=jpg_quality)
-            
+                output_img.save(output_path, 'JPEG', quality=jpg_quality)
+
             app_logger.debug(f"Saved: {os.path.basename(output_path)}")
 
-            # Roof status change detection — fire Discord after 2 confirmed consecutive frames
             if _ml_roof_status and _ml_roof_status[0] in ('Open', 'Closed'):
                 self._check_roof_change(_ml_roof_status[0] == 'Open', _ml_roof_status[1], output_path)
 
@@ -404,11 +405,8 @@ class ImageProcessorWorker(QThread):
             metadata.pop('RAW_RGB_16BIT', None)
             metadata.pop('RAW_RGB_NO_WB', None)
             
-            # Emit preview signal with stretched image and histogram
             self.preview_ready.emit(stretched_for_preview, hist_data)
-            
-            # Emit completion signal
-            self.processing_complete.emit(img, metadata, output_path)
+            self.processing_complete.emit(preview_img, output_img, metadata, output_path)
 
             # Emit processing time
             _timer.__exit__(None, None, None)
@@ -465,10 +463,11 @@ class ImageProcessor(QObject):
     """
     
     # Signals forwarded from worker
-    processing_complete = Signal(object, dict, str)  # PIL Image, metadata, output_path
-    preview_ready = Signal(object, dict)  # PIL Image for preview, histogram data
+    processing_complete = Signal(object, object, dict, str)  # preview PIL Image, output PIL Image, metadata, output_path
+    preview_ready = Signal(object, dict)  # clean pre-overlay PIL Image, histogram data
     error_occurred = Signal(str)
-    timelapse_ready = Signal(object, object)  # (clean PIL Image, overlaid PIL Image)
+    timelapse_ready = Signal(object, object)  # (clean pre-overlay PIL Image, output PIL Image)
+    detection_frame_ready = Signal(object, object)  # (grayscale PIL at detection scale, full-res clean PIL)
     processing_time = Signal(float)  # elapsed seconds
 
     def __init__(self, parent=None):
@@ -480,6 +479,7 @@ class ImageProcessor(QObject):
         self._worker.preview_ready.connect(self._on_preview_ready)
         self._worker.error_occurred.connect(self._on_error)
         self._worker.timelapse_ready.connect(self.timelapse_ready)
+        self._worker.detection_frame_ready.connect(self.detection_frame_ready)
         self._worker.processing_time.connect(self.processing_time)
         
         # Reference to main window for config access
@@ -585,9 +585,8 @@ class ImageProcessor(QObject):
 
         return config
     
-    def _on_processing_complete(self, img, metadata, output_path):
-        """Forward processing complete signal"""
-        self.processing_complete.emit(img, metadata, output_path)
+    def _on_processing_complete(self, preview_img, output_img, metadata, output_path):
+        self.processing_complete.emit(preview_img, output_img, metadata, output_path)
     
     def _on_preview_ready(self, img, hist_data):
         """Forward preview ready signal"""

@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from services.logger import app_logger
 from services.watcher import FileWatcher
+from services.allsky.overlay_renderer import render_allsky_for_preview
 
 
 class WatchControllerQt(QObject):
@@ -17,11 +18,11 @@ class WatchControllerQt(QObject):
     Qt-compatible watch controller
     Wraps existing FileWatcher service for use with PySide6 UI
     """
-    
+
     started = Signal()
     stopped = Signal()
     file_detected = Signal(str)  # File path
-    image_processed = Signal(object, str)  # (PIL Image, output_path)
+    image_processed = Signal(object, object, str)  # (preview PIL Image, output PIL Image, output_path)
     error = Signal(str)
     
     def __init__(self, main_window, parent=None):
@@ -74,4 +75,6 @@ class WatchControllerQt(QObject):
     def _on_file_processed(self, output_path: str, processed_img):
         """Called by FileWatcher after a file has been processed and saved"""
         self.file_detected.emit(output_path)
-        self.image_processed.emit(processed_img, output_path)
+        allsky_cfg = self.config.get('allsky_overlay', {})
+        preview_img = render_allsky_for_preview(processed_img, allsky_cfg, self.config, {})
+        self.image_processed.emit(preview_img, processed_img, output_path)

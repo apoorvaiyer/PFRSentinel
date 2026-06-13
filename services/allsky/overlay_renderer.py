@@ -7,6 +7,7 @@ Orchestrates: grid → constellations → Messier → NGC → planets.
 All layers share a single LabelGrid for collision avoidance.
 Fails silently if model not calibrated or any layer errors.
 """
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -30,6 +31,10 @@ from .render_constellations import render_constellations
 from .render_objects import render_messier, render_ngc, render_planets, _is_sky_visible
 from .render_stars import render_bright_stars, star_uid, star_display_name
 from .star_centroid import detect_stars, estimate_sky_circle
+
+# One-shot guard so the model-scaling INFO log fires once per scale factor
+# rather than on every rendered frame (Phase 3.1).
+_last_scale_logged: Optional[float] = None
 
 def _build_detection_mask(img: Image.Image) -> np.ndarray:
     """Build a sky visibility mask from actual star detections.
@@ -118,9 +123,42 @@ def render_allsky_overlay(
     if model is None:
         return img  # Silently skip — not calibrated
 
+    # --- Rescale model when the target image differs from calibration size ---
+    # resize_percent < 100 shrinks the image after calibration; the model's
+    # pixel coordinates (cx, cy, a1, a3, a5) must scale proportionally or
+    # every projected star lands in the wrong pixel.
+    if model.image_width > 0 and model.image_height > 0:
+        w_target, h_target = img.size
+        w_model, h_model = model.image_width, model.image_height
+        if w_target != w_model or h_target != h_model:
+            ar_model = w_model / h_model
+            ar_target = w_target / h_target
+            if abs(ar_model - ar_target) / max(ar_model, ar_target) > 0.02:
+                log.warning(
+                    f"allsky: aspect-ratio mismatch — calibrated at "
+                    f"{w_model}x{h_model}, rendering at {w_target}x{h_target}. "
+                    "Image was cropped, not resized; skipping overlay to avoid "
+                    "misalignment."
+                )
+                return img
+            s = w_target / w_model
+            global _last_scale_logged
+            if s != _last_scale_logged:
+                log.info(
+                    f"allsky: scaling calibration model by {s:.3f} "
+                    f"({w_model}x{h_model} → {w_target}x{h_target})"
+                )
+                _last_scale_logged = s
+            model = replace(
+                model,
+                cx=model.cx * s, cy=model.cy * s,
+                a1=model.a1 * s, a3=model.a3 * s, a5=model.a5 * s,
+                image_width=w_target, image_height=h_target,
+            )
+
     # --- Determine observation time ---
-    # Prefer the authoritative true-UTC instant injected by the pipeline
-    # (_inject_allsky_metadata), which matches the clock the calibration uses.
+    # Prefer the authoritative true-UTC instant injected by the preview path
+    # (render_allsky_for_preview), which matches the clock the calibration uses.
     # Only fall back to the metadata {DATETIME} token (naive local time) for
     # direct callers such as tests and the dev debug tool; that legacy path
     # still honours utc_offset_hours.
@@ -203,6 +241,38 @@ def render_allsky_overlay(
         img = img.convert(original_mode)
 
     return img
+
+
+def render_allsky_for_preview(
+    output_img: Image.Image,
+    allsky_cfg: dict,
+    config: dict,
+    metadata: dict,
+) -> Image.Image:
+    """Return output_img overlaid with all-sky graphics for GUI preview only.
+
+    Guards: enabled flag, calibration_file present, observing window open.
+    Returns the original image unchanged when any guard fails — callers must
+    not mutate the return value in that case.
+    """
+    if not allsky_cfg.get('enabled', False):
+        return output_img
+    if not allsky_cfg.get('calibration_file', ''):
+        return output_img
+    try:
+        from services.observing_window import is_observing_window
+        if not is_observing_window(config, metadata, feature="All-sky overlay"):
+            return output_img
+        weather_cfg = config.get('weather', {})
+        cfg = dict(allsky_cfg)
+        cfg['_lat'] = float(weather_cfg.get('latitude', 0) or 0)
+        cfg['_lon'] = float(weather_cfg.get('longitude', 0) or 0)
+        cfg['_elevation'] = float(weather_cfg.get('elevation', 0) or 0)
+        cfg['_obs_utc'] = datetime.now(timezone.utc).isoformat()
+        return render_allsky_overlay(output_img.copy(), cfg, metadata)
+    except Exception as e:
+        log.debug(f"All-sky preview render skipped: {e}")
+        return output_img
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +418,7 @@ def _load_model(config: dict) -> Optional[FisheyeModel]:
 def _get_obs_utc(config: dict) -> Optional[datetime]:
     """Return the authoritative true-UTC observation time, or None.
 
-    Set by the capture pipeline (_inject_allsky_metadata) to the same instant
+    Set by the preview path (render_allsky_for_preview) to the same instant
     the calibration uses. When present it is the single source of truth for
     sky orientation and the legacy local-time/utc_offset path is skipped.
     """

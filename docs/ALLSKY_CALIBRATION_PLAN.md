@@ -157,43 +157,27 @@ def model_quality(model: FisheyeModel, n_images: int = 1,
 
 ## What Needs to Be Built (Priority Order)
 
-### 1. `services/allsky/calibration_service.py` — Background accumulation
-**Purpose:** Wire the multi-image joint refinement into the live image pipeline.
+### 1. ~~`services/allsky/calibration_service.py` — Background accumulation~~ ✅ Built
+Background accumulation service, `CalibrationQuality` enum, and `model_quality()` are all
+implemented in `services/allsky/calibration_service.py`. `n_images` and `span_minutes` are
+stored in `FisheyeModel` and persisted in the calibration JSON. UI quality badge in
+`ui/panels/allsky_settings.py` shows none/preliminary/acceptable/good/excellent.
 
-Key responsibilities:
-- Accept new PIL Images from both watcher mode and camera capture mode
-- Maintain a rolling buffer of the last N frames (images + their UTC timestamps)
-- Trigger joint refinement when buffer thresholds are met
-- Save improved model to `%LOCALAPPDATA%\PFRSentinel\allsky_calibration.json`
-- Emit a Qt-compatible signal when quality level upgrades
-- Run entirely in a background thread; never touch GUI directly
+### 2. ~~`services/allsky/triangle_match.py` — Pattern hash fallback~~ ✅ Built
+Geometric triangle-hash matching is implemented in `services/allsky/triangle_match.py`
+and wired into `calibration.py` — it is invoked automatically when the grid search matches
+too few stars or fails the post-fit sanity check. It detects the brightest stars, builds
+detected triplets, looks up matching catalog triplets via a runtime-built `TriangleIndex`,
+solves each pose hypothesis (Wahba), scores with a binomial false-positive probability, and
+feeds the best hypothesis to the shared `_iterative_fit` refiner. The index is built per-call
+(fast enough); the bundled `allsky_star_index.bin` precompute was not needed.
 
-Integration points:
-- **Hook location:** `ui/controllers/image_processor.py` or wherever processed frames are emitted — feed each frame + UTC to the service
-- **Lat/lon:** Read from `config.get('weather', {}).get('latitude/longitude')`
-- **Cal file path:** `os.path.join(os.getenv('LOCALAPPDATA'), APP_DATA_FOLDER, 'allsky_calibration.json')`
-- **Signal to UI:** `calibration_improved(CalibrationQuality, FisheyeModel)` → panel updates status text
-
-Initial model strategy:
-- If `allsky_calibration.json` exists and is valid → use it as seed for joint refinement
-- If no cal file exists → run single-image `calibrate()` on the first buffered image first
-
-### 2. `CalibrationQuality` enum + UI status
-**Purpose:** Show the user how good the current calibration is, not just "8 matches, 4.3px RMS" which is meaningless to end users.
-
-- Add `CalibrationQuality` and `model_quality()` to `services/allsky/fisheye.py` or a new `services/allsky/cal_quality.py`
-- Update `ui/controllers/allsky_controller.py` `_update_status()` to emit the quality level
-- Update `ui/panels/allsky_settings.py` to show a coloured badge: grey=none, yellow=preliminary, orange=acceptable, green=good, bright-green=excellent
-- Store `n_images_used` and `span_minutes` in the calibration JSON so quality can be re-assessed on load
-
-### 3. `services/allsky/triangle_match.py` — Pattern hash fallback
-**Purpose:** Calibrate when grid search fails (heavy cloud, unusual FOV, very few detectable stars).
-
-Design notes:
-- Pre-compute a hash table of all visible star triplet shape-descriptors for the observer's lat/lon range
-- At runtime: detect top-20 brightest stars → build detected triplets → look up matching catalog triplets → generate pose hypotheses → score each → take best → feed to existing `least_squares` refiner
-- The hash table can be built once per app install (or bundled) and stored in `%LOCALAPPDATA%\PFRSentinel\allsky_star_index.bin`
-- This is the hardest component (~500 lines). Build it last.
+> **Reliability note (2026-06-12):** the offline baseline
+> (`docs/dev/allsky_baseline_2026-06-12-before.md`) shows single-image grid+triangle
+> calibration currently fails the post-fit sanity check on 100% of the reference
+> `sample_images` frames — including the hand-confirmed anchor frame. Production accuracy
+> comes from the committed multi-image fit, not single-image. Root-cause investigation is
+> tracked separately.
 
 ---
 
@@ -229,24 +213,27 @@ Before making calibration changes, verify:
 services/allsky/
 ├── fisheye.py             FisheyeModel — THE projection ground truth
 ├── calibration.py         Single-image auto-cal (grid + roll sweep + least_squares)
-├── calibration_service.py [TODO] Background accumulation + multi-image refinement
-├── cal_quality.py         [TODO] CalibrationQuality enum + model_quality()
-├── triangle_match.py      [TODO] Hash-based fallback for grid-search failures
+├── calibration_service.py Background accumulation + multi-image refinement (built)
+├── triangle_match.py      Hash-based fallback for grid-search failures (built)
+├── calibration_validate.py Post-fit validation + resolution-independent tolerances
 ├── coords.py              radec_to_altaz(), atmospheric_refraction()
 ├── catalogs.py            get_bright_stars() — BSC5 catalog
 ├── star_centroid.py       detect_stars(), estimate_sky_circle()
 └── overlay_renderer.py    render_allsky_overlay() — production entry point
 
 ui/controllers/allsky_controller.py    CalibrationWorker + AllSkyController
-ui/panels/allsky_settings.py           [TODO: add quality badge]
+ui/panels/allsky_settings.py           quality badge (built)
 
-scripts/  (dev/test only — not called by production app)
+scripts/dev/allsky/  (dev/test only — not called by production app)
 ├── allsky_debug.py         Single-image calibration + overlay render CLI
 ├── allsky_v5_cal.py        Manual anchor optimisation (confirmed pixel↔star pairs)
 ├── allsky_multi_cal.py     Multi-image joint calibration CLI
-└── allsky_gridcal.py       (existing grid calibration helper)
+├── validate_calibration.py Residual/component checks against the sample set
+└── baseline_run.py         Offline single-image success-rate baseline
 
 %LOCALAPPDATA%\PFRSentinel\
-├── allsky_calibration.json   Production calibration (read/write by app)
-└── allsky_star_index.bin     [TODO] Pre-computed triangle hash index
+└── allsky_calibration.json   Production calibration (read/write by app)
 ```
+
+(The bundled `allsky_star_index.bin` triangle precompute described earlier was not
+needed — the index builds fast enough per-call.)

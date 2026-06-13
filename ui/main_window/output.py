@@ -181,12 +181,22 @@ class _MainWindowOutputMixin:
             self._cached_raw_image, self._cached_raw_metadata
         )
 
-    def _on_image_processed(self, processed_image, metadata: dict, output_path: str):
+    def _on_image_processed(self, preview_image, output_image, metadata: dict, output_path: str):
         try:
             self.last_processed_image = output_path
             self.preview_metadata = metadata
 
-            self.live_panel.update_preview(processed_image, metadata)
+            # Watch mode never passes through on_image_captured, so cache the
+            # clean (no all-sky) output frame here for manual "Calibrate Now".
+            # Camera mode already cached a superior RAW pre-overlay frame in
+            # on_image_captured — don't clobber it with the overlaid output.
+            if self.config.get('capture_mode', 'camera') == 'watch':
+                self._cached_raw_image = output_image.copy()
+                self._cached_raw_metadata = metadata
+
+            # preview_image may carry the all-sky overlay (GUI only).
+            # output_image is always clean — sent to file sinks and servers.
+            self.live_panel.update_preview(preview_image, metadata)
 
             output_config = self.config.get('output', {})
             discord_config = self.config.get('discord', {})
@@ -197,7 +207,7 @@ class _MainWindowOutputMixin:
 
             if has_outputs:
                 self.app_bar.set_status('sending')
-                self._push_to_output_servers(output_path, processed_image)
+                self._push_to_output_servers(output_path, output_image)
 
                 if self.is_capturing:
                     QTimer.singleShot(300, lambda: self.app_bar.set_status('waiting'))

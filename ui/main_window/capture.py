@@ -641,7 +641,7 @@ class _MainWindowCaptureMixin:
         if not self.watch_controller:
             self.watch_controller = WatchControllerQt(self)
             self.watch_controller.image_processed.connect(
-                lambda img, path: self._on_image_processed(img, {}, path)
+                lambda preview, out, path: self._on_image_processed(preview, out, {}, path)
             )
 
         watch_dir = self.config.get('watch_directory', '')

@@ -2,6 +2,7 @@
 Application Configuration - Central place for app identity
 Change these values when renaming the application
 """
+import os
 
 # Application Identity
 APP_NAME = "PFRSentinel"  # Internal name (no spaces, used for paths)
@@ -39,3 +40,21 @@ def get_user_agent() -> str:
     """Get user agent string for HTTP requests"""
     from version import __version__
     return f"{APP_NAME}/{__version__}"
+
+
+def get_app_data_dir() -> str:
+    """Canonical %LOCALAPPDATA%\\PFRSentinel directory (created if missing)."""
+    base = os.path.join(os.getenv('LOCALAPPDATA', ''), APP_DATA_FOLDER)
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def get_calibration_path() -> str:
+    """Canonical path to the all-sky calibration JSON.
+
+    Per .claude/rules/allsky.md this lives in %LOCALAPPDATA%\\PFRSentinel
+    (NOT %APPDATA% where config.json lives) — user-generated, never bundled.
+    Single source of truth so the background service, the manual-cal
+    controller, and dev tools never diverge.
+    """
+    return os.path.join(get_app_data_dir(), 'allsky_calibration.json')

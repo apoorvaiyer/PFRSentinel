@@ -227,6 +227,85 @@ class TestImageProcessor:
         assert loaded_jpg.format == 'JPEG'
 
 
+class TestAllSkyOutputCleanliness:
+    """Phase 1 invariant: the all-sky overlay is preview-only and must never
+    be baked into the output render (file / web / Discord / timelapse).
+
+    The output path is add_overlays(); these tests guard against the
+    `__allsky_config` bake-in branch ever being reintroduced there.
+    """
+
+    # Matches tests/test_allsky_rendering.py's proven recipe: this model +
+    # config provably draws on a 1920x1080 frame.
+    def _valid_calibration(self, tmp_path):
+        from services.allsky.fisheye import FisheyeModel
+        model = FisheyeModel(
+            cx=960.0, cy=540.0, a1=600.0, a3=0.0, a5=0.0,
+            roll=0.0, axis_alt=90.0, axis_az=0.0,
+            rms_residual=1.0, n_matches=50,
+            calibrated_at="2024-01-01T00:00:00+00:00",
+            image_width=1920, image_height=1080,
+        )
+        cal_path = str(tmp_path / "cal.json")
+        model.save(cal_path)
+        return cal_path
+
+    def _allsky_config(self, cal_path):
+        return {
+            'enabled': True,
+            'calibration_file': cal_path,
+            '_lat': 51.5, '_lon': -0.1,
+            '_obs_utc': '2024-06-21T22:00:00+00:00',
+            'grid': {'enabled': True, 'horizon': True, 'altitude_rings': True,
+                     'opacity': 200},
+            'constellations': {'enabled': True, 'lines': True, 'labels': False},
+            'messier': {'enabled': True},
+            'ngc': {'enabled': False},
+            'planets': {'enabled': True, 'opacity': 255, 'marker_size': 10,
+                        'label_size': 12, 'colors': {}},
+        }
+
+    def test_allsky_config_is_live(self, tmp_path):
+        """Sanity / non-vacuity: this calibration + config DOES draw an overlay.
+
+        Without this, the cleanliness assertion below could pass simply
+        because nothing ever renders.
+        """
+        import numpy as np
+        from services.allsky.overlay_renderer import render_allsky_overlay
+        cal_path = self._valid_calibration(tmp_path)
+        cfg = self._allsky_config(cal_path)
+
+        img = Image.new('RGB', (1920, 1080), (10, 10, 30))
+        result = render_allsky_overlay(img.copy(), cfg, {})
+        diff = np.abs(np.array(img).astype(int)
+                      - np.array(result.convert('RGB')).astype(int))
+        assert diff.sum() > 0, "fixture is vacuous — overlay never draws"
+
+    def test_allsky_config_not_baked_into_output(self, tmp_path):
+        """add_overlays must ignore __allsky_config — output stays clean even
+        with all-sky enabled and a valid calibration present."""
+        import numpy as np
+        cal_path = self._valid_calibration(tmp_path)
+        cfg = self._allsky_config(cal_path)
+
+        img = Image.new('RGB', (1920, 1080), (10, 10, 30))
+        overlays = [{
+            'type': 'text', 'text': 'Live', 'anchor': 'Top-Left',
+            'offset_x': 10, 'offset_y': 10, 'font_size': 24, 'color': 'white',
+        }]
+
+        clean = add_overlays(img.copy(), overlays, {})
+        with_allsky = add_overlays(
+            img.copy(), overlays, {'__allsky_config': cfg})
+
+        diff = np.abs(np.array(clean).astype(int)
+                      - np.array(with_allsky).astype(int))
+        assert diff.sum() == 0, (
+            "all-sky overlay leaked into the output render — it must be "
+            "preview-only (Phase 1 requirement)")
+
+
 class TestAutoStretch:
     """Test auto-stretch (MTF) functionality"""
     

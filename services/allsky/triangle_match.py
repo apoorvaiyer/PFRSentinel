@@ -29,12 +29,15 @@ from .calibration import (
     _brightness_match,
     _iterative_fit,
     _catalog_altaz,
+    _get_image_size,
 )
 from .star_centroid import detect_stars, estimate_sky_circle
 from .catalogs import get_bright_stars
 from .calibration_validate import (
     validate_bright_anchors,
     validate_lens_polynomial,
+    tol_scale,
+    SKY_TRIM_FRACTION,
 )
 
 # ---------------------------------------------------------------------------
@@ -303,7 +306,7 @@ def _match_probability(
 
 def _generate_and_score(
     detected, above_horizon, index, catalog_altaz, sep_matrix,
-    cx, cy, a1_est, east_left,
+    cx, cy, a1_est, east_left, tol_scale_factor: float = 1.0,
 ):
     """Match detected triplets, solve pose, score with binomial CDF.
 
@@ -326,7 +329,7 @@ def _generate_and_score(
                 det_sep[b, a] = sep
 
     # Count how many catalog stars project into the image (for probability)
-    tol_match = 35.0
+    tol_match = 35.0 * tol_scale_factor
     sky_r = a1_est * (np.pi / 2.0)
     match_frac = tol_match / (2.0 * sky_r) if sky_r > 0 else 0.01
     n_cat_proj = sum(
@@ -511,7 +514,15 @@ def triangle_calibrate(
     log.info(f"Triangle index: built in {_time.monotonic() - t_idx:.1f}s — "
              f"{n_triplets} triplets, {len(index._table)} bins")
 
-    a1_est = sky_radius / (np.pi / 2.0)
+    # estimate_sky_circle returns the *trimmed* radius (inward by
+    # SKY_TRIM_FRACTION). a1 is defined against the true optical radius, so
+    # divide the trim back out before seeding — otherwise a1 is ~15% small and
+    # every projected star lands short of its detection (F10).
+    a1_est = (sky_radius / (1.0 - SKY_TRIM_FRACTION)) / (np.pi / 2.0)
+
+    # Resolution-independent match tolerances, keyed off the trimmed radius to
+    # match the reference (F10).
+    _ts = tol_scale(sky_radius)
 
     # --- Try both image orientations ---
     log.info("Triangle hypothesis search: starting")
@@ -520,7 +531,7 @@ def triangle_calibrate(
     for east_left in (True, False):
         model, score, matches, prob = _generate_and_score(
             detected, above_horizon, index, catalog_altaz, sep_matrix,
-            sky_cx, sky_cy, a1_est, east_left,
+            sky_cx, sky_cy, a1_est, east_left, tol_scale_factor=_ts,
         )
         if model is not None:
             if overall_best is None or prob < overall_best[3]:
@@ -544,6 +555,7 @@ def triangle_calibrate(
     model, rms = _iterative_fit(
         matches, model, lat_deg, lon_deg, dt,
         above_horizon, detected, min_matches, max_residual_px,
+        tol_scale=_ts,
     )
 
     if rms > max_residual_px:
@@ -553,7 +565,8 @@ def triangle_calibrate(
         )
 
     poly_ok, poly_msg = validate_lens_polynomial(model)
-    anch_ok, anch_msg = validate_bright_anchors(model, above_horizon, detected)
+    anch_ok, anch_msg = validate_bright_anchors(
+        model, above_horizon, detected, sky_r=sky_radius)
     if not (poly_ok and anch_ok):
         reason = "; ".join(
             m for ok, m in ((poly_ok, poly_msg), (anch_ok, anch_msg)) if not ok
@@ -561,6 +574,14 @@ def triangle_calibrate(
         raise CalibrationError(f"Triangle match failed sanity check: {reason}")
 
     elapsed = _time.monotonic() - t0
+    # Resolution-bind the model (F5): the renderer scales cx/cy/a1/a3/a5 by the
+    # ratio of render size to these dims. Without them the triangle-fallback path
+    # would save a model with dims 0,0 — treated as "legacy, never scale" — and
+    # reintroduce the resize_percent misalignment in exactly the hard-to-solve
+    # frames the fallback exists for.
+    img_h, img_w = _get_image_size(image)
+    model.image_width = img_w
+    model.image_height = img_h
     model.calibrated_at = datetime.now(timezone.utc).isoformat()
     log.info(f"Triangle calibration succeeded: {model}, {elapsed:.1f}s "
              f"({poly_msg}; {anch_msg})")

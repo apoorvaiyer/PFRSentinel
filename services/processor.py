@@ -1,7 +1,7 @@
 """Image processing and metadata parsing."""
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 from PIL import Image
 import numpy as np
 from .logger import app_logger
@@ -136,28 +136,6 @@ def build_output_filename(pattern, metadata, output_format='PNG'):
     return result
 
 
-def _inject_allsky_metadata(config: dict, metadata: dict) -> None:
-    """Inject __allsky_config into metadata, gated by is_observing_window."""
-    allsky_cfg = config.get('allsky_overlay', {})
-    if not allsky_cfg.get('enabled', False):
-        return
-    from .observing_window import is_observing_window
-    if not is_observing_window(config, metadata, feature="All-sky overlay"):
-        return
-    weather_cfg = config.get('weather', {})
-    allsky_cfg = dict(allsky_cfg)
-    allsky_cfg['_lat'] = float(weather_cfg.get('latitude', 0) or 0)
-    allsky_cfg['_lon'] = float(weather_cfg.get('longitude', 0) or 0)
-    allsky_cfg['_elevation'] = float(weather_cfg.get('elevation', 0) or 0)
-    # Authoritative observation time for the overlay, in true UTC — the same
-    # clock the calibration uses (datetime.now(timezone.utc)). The renderer must
-    # NOT re-derive time from the local {DATETIME} token, which is naive local
-    # time and was being mislabelled as UTC (rotating the whole sky by the
-    # observer's UTC offset).
-    allsky_cfg['_obs_utc'] = datetime.now(timezone.utc).isoformat()
-    metadata['__allsky_config'] = allsky_cfg
-
-
 def process_image(image_path, config, metadata_dict=None, weather_service=None):
     """
     Main processing function:
@@ -251,7 +229,6 @@ def process_image(image_path, config, metadata_dict=None, weather_service=None):
             new_height = int(raw_img.height * resize_percent / 100)
             raw_img = raw_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-        _inject_allsky_metadata(config, metadata)
         processed_img = add_overlays(raw_img, overlays_to_apply, metadata, weather_service=weather_service)
 
         if config.get('auto_brightness', False):

@@ -17,11 +17,41 @@ Three concerns, one module:
    matched stars cover the sky.  A single-quadrant fit extrapolates
    poorly to the rest of the sky.
 """
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
 from services.logger import app_logger as log
+
+
+# ---------------------------------------------------------------------------
+# Resolution-independent match tolerances (F10)
+# ---------------------------------------------------------------------------
+
+# The all-sky match tolerances (50/35/40 px etc.) were tuned at the reference
+# resolution, where the trimmed sky-circle radius is ~1563 px (a 3552x3552 ASI
+# frame). Pixel tolerances that are correct at that radius are too loose on a
+# resized frame and too tight on a larger one, so matching behaviour drifted
+# with resize_percent. Expressing every tolerance as `ref_px * tol_scale(sky_r)`
+# makes it track the actual sky radius. At the reference radius the scale is
+# 1.0, so native-resolution behaviour is unchanged.
+REF_SKY_R_PX = 1563.0
+
+# Inward trim applied by estimate_sky_circle (star_centroid.py). The triangle
+# fallback seeds a1 from the sky radius; that radius is the *trimmed* circle, so
+# it must be divided back out to recover the true optical radius.
+SKY_TRIM_FRACTION = 0.15
+
+
+def tol_scale(sky_r: Optional[float]) -> float:
+    """Scale factor for pixel tolerances given the estimated sky radius.
+
+    Returns 1.0 (neutral — native-resolution behaviour) when sky_r is unknown
+    or non-positive.
+    """
+    if not sky_r or sky_r <= 0:
+        return 1.0
+    return float(sky_r) / REF_SKY_R_PX
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +91,8 @@ def validate_bright_anchors(
     top_n: int = 6,
     min_hits: int = 5,
     max_miss_px: float = 40.0,
-    min_alt_deg: float = 10.0,
+    min_alt_deg: float = 15.0,
+    sky_r: Optional[float] = None,
 ) -> Tuple[bool, str]:
     """Check the N brightest above-horizon catalog stars landed near detections.
 
@@ -80,15 +111,21 @@ def validate_bright_anchors(
         top_n: number of brightest above-horizon catalog stars to test.
         min_hits: minimum required anchors with a nearby detection.
         max_miss_px: maximum pixel distance from projected catalog
-                     position to nearest detected star to count as a hit.
+                     position to nearest detected star to count as a hit
+                     (at the reference resolution; scaled by sky_r when given).
         min_alt_deg: skip anchors below this altitude (refraction / horizon
                      obstructions make low anchors unreliable).
+        sky_r: estimated sky-circle radius (px). When provided, max_miss_px is
+               scaled to it so the check is resolution-independent.
 
     Returns:
         (ok, message). When the check is skipped (insufficient anchors),
         returns ok=True with a note — we don't want to reject fits on
         cloudy/obstructed skies where bright anchors aren't visible.
     """
+    if sky_r is not None:
+        max_miss_px = max_miss_px * tol_scale(sky_r)
+
     bright = [
         (s, alt, az) for s, alt, az in above_horizon
         if alt >= min_alt_deg
