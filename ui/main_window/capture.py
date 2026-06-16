@@ -478,6 +478,8 @@ class _MainWindowCaptureMixin:
             self.is_capturing = True
             self.app_bar.set_capturing(True)
             self.app_bar.set_status('waiting')
+            self._last_capture_error = None
+            self.push_capture_status()
             self.capture_started.emit()
             self._notify(f"Capture started ({mode} mode)")
 
@@ -512,6 +514,7 @@ class _MainWindowCaptureMixin:
 
             self.capture_stopped.emit()
             self._notify("Capture stopped")
+            self.push_capture_status()
 
             if self.timelapse_controller:
                 self.timelapse_controller.on_capture_stopped()
@@ -654,6 +657,8 @@ class _MainWindowCaptureMixin:
 
     def _on_camera_error(self, error_msg: str):
         app_logger.error(f"Camera error received: {error_msg}")
+        self._last_capture_error = error_msg
+        self.push_capture_status()
         self._notify(f"Camera error: {error_msg}", "error")
 
         if hasattr(self, 'app_bar') and self.app_bar:
@@ -684,6 +689,7 @@ class _MainWindowCaptureMixin:
 
         app_logger.warning("Capture ended unexpectedly — syncing UI state")
         self.stop_capture()
+        self.push_capture_status()
 
     def _on_camera_capture_started(self):
         """Handle controller capture_started signal.
@@ -701,6 +707,8 @@ class _MainWindowCaptureMixin:
         self.app_bar.set_status('waiting')
         self.app_bar.camera_chip.set_status('connected')
         self.app_bar.camera_chip.set_label('Connected')
+        self._last_capture_error = None
+        self.push_capture_status()
 
     def _on_raw16_mode_changed(self, enabled: bool):
         if not self.camera_controller or not self.camera_controller.is_capturing:

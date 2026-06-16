@@ -10,7 +10,8 @@ from PySide6.QtCore import Qt, Signal
 from qfluentwidgets import (
     CardWidget, SubtitleLabel, BodyLabel, CaptionLabel,
     PushButton, PrimaryPushButton, ComboBox, LineEdit,
-    SpinBox, DoubleSpinBox, SwitchButton, ColorPickerButton
+    SpinBox, DoubleSpinBox, SwitchButton, ColorPickerButton,
+    HyperlinkButton
 )
 from PySide6.QtGui import QColor
 
@@ -129,7 +130,14 @@ class OutputSettingsPanel(QScrollArea):
         self.web_path_input.setPlaceholderText("/latest")
         self.web_path_input.textChanged.connect(self._on_web_settings_changed)
         web_card.add_row("Image Path", self.web_path_input, "URL path to latest image")
-        
+
+        # Self-documenting API reference — opens the live /docs page (works
+        # offline; rendered from the server's own OpenAPI spec).
+        self.api_docs_link = HyperlinkButton("http://127.0.0.1:8080/docs", "Open API Docs")
+        web_card.add_row("API Docs", self.api_docs_link,
+                         "Interactive reference for /latest, /status, /openapi.json")
+        self._update_api_docs_url()
+
         layout.addWidget(web_card)
         
         # === DISCORD ===
@@ -328,6 +336,7 @@ class OutputSettingsPanel(QScrollArea):
             self.settings_changed.emit()
     
     def _on_web_settings_changed(self):
+        self._update_api_docs_url()
         if self._loading_config:
             return
         if self.main_window and hasattr(self.main_window, 'config'):
@@ -337,6 +346,19 @@ class OutputSettingsPanel(QScrollArea):
             output['webserver_path'] = self.web_path_input.text()
             self.main_window.config.set('output', output)
             self.settings_changed.emit()
+
+    def _update_api_docs_url(self):
+        """Point the API Docs link at the current host/port (browser-friendly)."""
+        if not hasattr(self, 'api_docs_link'):
+            return
+        host = (self.web_host_input.text() or '127.0.0.1').strip()
+        if host in ('0.0.0.0', '', '::'):
+            host = '127.0.0.1'  # wildcard bind isn't browseable; use loopback
+        port = self.web_port_spin.value()
+        docs_path = '/docs'
+        if self.main_window and hasattr(self.main_window, 'config'):
+            docs_path = self.main_window.config.get('output', {}).get('webserver_docs_path', '/docs')
+        self.api_docs_link.setUrl(f"http://{host}:{port}{docs_path}")
     
     def _on_discord_enabled_changed(self, checked):
         if self._loading_config:
@@ -443,7 +465,8 @@ class OutputSettingsPanel(QScrollArea):
             self.web_host_input.setText(output.get('webserver_host', '127.0.0.1'))
             self.web_port_spin.setValue(output.get('webserver_port', 8080))
             self.web_path_input.setText(output.get('webserver_path', '/latest'))
-            
+            self._update_api_docs_url()
+
             # Discord
             discord = config.get('discord', {})
             self.discord_enabled_switch.set_checked(discord.get('enabled', False))

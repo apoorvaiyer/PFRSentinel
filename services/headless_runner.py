@@ -39,6 +39,8 @@ class HeadlessRunner:
         self.zwo_camera = None
         self.web_server = None
         self.image_count = 0
+        self._last_capture_epoch = None  # Unix ts of last successful frame (for /status)
+        self._last_error = None          # Most recent capture error (for /status health)
         self._shutdown_event = threading.Event()
         
         # Register signal handlers for graceful shutdown
@@ -137,10 +139,11 @@ class HeadlessRunner:
         port = output_config.get('webserver_port', 8080)
         image_path = output_config.get('webserver_path', '/latest')
         status_path = output_config.get('webserver_status_path', '/status')
-        
+        docs_path = output_config.get('webserver_docs_path', '/docs')
+
         self._log(f"Starting web server on {host}:{port}...")
-        
-        self.web_server = WebOutputServer(host, port, image_path, status_path)
+
+        self.web_server = WebOutputServer(host, port, image_path, status_path, docs_path)
         if self.web_server.start():
             self._log(f"✓ Web server running: {self.web_server.get_url()}")
             self._log(f"  Status endpoint: {self.web_server.get_status_url()}")
@@ -226,37 +229,84 @@ class HeadlessRunner:
                 # Check scheduled capture window
                 if not self.zwo_camera.is_within_scheduled_window():
                     self._log("Outside scheduled capture window, waiting...")
+                    self._push_capture_status(running=True, state="outside_window")
                     self._shutdown_event.wait(60)  # Check every minute
                     continue
-                
+
                 # Capture frame
                 start_time = time.time()
                 img, metadata = self.zwo_camera.capture_single_frame()
                 capture_time = time.time() - start_time
-                
+
                 # Process and save
                 self._process_and_save(img, metadata)
                 process_time = time.time() - start_time - capture_time
-                
+
                 self.image_count += 1
+                self._last_capture_epoch = time.time()
+                self._last_error = None
                 self._log(f"Frame {self.image_count}: {metadata.get('FILENAME', 'unknown')} "
                          f"(capture: {capture_time:.2f}s, process: {process_time:.2f}s)")
-                
+                self._push_capture_status(running=True, state="capturing")
+
                 # Run cleanup if enabled
                 self._run_cleanup()
-                
+
                 # Wait for next interval (honours variable-rate schedules)
                 elapsed = time.time() - start_time
                 wait_time = max(0, self.zwo_camera.effective_capture_interval - elapsed)
                 if wait_time > 0:
                     self._shutdown_event.wait(wait_time)
-                    
+
             except Exception as e:
                 self._log(f"ERROR in capture loop: {e}")
                 import traceback
                 self._log(traceback.format_exc())
+                self._last_error = str(e)
+                self._push_capture_status(running=False, state="error")
                 # Wait before retrying
                 self._shutdown_event.wait(5)
+
+    def _push_capture_status(self, *, running: bool, state: str):
+        """Push the current capture snapshot to the web server (headless)."""
+        if not self.web_server or not self.web_server.running:
+            return
+        try:
+            from services import api_status
+
+            sched_mode = self.config.get('scheduled_capture_mode', 'always')
+            in_window = True
+            if sched_mode != 'always':
+                try:
+                    in_window = self.zwo_camera.is_in_time_window()
+                except Exception:
+                    in_window = True
+            schedule = {
+                "mode": sched_mode,
+                "start_time": self.config.get('scheduled_start_time', '17:00'),
+                "end_time": self.config.get('scheduled_end_time', '09:00'),
+                "in_window": in_window,
+                "window_interval_seconds": (
+                    self.config.get('scheduled_window_interval', 5.0)
+                    if sched_mode == 'variable' else None
+                ),
+            }
+            interval = self.config.get('zwo_interval', 5.0)
+            try:
+                effective_interval = self.zwo_camera.effective_capture_interval
+            except Exception:
+                effective_interval = interval
+
+            snapshot = api_status.build_capture_snapshot(
+                mode="camera", enabled=True, running=running, state=state,
+                interval_seconds=interval, effective_interval_seconds=effective_interval,
+                schedule=schedule,
+                last_capture_epoch=getattr(self, '_last_capture_epoch', None),
+                last_error=getattr(self, '_last_error', None),
+            )
+            self.web_server.update_capture_status(snapshot)
+        except Exception as e:
+            self._log(f"Error pushing capture status: {e}")
     
     def _process_and_save(self, img, metadata):
         """Process image with overlays and save/publish"""

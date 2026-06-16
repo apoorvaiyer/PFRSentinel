@@ -214,20 +214,93 @@ class TestWebServerStatus:
         """Test status endpoint tracks served images"""
         server = WebOutputServer(host='127.0.0.1', port=18088, status_path='/status')
         server.start()
-        
+
         try:
             img_bytes = io.BytesIO()
             sample_image.save(img_bytes, format='JPEG')
-            
+
             # Update image multiple times
             for i in range(3):
                 server.update_image(f"test_{i}.jpg", img_bytes.getvalue())
-            
+
             time.sleep(0.2)
             response = requests.get(server.get_status_url(), timeout=5)
             data = response.json()
-            
+
             assert data['images_served'] >= 3
-            
+
+        finally:
+            server.stop()
+
+    def test_status_includes_capture_and_health(self):
+        """Status reports the pushed capture snapshot plus a derived health block."""
+        from services.api_status import build_capture_snapshot
+        server = WebOutputServer(host='127.0.0.1', port=18089, status_path='/status')
+        server.start()
+
+        try:
+            server.update_capture_status(build_capture_snapshot(
+                mode="camera", enabled=True, running=True, state="capturing",
+                interval_seconds=5.0, effective_interval_seconds=5.0,
+                last_capture_epoch=time.time(),
+            ))
+            time.sleep(0.2)
+            data = requests.get(server.get_status_url(), timeout=5).json()
+
+            assert 'capture' in data and 'health' in data
+            assert data['capture']['mode'] == 'camera'
+            assert data['capture']['enabled'] is True
+            assert data['health']['status'] == 'ok'
+        finally:
+            server.stop()
+
+    def test_health_idle_when_capture_disabled(self):
+        """With capture not enabled, health is 'idle' (the gap the old API had)."""
+        from services.api_status import build_capture_snapshot
+        server = WebOutputServer(host='127.0.0.1', port=18090, status_path='/status')
+        server.start()
+
+        try:
+            server.update_capture_status(build_capture_snapshot(enabled=False))
+            time.sleep(0.2)
+            data = requests.get(server.get_status_url(), timeout=5).json()
+            assert data['health']['status'] == 'idle'
+            # Back-compat: HTTP server liveness key still present and 'running'.
+            assert data['status'] == 'running'
+        finally:
+            server.stop()
+
+
+@pytest.mark.requires_network
+class TestWebServerDocs:
+    """Test the self-documenting API endpoints."""
+
+    def test_openapi_spec_served(self):
+        server = WebOutputServer(host='127.0.0.1', port=18091, image_path='/latest',
+                                 status_path='/status')
+        server.start()
+        try:
+            time.sleep(0.2)
+            resp = requests.get("http://127.0.0.1:18091/openapi.json", timeout=5)
+            assert resp.status_code == 200
+            assert 'application/json' in resp.headers.get('Content-Type', '')
+            spec = resp.json()
+            assert spec['openapi'].startswith('3.')
+            # Spec documents the server's actual routes.
+            assert '/latest' in spec['paths']
+            assert '/status' in spec['paths']
+        finally:
+            server.stop()
+
+    def test_docs_page_served_as_html(self):
+        server = WebOutputServer(host='127.0.0.1', port=18092)
+        server.start()
+        try:
+            time.sleep(0.2)
+            resp = requests.get("http://127.0.0.1:18092/docs", timeout=5)
+            assert resp.status_code == 200
+            assert 'text/html' in resp.headers.get('Content-Type', '')
+            assert '<html' in resp.text.lower()
+            assert 'PFR Sentinel' in resp.text
         finally:
             server.stop()

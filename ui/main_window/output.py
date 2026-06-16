@@ -126,6 +126,8 @@ class _MainWindowOutputMixin:
         """
         self.image_count += 1
         self.app_bar.update_image_count(self.image_count)
+        # A fresh frame clears any prior capture error for /status health.
+        self._last_capture_error = None
 
         # Cache raw frame for reprocessing on settings changes.
         # Deep-copy the large numpy arrays so the camera's ping-pong buffer
@@ -237,6 +239,8 @@ class _MainWindowOutputMixin:
 
     def _on_processing_error(self, error_msg: str):
         self.app_bar.set_status(None)
+        self._last_capture_error = error_msg
+        self.push_capture_status()
         app_logger.error(f"Image processing error: {error_msg}")
 
     def on_calibration_status(self, is_calibrating: bool):
@@ -270,8 +274,9 @@ class _MainWindowOutputMixin:
         port = output_config.get('webserver_port', 8080)
         image_path = output_config.get('webserver_path', '/latest')
         status_path = output_config.get('webserver_status_path', '/status')
+        docs_path = output_config.get('webserver_docs_path', '/docs')
 
-        self.web_server = WebOutputServer(host, port, image_path, status_path)
+        self.web_server = WebOutputServer(host, port, image_path, status_path, docs_path)
         if self.web_server.start():
             url = self.web_server.get_url()
             status_url = self.web_server.get_status_url()
@@ -279,6 +284,8 @@ class _MainWindowOutputMixin:
             app_logger.info(f"Status endpoint: {status_url}")
             self._notify(f"Web server started: {url}")
             self.app_bar.set_web_status(True, True)
+            self._start_capture_status_timer()
+            self.push_capture_status()
         else:
             app_logger.error("Failed to start web server")
             self._notify("Web server failed to start", "error")
@@ -286,6 +293,7 @@ class _MainWindowOutputMixin:
             self.app_bar.set_web_status(True, False)
 
     def _stop_web_server(self):
+        self._stop_capture_status_timer()
         if self.web_server:
             try:
                 self.web_server.stop()
@@ -294,6 +302,117 @@ class _MainWindowOutputMixin:
                 self.app_bar.set_web_status(False, False)
             except Exception as e:
                 app_logger.error(f"Error stopping web server: {e}")
+
+    # =========================================================================
+    # CAPTURE STATUS FEED (/status capture + health blocks)
+    # =========================================================================
+
+    def _start_capture_status_timer(self):
+        """Periodically push a fresh capture snapshot so /status reflects live
+        state (recovery, schedule window) even between frames."""
+        if self._capture_status_timer is None:
+            self._capture_status_timer = QTimer(self)
+            self._capture_status_timer.timeout.connect(self.push_capture_status)
+        if not self._capture_status_timer.isActive():
+            self._capture_status_timer.start(3000)
+
+    def _stop_capture_status_timer(self):
+        if self._capture_status_timer is not None and self._capture_status_timer.isActive():
+            self._capture_status_timer.stop()
+
+    def push_capture_status(self):
+        """Build and push the current capture snapshot to the web server.
+
+        Safe to call from any capture state-change handler; no-ops when the web
+        server isn't running.
+        """
+        if not self.web_server or not self.web_server.running:
+            return
+        try:
+            self.web_server.update_capture_status(self._build_capture_status())
+        except Exception as e:
+            app_logger.error(f"Error pushing capture status: {e}")
+
+    def _build_capture_status(self) -> dict:
+        """Assemble the discrete capture snapshot for the status API.
+
+        Reads only plain attributes / config (no widgets) so it is safe to run
+        on the GUI thread and hand to the HTTP server thread. Time-relative
+        fields (ages, next-frame countdown, health) are derived server-side in
+        services/api_status.py.
+        """
+        from services import api_status
+
+        cc = self.camera_controller
+        mode_cfg = self.config.get('capture_mode', 'camera')
+        recovery = cc.recovery_state() if cc else None
+        recovery = recovery or {"in_progress": False, "attempts": 0, "unrecoverable": False}
+
+        # "enabled" means capture is meant to be running — including while
+        # auto-recovery is grinding (main is_capturing drops to False then).
+        enabled = bool(
+            self.is_capturing or recovery["in_progress"] or recovery["unrecoverable"]
+        )
+        if not enabled:
+            return api_status.build_capture_snapshot(
+                mode="idle", enabled=False, running=False, state="stopped",
+                last_error=self._last_capture_error, recovery=recovery,
+            )
+
+        if mode_cfg == 'watch':
+            running = bool(self.watch_controller and getattr(self.watch_controller, 'is_watching', False))
+            state = "capturing" if running else "stopped"
+            return api_status.build_capture_snapshot(
+                mode="watch", enabled=True, running=running, state=state,
+                last_error=self._last_capture_error, recovery=recovery,
+            )
+
+        # Camera mode
+        zwo = cc.zwo_camera if cc else None
+        running = bool(cc and cc.is_capturing)
+        sched_mode = self.config.get('scheduled_capture_mode', 'always')
+        in_window = True
+        if zwo is not None and sched_mode != 'always':
+            try:
+                in_window = zwo.is_in_time_window()
+            except Exception:
+                in_window = True
+        schedule = {
+            "mode": sched_mode,
+            "start_time": self.config.get('scheduled_start_time', '17:00'),
+            "end_time": self.config.get('scheduled_end_time', '09:00'),
+            "in_window": in_window,
+            "window_interval_seconds": (
+                self.config.get('scheduled_window_interval', 5.0)
+                if sched_mode == 'variable' else None
+            ),
+        }
+        interval = self.config.get('zwo_interval', 5.0)
+        effective_interval = interval
+        if zwo is not None:
+            try:
+                effective_interval = zwo.effective_capture_interval
+            except Exception:
+                effective_interval = interval
+
+        if recovery["unrecoverable"]:
+            state = "error"
+        elif recovery["in_progress"]:
+            state = "recovering"
+        elif not running:
+            state = "stopped"
+        elif sched_mode == 'gated' and not in_window:
+            state = "outside_window"
+        else:
+            state = "capturing"
+
+        return api_status.build_capture_snapshot(
+            mode="camera", enabled=True, running=running, state=state,
+            interval_seconds=interval, effective_interval_seconds=effective_interval,
+            schedule=schedule,
+            last_capture_epoch=(cc.last_successful_frame_epoch() if cc else None),
+            last_error=self._last_capture_error, recovery=recovery,
+        )
 
     def _push_to_output_servers(self, image_path: str, processed_img):
         try:

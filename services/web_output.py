@@ -35,6 +35,11 @@ class ImageHTTPHandler(BaseHTTPRequestHandler):
     # X-PFR-Image-Stale header so consumers (NINA, dashboards) can detect
     # capture outages instead of silently serving hours-old frames.
     stale_threshold_sec = 300
+    # Discrete capture snapshot pushed by the app (MainWindow / HeadlessRunner)
+    # via update_capture_status(). The server stays ignorant of capture; it just
+    # reports what was last pushed plus request-time derived fields. See
+    # services/api_status.py.
+    capture_status = {}
 
     @classmethod
     def update_image(cls, image_data: bytes, content_type: str, path: str = None, metadata: dict = None):
@@ -59,6 +64,16 @@ class ImageHTTPHandler(BaseHTTPRequestHandler):
         cls.image_count += 1
 
     @classmethod
+    def update_capture_status(cls, snapshot: dict):
+        """Store the latest capture snapshot pushed by the app.
+
+        Plain dict assignment — the only cross-thread surface between the Qt/app
+        side and the HTTP server thread. Derived/time-relative fields are
+        computed at request time in _serve_status(), not here.
+        """
+        cls.capture_status = snapshot or {}
+
+    @classmethod
     def _image_age_seconds(cls):
         """Seconds since the last update_image() call, or None if never set."""
         if cls.latest_image_update_time is None:
@@ -73,23 +88,30 @@ class ImageHTTPHandler(BaseHTTPRequestHandler):
         """Handle GET requests."""
         config_path = self.server.config_path
         status_path = self.server.status_path
-        
+        docs_path = getattr(self.server, 'docs_path', '/docs')
+        openapi_path = getattr(self.server, 'openapi_path', '/openapi.json')
+
         # Parse URL to strip query parameters (e.g., ?t=1764384123178)
         parsed_url = urlparse(self.path)
         clean_path = parsed_url.path
         query_params = parse_qs(parsed_url.query)
-        
+
         # Debug logging to diagnose path matching issues
         app_logger.debug(f"Request: original='{self.path}', clean='{clean_path}', config='{config_path}', status='{status_path}'")
         if query_params:
             app_logger.debug(f"Query params: {query_params}")
-        
+
         if clean_path == config_path:
             self._serve_image()
         elif clean_path == status_path:
             self._serve_status()
+        elif clean_path == openapi_path:
+            self._serve_openapi()
+        elif clean_path == docs_path:
+            self._serve_docs()
         else:
-            self.send_error(404, f"Path not found. Available: {config_path}, {status_path}")
+            available = ", ".join([config_path, status_path, openapi_path, docs_path])
+            self.send_error(404, f"Path not found. Available: {available}")
     
     def do_OPTIONS(self):
         """Handle OPTIONS requests for CORS preflight."""
@@ -173,7 +195,23 @@ class ImageHTTPHandler(BaseHTTPRequestHandler):
             "metadata": self.latest_metadata,
             "timestamp": datetime.now().isoformat()
         }
-        
+
+        # Merge the capture + health view derived from the latest pushed snapshot.
+        # Kept additive so existing consumers relying on the flat keys above are
+        # unaffected. See services/api_status.py.
+        try:
+            from . import api_status
+            view = api_status.derive_status_view(
+                self.capture_status,
+                image_age=age,
+                now=time.time(),
+                stale_threshold=self.stale_threshold_sec,
+            )
+            status["capture"] = view["capture"]
+            status["health"] = view["health"]
+        except Exception as e:
+            app_logger.error(f"Error deriving capture status: {e}")
+
         try:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -187,24 +225,76 @@ class ImageHTTPHandler(BaseHTTPRequestHandler):
         except Exception as e:
             app_logger.error(f"Error serving status: {e}")
 
+    def _build_openapi_spec(self):
+        """Build the OpenAPI spec for this server's actual routes."""
+        from . import api_docs
+        return api_docs.build_openapi_spec(
+            image_path=self.server.config_path,
+            status_path=self.server.status_path,
+            docs_path=getattr(self.server, 'docs_path', '/docs'),
+            openapi_path=getattr(self.server, 'openapi_path', '/openapi.json'),
+        )
+
+    def _serve_openapi(self):
+        """Serve the machine-readable OpenAPI 3.0 spec as JSON."""
+        try:
+            spec = self._build_openapi_spec()
+            payload = json.dumps(spec, indent=2).encode('utf-8')
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", len(payload))
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+            self.wfile.write(payload)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            pass
+        except Exception as e:
+            app_logger.error(f"Error serving OpenAPI spec: {e}")
+
+    def _serve_docs(self):
+        """Serve the self-contained HTML API reference (no external deps)."""
+        try:
+            from . import api_docs
+            spec = self._build_openapi_spec()
+            payload = api_docs.render_docs_html(spec).encode('utf-8')
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", len(payload))
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            pass
+        except Exception as e:
+            app_logger.error(f"Error serving API docs: {e}")
+
 
 class WebOutputServer:
     """Manages HTTP server for serving latest processed images."""
     
-    def __init__(self, host='0.0.0.0', port=8080, image_path='/latest', status_path='/status'):
+    def __init__(self, host='0.0.0.0', port=8080, image_path='/latest', status_path='/status',
+                 docs_path='/docs', openapi_path='/openapi.json'):
         """
         Initialize web server.
-        
+
         Args:
             host: Interface to bind to (0.0.0.0 for all interfaces)
             port: Port to listen on
             image_path: URL path for image endpoint
             status_path: URL path for status endpoint
+            docs_path: URL path for the human-readable HTML API docs
+            openapi_path: URL path for the machine-readable OpenAPI spec
         """
         self.host = host
         self.port = port
         self.image_path = image_path
         self.status_path = status_path
+        self.docs_path = docs_path
+        self.openapi_path = openapi_path
         self.server = None
         self.server_thread = None
         self.running = False
@@ -220,6 +310,8 @@ class WebOutputServer:
             self.server = HTTPServer((self.host, self.port), ImageHTTPHandler)
             self.server.config_path = self.image_path
             self.server.status_path = self.status_path
+            self.server.docs_path = self.docs_path
+            self.server.openapi_path = self.openapi_path
             
             # Set class variables
             ImageHTTPHandler.server_start_time = time.time()
@@ -235,6 +327,7 @@ class WebOutputServer:
             app_logger.info(f"Web server started on http://{self.host}:{actual_port}")
             app_logger.info(f"  - Image endpoint: http://{self.host}:{actual_port}{self.image_path}")
             app_logger.info(f"  - Status endpoint: http://{self.host}:{actual_port}{self.status_path}")
+            app_logger.info(f"  - API docs: http://{self.host}:{actual_port}{self.docs_path}")
             return True
             
         except OSError as e:
@@ -311,6 +404,16 @@ class WebOutputServer:
         except Exception as e:
             app_logger.error(f"Error updating web server image: {e}")
 
+    def update_capture_status(self, snapshot: dict):
+        """Push the latest capture snapshot to the status endpoint.
+
+        Safe to call even when the server isn't running (no-op); the app pushes
+        on a timer and on capture state changes regardless of server state.
+        """
+        if not self.running:
+            return
+        ImageHTTPHandler.update_capture_status(snapshot)
+
     @staticmethod
     def _downsize_image(image_data_bytes: bytes, content_type: str):
         """Downscale an image to fit within WEB_IMAGE_MAX_BYTES.
@@ -374,4 +477,11 @@ class WebOutputServer:
         if self.running and self.server:
             actual_port = self.server.server_port
             return f"http://{self.host}:{actual_port}{self.status_path}"
+        return None
+
+    def get_docs_url(self):
+        """Get the full URL for the human-readable API docs page."""
+        if self.running and self.server:
+            actual_port = self.server.server_port
+            return f"http://{self.host}:{actual_port}{self.docs_path}"
         return None

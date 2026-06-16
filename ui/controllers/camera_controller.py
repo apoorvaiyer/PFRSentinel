@@ -710,6 +710,28 @@ class CameraControllerQt(QObject):
             f"(last error: {last_error})"
         )
 
+    def recovery_state(self) -> dict:
+        """Snapshot of auto-recovery state for the status API.
+
+        Intent-revealing accessor so the status feeder doesn't reach into
+        private attributes. 'in_progress' is true while a recovery timer is
+        pending or an auto-recovery attempt has been made without a subsequent
+        successful frame.
+        """
+        in_progress = (
+            self._auto_recovery_timer is not None
+            or (self._auto_recovery_attempts > 0 and not self.is_capturing)
+        )
+        return {
+            "in_progress": bool(in_progress and not self._unrecoverable_mode),
+            "attempts": self._auto_recovery_attempts,
+            "unrecoverable": self._unrecoverable_mode,
+        }
+
+    def last_successful_frame_epoch(self):
+        """Unix timestamp of the last successful frame, or None if none yet."""
+        return self._last_successful_frame_ts or None
+
     def should_notify_discord(self) -> bool:
         return not self._suppress_discord_errors
 

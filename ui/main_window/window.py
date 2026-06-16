@@ -76,6 +76,8 @@ class MainWindow(
         self.output_manager = None
         self.discord_alerts = None
         self.web_server = None
+        self._last_capture_error = None  # Most recent capture error, for /status health
+        self._capture_status_timer = None  # Periodic /status snapshot push
         self.weather_service = None
         self.timelapse_controller = None
         self.meteor_controller = None
