@@ -617,10 +617,8 @@ class TimelapsePanel(QScrollArea):
         tl['calc_session_hours'] = self._calc_hours_spin.value()
         tl['calc_target_seconds'] = self._calc_slider.value()
 
-        # Inherit coordinates from weather config (always override None with weather values)
-        weather = self.main_window.config.get('weather', {})
-        tl['sun_latitude'] = tl.get('sun_latitude') or weather.get('latitude') or None
-        tl['sun_longitude'] = tl.get('sun_longitude') or weather.get('longitude') or None
+        # Sun-window coordinates are sourced live from the weather config by
+        # timelapse_controller — not stored here. See _get_timelapse_config.
 
         self.main_window.config.set('timelapse', tl)
         self.main_window.config.save()

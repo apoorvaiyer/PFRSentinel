@@ -132,7 +132,14 @@ class TimelapseController(QObject):
     # ------------------------------------------------------------------ #
 
     def _get_timelapse_config(self) -> dict:
-        return self._main_window.config.get('timelapse', {})
+        cfg = dict(self._main_window.config.get('timelapse', {}))
+        # The sun-window location is always the global weather location — there
+        # is no separate timelapse coordinate UI. Inject it here so the writer
+        # gets the live value regardless of which settings panel was saved last.
+        weather = self._main_window.config.get('weather', {})
+        cfg['sun_latitude'] = weather.get('latitude') or None
+        cfg['sun_longitude'] = weather.get('longitude') or None
+        return cfg
 
     def _on_session_finished(self, path: str, frame_count: int, elapsed_seconds: int):
         """

@@ -238,8 +238,8 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "window_mode": "sun",          # "sun" | "fixed" | "always"
         "sun_mode": "astronomical",    # "astronomical" | "nautical" | "civil" | "sunset_sunrise"
-        "sun_latitude": None,          # Falls back to weather.latitude if None
-        "sun_longitude": None,         # Falls back to weather.longitude if None
+        # Sun-window location is sourced live from weather.latitude/longitude by
+        # timelapse_controller — there is no separate timelapse coordinate UI.
         "fixed_start": "18:00",        # HH:MM local time (used when window_mode="fixed")
         "fixed_end": "06:00",          # HH:MM local time (crossing midnight is supported)
         "playback_fps": 24,            # Output video playback frame rate
