@@ -478,11 +478,16 @@ begin
         Log('Startup: could not launch --register-startup (non-fatal)');
     end;
 
-    { After an UPGRADE, if the logon task exists, relaunch now so capture
+    { After a SILENT UPGRADE, if the logon task exists, relaunch now so capture
       resumes without waiting for the next logon. /Run uses the task's stored
       HIGHEST privileges — an elevated relaunch with no UAC prompt. The single-
-      instance guard makes this a no-op if something already relaunched. }
-    if PostHogIsUpgrade and AutostartTaskExists then
+      instance guard makes this a no-op if something already relaunched.
+      Gated on WizardSilent: in an interactive install the final "Launch PFR
+      Sentinel" page is the user's one chance to ask for it to open. Relaunching
+      here as well would start the app (in --tray) before they answer, so the
+      app appears already-open behind the launch prompt. Silent installs have no
+      such page, so the relaunch stays the unattended resume path there. }
+    if PostHogIsUpgrade and AutostartTaskExists and WizardSilent then
       Exec('schtasks.exe', '/Run /TN "PFR Sentinel Autostart"', '',
            SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
