@@ -85,7 +85,7 @@ Do not paste this JSON into Discord, GitHub issues, screenshots, or logs.
 
 1. Open PFR Sentinel.
 2. Open the `Timelapse` page.
-3. Find the `YouTube Uploads` card.
+3. Scroll to the `YouTube Uploads` section and click its header to expand it.
 4. Turn on `Enable YouTube uploads`.
 5. Click `Browse` next to `OAuth JSON`.
 6. Select the downloaded desktop-client JSON file.
@@ -101,8 +101,9 @@ timelapse completion will never open a browser or ask for Google approval.
 ## Step 6: Test A Private Upload
 
 1. Make sure at least one completed timelapse `.mp4` exists.
-2. In the `YouTube Uploads` card, click `Upload latest video`.
-3. Wait for the status text to show the upload result.
+2. In the `YouTube Uploads` section, click `Upload latest video`.
+3. Wait for the status text to show the upload result. On success it shows a
+   clickable link to the uploaded video.
 4. Open YouTube Studio for the upload account.
 5. Confirm the video exists and is `Private`.
 
@@ -128,6 +129,12 @@ a temp file and `os.replace` so power loss is less likely to corrupt them.
 
 ## Troubleshooting
 
+Authentication and upload failures are written to the log with a sanitized
+reason. Check the in-app `Logs` page, or
+`%APPDATA%\PFRSentinel\logs\watchdog.log`, for a line such as
+`YouTube upload failed [status]: ...` or
+`YouTube authentication failed [status]: ...`.
+
 `OAuth client JSON was not found.`
 : Select the downloaded desktop-client JSON again. Do not select a service
   account JSON; YouTube uploads need user OAuth.
@@ -142,6 +149,12 @@ a temp file and `os.replace` so power loss is less likely to corrupt them.
 `YouTube rejected the upload. Check authorization, quota, and channel permissions.`
 : Check that the signed-in account owns or manages the YouTube channel, that the
   channel can upload videos, and that the Cloud project still has quota.
+
+`YouTube Data API v3 has not been used in project ... or it is disabled.`
+: The YouTube Data API is not enabled on the Cloud project tied to your OAuth
+  client. Complete Step 2 (enable `YouTube Data API v3`) for that exact project,
+  wait a few minutes for it to propagate, then retry. This surfaces as an
+  `accessNotConfigured` 403 and is logged under the `quota_or_permission` status.
 
 `No completed timelapse video was found.`
 : Record and finalize a timelapse first. PFR Sentinel ignores the active
@@ -173,11 +186,16 @@ Implementation invariants:
   if a token already exists.
 - Catch Google/OAuth exceptions at the module boundary and convert them to
   sanitized typed results before logging, analytics, or UI display.
+- Log auth and upload failures via `app_logger` with the sanitized status and
+  detail (`YouTube ... failed [status]: ...`) so setup problems are diagnosable
+  from the logs without leaking secrets.
 - Keep token/state files separate from `config.json`.
 - Use `services.utils_paths.get_app_data_dir()` for runtime paths.
 - Prefer resumable continuation over a new insert after interruption.
 - Keep the upload queue bounded and tracked. YouTube uploads are long-running,
   quota-sensitive, and dedup-sensitive.
+- The YouTube UI is a `CollapsibleCard` section on the Timelapse page and renders
+  the completed-video watch URL as a clickable link (`setOpenExternalLinks`).
 
 Packaging requirements:
 

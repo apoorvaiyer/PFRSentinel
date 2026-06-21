@@ -190,5 +190,6 @@ class YouTubeUploadService:
             )
         except Exception as exc:
             result = classify_google_error(exc)
-            app_logger.warning(f"YouTube upload failed: {result.status}")
+            detail = result.technical_message or result.user_message
+            app_logger.warning(f"YouTube upload failed [{result.status}]: {detail}")
             return result

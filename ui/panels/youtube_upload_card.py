@@ -1,19 +1,20 @@
 """
 YouTube upload settings card for the Timelapse panel.
 """
+import html
 import os
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QFileDialog, QPlainTextEdit,
     QSizePolicy,
     QDialog, QDialogButtonBox, QTextBrowser,
 )
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, ComboBox, LineEdit,
     PushButton, PrimaryPushButton
 )
 
-from ..components.cards import SettingsCard, SwitchRow
+from ..components.cards import CollapsibleCard, SwitchRow
 from ..theme.icons import mdi
 from ..theme.tokens import Colors, Spacing
 from services.youtube_config import normalize_youtube_config
@@ -72,8 +73,8 @@ class YouTubeSetupGuideDialog(QDialog):
         layout.addWidget(buttons)
 
 
-class YouTubeUploadCard(SettingsCard):
-    """Self-contained YouTube upload settings UI."""
+class YouTubeUploadCard(CollapsibleCard):
+    """Self-contained YouTube upload settings UI as a collapsible section."""
 
     settings_changed = Signal()
 
@@ -85,7 +86,7 @@ class YouTubeUploadCard(SettingsCard):
     _LABEL_TO_PRIVACY = {v: k for k, v in _PRIVACY_TO_LABEL.items()}
 
     def __init__(self, parent=None):
-        super().__init__("YouTube Uploads", "Upload completed timelapse videos to YouTube")
+        super().__init__("YouTube Uploads", mdi("youtube"))
         self._timelapse_panel = parent
         self._loading = True
         self._setup_fields()
@@ -143,7 +144,8 @@ class YouTubeUploadCard(SettingsCard):
         auth_layout.setSpacing(Spacing.sm)
 
         self.auth_btn = PrimaryPushButton("Authenticate")
-        self.auth_btn.setIcon(mdi("login"))
+        # White icon: the muted-secondary default vanishes on the purple primary button.
+        self.auth_btn.setIcon(mdi("login", color=Colors.text_on_accent))
         self.auth_btn.clicked.connect(self._authenticate)
         auth_layout.addWidget(self.auth_btn)
 
@@ -157,7 +159,7 @@ class YouTubeUploadCard(SettingsCard):
         self.advanced_toggle_btn = PushButton("Show advanced settings")
         self.advanced_toggle_btn.setIcon(mdi("tune-variant"))
         self.advanced_toggle_btn.clicked.connect(self._toggle_advanced)
-        self.add_widget(self.advanced_toggle_btn)
+        self._add_action_button(self.advanced_toggle_btn)
 
         self._advanced_widget = QWidget()
         advanced_layout = QVBoxLayout(self._advanced_widget)
@@ -187,12 +189,28 @@ class YouTubeUploadCard(SettingsCard):
         guide_btn = PushButton("Show setup steps")
         guide_btn.setIcon(mdi("open-in-new"))
         guide_btn.clicked.connect(self._open_setup_guide)
-        self.add_widget(guide_btn)
+        self._add_action_button(guide_btn)
 
         self.status_label = BodyLabel("Not authenticated")
         self.status_label.setWordWrap(True)
+        self.status_label.setTextFormat(Qt.RichText)
+        self.status_label.setOpenExternalLinks(True)
         self.status_label.setStyleSheet(f"color: {Colors.text_muted};")
         self.add_widget(self.status_label)
+
+    def _add_action_button(self, button):
+        """Add a discrete, left-aligned action button.
+
+        Matches the auth-row convention so buttons stay chip-sized instead of
+        stretching full-width like a section band.
+        """
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.sm)
+        layout.addWidget(button)
+        layout.addStretch()
+        self.add_widget(row)
 
     def _build_row(self, label: str, widget, hint: str = None):
         row = QWidget()
@@ -255,9 +273,15 @@ class YouTubeUploadCard(SettingsCard):
             color = Colors.text_secondary
         else:
             color = Colors.status_error
-        if status.get("watch_url"):
-            message = f"{message} {status['watch_url']}"
-        self.status_label.setText(message)
+        watch_url = status.get("watch_url") or ""
+        text = f'<span style="color:{color};">{html.escape(message)}</span>'
+        if watch_url:
+            safe_url = html.escape(watch_url, quote=True)
+            text += (
+                f' <a href="{safe_url}" style="color:{Colors.accent_text};">'
+                f'{html.escape(watch_url)}</a>'
+            )
+        self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {color};")
         self._refresh_guidance()
 

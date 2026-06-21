@@ -65,6 +65,11 @@ class TimelapsePublishers:
                     "YouTube authentication failed.",
                     sanitize_exception(exc),
                 )
+            if result.success:
+                app_logger.info("YouTube authentication completed")
+            else:
+                detail = result.technical_message or result.user_message
+                app_logger.warning(f"YouTube authentication failed [{result.status}]: {detail}")
             self._emit_youtube_status(result.to_status())
 
         threading.Thread(target=_auth, name="YouTubeAuth", daemon=False).start()
